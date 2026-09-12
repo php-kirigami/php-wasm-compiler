@@ -1,0 +1,169 @@
+# php-wasm-compiler — single build configuration file.
+#
+# All build options live here. These are also the default values used in
+# silent mode (CI):
+#
+#   node compile/cli.mjs --quiet
+#
+# Without --quiet, the CLI is interactive: it lets you review/edit these
+# values before running the build, with the option to save them back here.
+#
+# Each extension has a `mode`:
+#   static — compiled directly into the main php.wasm (see
+#            compile/php/Dockerfile).
+#   shared — separate WASM module, loadable at runtime without rebuilding
+#            the core (Kirigami plugin of type "extension", see CLAUDE.md
+#            decisions 5/30/31). Needs a `source` path; build it with
+#            `node compile/cli.mjs compile-extension [name]`, not the
+#            default `build` command.
+#   off    — extension not compiled.
+
+php:
+  # One or more PHP versions to compile (major.minor format, e.g. "8.3").
+  versions:
+    - '8.5'
+
+# Fixed target for this project (see CLAUDE.md): Node.js only, JSPI only
+# (no web build, no Asyncify). Not configurable here.
+
+extensions:
+  # --- wired into compile/php/Dockerfile, static mode functional.
+  # Set to match the exact extension set of the existing, known-working
+  # @kirigami/php-wasm build (../kirigami/packages/php-wasm/README.md's
+  # phpinfo() "Configure Command" dump) — the interface (loaded extensions,
+  # public API surface) must stay identical to that build, see CLAUDE.md
+  # decision 22. ---
+  cli_sapi: { mode: static }
+  libzip: { mode: static }
+  sqlite: { mode: static }
+  curl: { mode: static }
+  iconv: { mode: static }
+  libxml: { mode: static }
+  exif: { mode: static }
+  gd: { mode: static }
+  mbstring: { mode: static }
+  openssl: { mode: static }
+  imagick: { mode: static }
+  nodefs: { mode: static }
+
+  # --- PECL, vendored from their own GitHub repos rather than pecl.php.net's
+  # package archive (often stale there), see CLAUDE.md decision 34. ---
+  yaml: { mode: static }
+  cmark: { mode: static }
+
+  # --- OFF to match the reference build's Configure Command, which shows
+  # --disable-opcache / --disable-soap / --disable-fileinfo /
+  # --disable-mbregex, and no mysql/mysqli/pdo_mysql flag at all. ---
+  soap: { mode: 'off' }
+  mbregex: { mode: 'off' }
+  opcache: { mode: 'off' }
+  mysql: { mode: 'off' }
+  fileinfo: { mode: 'off' }
+
+  # --- WASM-side networking proxy (-lwebsocket.js / wasm_recv & co) is not
+  # what @kirigami/php-wasm uses for networking — its own runtime.js
+  # implements a Node-side SOCKFS proxy instead (getPHPRuntimeWithNetwork()).
+  # Also: enabling it hits a real bug (wasm_recv gets dropped from the
+  # final build, likely dead-code-eliminated) — see CLAUDE.md decision 22. ---
+  ws_networking_proxy: { mode: 'off' }
+
+  # --- no Dockerfile flag of their own: compile/php/Dockerfile turns these
+  # on together with "libxml" (--enable-dom --enable-simplexml
+  # --enable-xmlreader --enable-xmlwriter are all bundled into the
+  # WITH_LIBXML=yes block). Must always match libxml's mode above. ---
+  dom: { mode: static }
+  simplexml: { mode: static }
+  xmlreader: { mode: static }
+  xmlwriter: { mode: static }
+
+  # --- no Dockerfile flag of their own either: bundled with "sqlite"
+  # (--enable-pdo --with-pdo-sqlite are appended together with
+  # --with-sqlite3 in the WITH_SQLITE=yes block). Must always match
+  # sqlite's mode above. ---
+  pdo: { mode: static }
+  pdo_sqlite: { mode: static }
+
+  # --- targeted (php-static-autobuilder style), not wired yet: the CLI
+  # refuses any mode other than "off" for these until they have a matching
+  # --enable-x/--with-x flag in the Dockerfile (and, for some, a new
+  # third-party lib vendored under compile/). Keeping this long list (in
+  # the spirit of php-static-autobuilder's own matrix.json, which covers
+  # ~109 extensions including many PECL ones) is the point — even though
+  # the current build matches a narrower reference build, the ambition is
+  # every extension in this list eventually being toggleable. ---
+  pdo_mysql: { mode: 'off' }
+  pdo_pgsql: { mode: 'off' }
+  pgsql: { mode: 'off' }
+  sockets: { mode: 'off' }
+  shmop: { mode: 'off' }
+  sysvshm: { mode: 'off' }
+  ftp: { mode: 'off' }
+  gettext: { mode: 'off' }
+  gmp: { mode: 'off' }
+  ldap: { mode: 'off' }
+  dba: { mode: 'off' }
+  enchant: { mode: 'off' }
+  tidy: { mode: 'off' }
+  odbc: { mode: 'off' }
+  intl: { mode: 'off' } # requires icu.dat (30MB), see NOTICE.md
+
+  # --- mode: shared — compiled independently via @php-wasm/compile-extension
+  # into a standalone WASM side module, loadable at runtime without
+  # rebuilding php.wasm (CLAUDE.md decisions 5, 30, 31). Each entry needs a
+  # `source`: a path (relative to the repo root) to the extension's own
+  # config.m4 + sources. Set `internal: true` for fixtures that should never
+  # be assembled into a publishable @kirigami/ext-<name> package (output
+  # stays under node-builds/, not packages/). ---
+  kirigami_abi_probe:
+    mode: shared
+    source: compile/extensions/abi-probe
+    internal: true # self-test fixture proving the mode:shared pipeline works end-to-end, not a real extension
+
+  # The real mode:shared pilot (CLAUDE.md decision 30's plan). Needs libsodium
+  # vendored (compile/libsodium/, built via `make libsodium_jspi`) — vendorLib
+  # tells `compile-extension` to stage that build into source/vendor/libsodium
+  # and link it in; pkgConfigVar matches ext/sodium's own config.m4
+  # (PKG_CHECK_MODULES([LIBSODIUM], ...)), which needs env-style overrides
+  # since there's no real pkg-config/libsodium.pc inside the build container.
+  sodium:
+    mode: shared
+    source: compile/extensions/sodium
+    vendorLib: libsodium
+    pkgConfigVar: LIBSODIUM
+
+# Version of each third-party library to use (see matrix.json for known
+# versions + their source). "latest" = the newest entry known to
+# matrix.json for that lib (NOT an automatic scrape of upstream yet — see
+# CLAUDE.md decision 11, not implemented lib by lib like it is for PHP).
+# An explicit version number pins that version instead.
+libraries:
+  libcurl: { version: latest } # 8.22.0, test-built 2026-09-12 (needed --without-libpsl, see NOTICE.md/CLAUDE.md decision 26)
+  libssh2: { version: latest } # curl SFTP/SCP support, see CLAUDE.md decision 24
+  nghttp2: { version: latest } # curl HTTP/2 support, see CLAUDE.md decision 25
+  libgd: { version: latest }
+  libImageMagick: { version: latest }
+  libiconv: { version: latest }
+  libjpeg: { version: latest }
+  libavif: { version: latest }
+  libaom: { version: latest }
+  libpng16: { version: latest }
+  libxml2: { version: latest }
+  libwebp: { version: latest }
+  libsqlite3: { version: latest }
+  libz: { version: latest }
+  # libzip currently builds two versions in parallel (see matrix.json) —
+  # not configurable here yet. libopenssl builds a single version — see
+  # build.openssl_version below.
+  # oniguruma has no pinned version in its Dockerfile — "latest" doesn't
+  # change anything there until that's fixed (see matrix.json).
+
+build:
+  stack_size: 1MB
+  # Defaults to matrix.json's "libopenssl" latest entry (see CLAUDE.md
+  # decision 27) — set an explicit version here only to override that.
+  debug: false
+  sourcemaps: false
+
+output:
+  # Output directory, relative to the repo root.
+  dir: node-builds

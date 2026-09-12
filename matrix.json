@@ -1,0 +1,1176 @@
+{
+	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. No automatic refresh yet (unlike supported-php-versions.mjs for PHP) — to be built lib by lib.",
+	"libraries": {
+		"libcurl": {
+			"sourceType": "github-release",
+			"repo": "curl/curl",
+			"sourceTemplate": "https://curl.se/download/curl-{version}.tar.gz",
+			"note": "GitHub release tags use underscores (e.g. curl-8_22_0) rather than dots; update-lib-versions.mjs normalizes them to dots before recording here. TESTED and ADOPTED 2026-09-12: 8.22.0 builds cleanly once `--without-libpsl` is added to compile/libcurl/Dockerfile's configure flags — curl 8.x added a hard `libpsl` (Public Suffix List, cookie-domain-matching) dependency we don't vendor; disabling that optional feature is enough (HTTP2/nghttp2 support confirmed still enabled in the build log). compile/Makefile's CURL_VERSION now reads this array's last entry directly (see CLAUDE.md decision 27) rather than being hand-synced.",
+			"versions": [
+				"7.69.1",
+				"8.22.0"
+			]
+		},
+		"libgd": {
+			"sourceType": "github-release",
+			"repo": "libgd/libgd",
+			"sourceTemplate": "https://github.com/libgd/libgd/releases/download/gd-{version}/libgd-{version}.tar.gz",
+			"versions": [
+				"2.3.3"
+			]
+		},
+		"libzip": {
+			"sourceType": "tarball",
+			"sourceTemplate": "https://libzip.org/download/libzip-{version}.tar.gz",
+			"checkUrl": "https://libzip.org/download/",
+			"note": "Two versions are built in parallel by the Makefile (1.2.0 and 1.9.2), not a single 'latest'.",
+			"versions": [
+				"1.2.0",
+				"1.9.2"
+			]
+		},
+		"libopenssl": {
+			"sourceType": "tarball",
+			"sourceTemplate": "https://www.openssl.org/source/openssl-{version}.tar.gz",
+			"checkUrl": "https://www.openssl.org/source/",
+			"note": "Upstream Playground pinned two versions built in parallel (1.1.0h/1.1.1t) for broader PHP-version support; we only target PHP 8.5 (see CLAUDE.md decision 16) so compile/Makefile now builds a single version. Verified 2026-09-12 that 3.6.4 (latest stable 3.x; 4.0.x exists but is very new) cross-compiles with the existing Dockerfile unmodified.",
+			"versions": [
+				"3.6.4"
+			]
+		},
+		"libImageMagick": {
+			"sourceType": "github-tag",
+			"repo": "ImageMagick/ImageMagick",
+			"sourceTemplate": "https://github.com/ImageMagick/ImageMagick/archive/refs/tags/{version}.tar.gz",
+			"note": "Default policy (2026-09-12): always try the latest version first, only fall back to an older pin if it actually fails a real test build. TESTED and ADOPTED 2026-09-12: 7.1.2-31 rebuilds cleanly against the fresh libpng16/libjpeg/libwebp below.",
+			"versions": [
+				"7.1.1-39",
+				"7.1.2-31"
+			]
+		},
+		"libiconv": {
+			"sourceType": "tarball",
+			"sourceTemplate": "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-{version}.tar.gz",
+			"checkUrl": "https://ftp.gnu.org/pub/gnu/libiconv/",
+			"versions": [
+				"1.17"
+			]
+		},
+		"libjpeg": {
+			"$comment": "libjpeg-turbo, not the historical libjpeg.",
+			"sourceType": "github-release",
+			"repo": "libjpeg-turbo/libjpeg-turbo",
+			"sourceTemplate": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz",
+			"note": "Default policy (2026-09-12): always try the latest version first. update-lib-versions.mjs's github-tag fallback is noisy for this repo (its tags mix in historical IJG libjpeg versions like 'jpeg-9') — 3.2.0 confirmed as latest via the GitHub Releases page directly. TESTED and REVERTED 2026-09-12: 3.2.0 fails a real build — it added a bundled `src/spng/` (PNG) module that uses raw x86 SSE2 intrinsics (`__m128i`, `_mm_cvtsi128_si32`) unconditionally reachable under our `-D__x86_64__` compile flag, which don't exist under Emscripten without `-msimd128`. Stayed on 3.0.3. Would need a real patch (disable spng, or add SIMD polyfill flags) to move forward — not attempted. IMPORTANT: 3.2.0 is deliberately NOT last in `versions` (out of chronological order) — since decision 28 wired compile/Makefile's LIBJPEG_VERSION to `MATRIX_VERSION` (the array's last entry), putting the known-broken version last would make the very next `make libjpeg_jspi` try to build it.",
+			"versions": [
+				"3.2.0",
+				"3.0.3"
+			]
+		},
+		"libavif": {
+			"sourceType": "github-tag",
+			"repo": "AOMediaCodec/libavif",
+			"sourceTemplate": "https://github.com/AOMediaCodec/libavif/archive/refs/tags/v{version}.tar.gz",
+			"note": "Default policy (2026-09-12): always try the latest version first. TESTED and ADOPTED 2026-09-12: v1.4.2 rebuilds cleanly.",
+			"versions": [
+				"1.3.0",
+				"1.4.2"
+			]
+		},
+		"libaom": {
+			"sourceType": "googlesource-archive",
+			"repo": "aomedia.googlesource.com/aom",
+			"sourceTemplate": "https://aomedia.googlesource.com/aom/+archive/v{version}.tar.gz",
+			"versions": [
+				"3.13.1"
+			]
+		},
+		"libpng16": {
+			"sourceType": "sourceforge",
+			"sourceTemplate": "http://prdownloads.sourceforge.net/libpng/libpng-{version}.tar.gz",
+			"checkUrl": "https://sourceforge.net/projects/libpng/files/",
+			"note": "Default policy (2026-09-12): always try the latest STABLE version first (github.com/pnggroup/libpng's newest tags are 1.7.0 betas — not stable; 1.6.58 is the latest stable 1.6.x). TESTED and ADOPTED 2026-09-12: 1.6.58 rebuilds cleanly.",
+			"versions": [
+				"1.6.39",
+				"1.6.58"
+			]
+		},
+		"libxml2": {
+			"sourceType": "git-tag",
+			"repo": "https://gitlab.gnome.org/GNOME/libxml2.git",
+			"note": "Default policy (2026-09-12): always try the latest version first. TESTED and ADOPTED 2026-09-12: v2.15.4 rebuilds cleanly.",
+			"versions": [
+				"v2.9.10",
+				"v2.15.4"
+			]
+		},
+		"libwebp": {
+			"sourceType": "googlesource-archive-commit",
+			"repo": "chromium.googlesource.com/webm/libwebp",
+			"sourceTemplate": "https://chromium.googlesource.com/webm/libwebp/+archive/{version}.tar.gz",
+			"note": "Default policy (2026-09-12): always try the latest version first. TESTED and ADOPTED 2026-09-12: moved off the commit pin to the v1.6.0 tag, rebuilds cleanly (libsharpyuv.a still produced alongside libwebp.a).",
+			"versions": [
+				"845d5476a866141ba35ac133f856fa62f0b7445f",
+				"v1.6.0"
+			]
+		},
+		"libsqlite3": {
+			"sourceType": "tarball",
+			"sourceTemplate": "https://sqlite.org/2025/sqlite-autoconf-{versionCompact}.tar.gz",
+			"checkUrl": "https://sqlite.org/download.html",
+			"versions": [
+				"3.51.0"
+			]
+		},
+		"libz": {
+			"sourceType": "tarball",
+			"sourceTemplate": "https://www.zlib.net/fossils/zlib-{version}.tar.gz",
+			"checkUrl": "https://zlib.net/",
+			"versions": [
+				"1.2.13"
+			]
+		},
+		"oniguruma": {
+			"sourceType": "git-branch",
+			"repo": "https://github.com/kkos/oniguruma.git",
+			"note": "NO pinned version in the current Dockerfile: clones the default branch on every build. Reproducibility not guaranteed. Fix by pinning a tag here.",
+			"versions": []
+		},
+		"libssh2": {
+			"$comment": "For curl SFTP/SCP support (CLAUDE.md decision 24). Real GitHub org/repo verified via `gh api`, not guessed from memory.",
+			"sourceType": "github-release",
+			"repo": "libssh2/libssh2",
+			"sourceTemplate": "https://github.com/libssh2/libssh2/releases/download/libssh2-{version}/libssh2-{version}.tar.gz",
+			"versions": [
+				"1.11.1"
+			]
+		},
+		"nghttp2": {
+			"$comment": "For curl HTTP/2 support (CLAUDE.md decision 25). Built with --enable-lib-only to skip the CLI apps/examples, which pull in unrelated deps (libcurl, libev, jansson, boost...).",
+			"sourceType": "github-release",
+			"repo": "nghttp2/nghttp2",
+			"sourceTemplate": "https://github.com/nghttp2/nghttp2/releases/download/v{version}/nghttp2-{version}.tar.gz",
+			"versions": [
+				"1.70.0"
+			]
+		},
+		"freetype": {
+			"$comment": "GD's FreeType dependency for text rendering (imagettftext/gdImageStringFT). Moved here from plannedLibraries 2026-09-12 once compile/libfreetype/Dockerfile was written and wired into compile/libgd/Dockerfile + compile/php/Dockerfile's WITH_GD block. Tag format is VER-<version with dots replaced by dashes>, e.g. 2.14.3 -> VER-2-14-3; the Dockerfile does that substitution itself.",
+			"sourceType": "github-tag",
+			"repo": "freetype/freetype",
+			"sourceTemplate": "https://github.com/freetype/freetype/archive/refs/tags/VER-{version-dashed}.tar.gz",
+			"versions": [
+				"2.14.3"
+			]
+		},
+		"libsodium": {
+			"$comment": "For ext/sodium (CLAUDE.md decision 32 — the mode:shared pilot). Moved here from plannedLibraries 2026-09-12 once compile/libsodium/Dockerfile was written. No dependency on libz/libopenssl — self-contained crypto.",
+			"sourceType": "github-release",
+			"repo": "jedisct1/libsodium",
+			"sourceTemplate": "https://github.com/jedisct1/libsodium/releases/download/{version}-RELEASE/libsodium-{version}.tar.gz",
+			"versions": [
+				"1.0.22"
+			]
+		},
+		"libyaml": {
+			"$comment": "For ext/yaml (CLAUDE.md decision 34, static build). Moved here from plannedLibraries 2026-09-12 once compile/libyaml/Dockerfile was written. Latest tag (0.2.6-rc.1) is a release candidate — pinned to the latest STABLE release instead, same policy as libpng16.",
+			"sourceType": "github-release",
+			"repo": "yaml/libyaml",
+			"sourceTemplate": "https://github.com/yaml/libyaml/releases/download/{version}/yaml-{version}.tar.gz",
+			"versions": [
+				"0.2.5"
+			]
+		},
+		"cmark": {
+			"$comment": "The C library (commonmark/cmark), for ext/cmark (CLAUDE.md decision 34, static build) — not to be confused with the PHP extension itself, tracked under extensions.cmark. Moved here from plannedLibraries 2026-09-12 once compile/libcmark/Dockerfile was written.",
+			"sourceType": "github-tag",
+			"repo": "commonmark/cmark",
+			"sourceTemplate": "https://github.com/commonmark/cmark/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"0.31.2"
+			]
+		}
+	},
+	"extensions": {
+		"$comment": "Ported from php-static-autobuilder's own matrix.json (https://github.com/ZmotriN/php-static-autobuilder), 2026-09-12, per CLAUDE.md decisions 24/28. Fields: builtin (part of php-src vs. a separate repo), mandatory, switch (the ./configure flag), dependencies (other extensions it needs), libraries (third-party libs it needs — the per-extension dependency list requested by the user, matching LIB_TARGETS_BY_EXTENSION in compile/cli.mjs conceptually, though the two aren't wired together yet and use different library-name spellings: this section keeps php-static-autobuilder's own names verbatim, e.g. 'zlib'/'libpng'/'openssl', not this repo's 'libz'/'libpng16'/'libopenssl'). Windows-only extensions (win32std, winbinder, wcli, win32ps, win32service, com_dotnet) were dropped entirely, not carried over — they don't apply to a WASM/Node target. Data only: none of this is wired into compile/php/Dockerfile or cli.mjs's IMPLEMENTED_EXTENSIONS yet, most of these 103 extensions aren't buildable here at all today (see config.yaml's long 'off' list and CLAUDE.md's Context section for what's actually wired).",
+		"curl": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-curl",
+			"libraries": [
+				"libcurl"
+			],
+			"note": "Reconciled 2026-09-12 against this repo's actual compile/php/Dockerfile (php-static-autobuilder used different library names/deps for this extension)."
+		},
+		"openssl": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-openssl=static",
+			"libraries": [
+				"libopenssl"
+			],
+			"note": "Reconciled 2026-09-12 against this repo's actual compile/php/Dockerfile (php-static-autobuilder used different library names/deps for this extension)."
+		},
+		"bz2": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-bz2",
+			"libraries": [
+				"libbzip2"
+			]
+		},
+		"phar": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-phar",
+			"dependencies": [
+				"bz2"
+			]
+		},
+		"zlib": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-zlib",
+			"libraries": [
+				"zlib"
+			]
+		},
+		"zip": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-zip",
+			"libraries": [
+				"libzip"
+			],
+			"note": "Reconciled 2026-09-12 against this repo's actual compile/php/Dockerfile (php-static-autobuilder used different library names/deps for this extension)."
+		},
+		"bcmath": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-bcmath"
+		},
+		"calendar": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-calendar"
+		},
+		"ctype": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-ctype"
+		},
+		"dba": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-dba"
+		},
+		"qdbm": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-qdbm",
+			"dependencies": [
+				"dba"
+			],
+			"libraries": [
+				"libqdbm"
+			]
+		},
+		"lmdb": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-lmdb",
+			"dependencies": [
+				"dba"
+			],
+			"libraries": [
+				"liblmdb"
+			]
+		},
+		"enchant": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-enchant",
+			"libraries": [
+				"libenchant2",
+				"glib"
+			]
+		},
+		"ffi": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-ffi",
+			"libraries": [
+				"libffi"
+			]
+		},
+		"fileinfo": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-fileinfo=static"
+		},
+		"filter": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-filter"
+		},
+		"ftp": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-ftp"
+		},
+		"gd": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-gd --with-libwebp",
+			"libraries": [
+				"libgd",
+				"libjpeg",
+				"libpng16",
+				"libwebp",
+				"libavif"
+			],
+			"note": "Reconciled 2026-09-12 against this repo's actual compile/php/Dockerfile (php-static-autobuilder used different library names/deps for this extension)."
+		},
+		"libavif": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-libavif",
+			"dependencies": [
+				"gd"
+			],
+			"libraries": [
+				"libavif"
+			]
+		},
+		"gettext": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-gettext",
+			"libraries": [
+				"libintl"
+			]
+		},
+		"gmp": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-gmp",
+			"libraries": [
+				"mpir"
+			]
+		},
+		"imap": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-imap",
+			"libraries": [
+				"c-client"
+			]
+		},
+		"mhash": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-mhash"
+		},
+		"iconv": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-iconv",
+			"libraries": [
+				"libiconv"
+			],
+			"note": "Library name already matched this repo's (libiconv) — checked 2026-09-12, no change needed."
+		},
+		"intl": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-intl=static",
+			"libraries": [
+				"ICU"
+			]
+		},
+		"ldap": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-ldap",
+			"libraries": [
+				"openldap",
+				"openssl",
+				"libsasl"
+			]
+		},
+		"mbstring": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-mbstring"
+		},
+		"mbregex": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-mbregex",
+			"dependencies": [
+				"mbstring"
+			],
+			"libraries": [
+				"oniguruma"
+			],
+			"note": "Reconciled 2026-09-12 against this repo's actual compile/php/Dockerfile (php-static-autobuilder used different library names/deps for this extension)."
+		},
+		"mysqlnd": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-mysqlnd",
+			"libraries": [
+				"zlib"
+			]
+		},
+		"odbc": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-odbc"
+		},
+		"pgsql": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-pgsql",
+			"libraries": [
+				"libpq"
+			]
+		},
+		"readline": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-readline",
+			"libraries": [
+				"wineditline"
+			]
+		},
+		"shmop": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-shmop"
+		},
+		"sockets": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-sockets"
+		},
+		"sodium": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-sodium",
+			"libraries": [
+				"libsodium"
+			]
+		},
+		"sqlite3": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-sqlite3",
+			"libraries": [
+				"libsqlite3"
+			],
+			"note": "Reconciled 2026-09-12 against this repo's actual compile/php/Dockerfile (php-static-autobuilder used different library names/deps for this extension)."
+		},
+		"argon2": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-password-argon2",
+			"libraries": [
+				"libargon2"
+			]
+		},
+		"sysvshm": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-sysvshm"
+		},
+		"tidy": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-tidy",
+			"libraries": [
+				"libtidy"
+			]
+		},
+		"tokenizer": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-tokenizer"
+		},
+		"libxml": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-libxml",
+			"dependencies": [
+				"iconv"
+			],
+			"libraries": [
+				"libxml2"
+			],
+			"note": "Library name already matched this repo's (libxml2) — checked 2026-09-12, no change needed."
+		},
+		"dom": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-dom",
+			"dependencies": [
+				"libxml",
+				"iconv"
+			]
+		},
+		"exif": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-exif",
+			"dependencies": [
+				"mbstring",
+				"mbregex"
+			]
+		},
+		"mysqli": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-mysqli",
+			"dependencies": [
+				"mysqlnd"
+			]
+		},
+		"pdo": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-pdo"
+		},
+		"pdo_mysql": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-pdo-mysql",
+			"dependencies": [
+				"pdo"
+			]
+		},
+		"pdo_odbc": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-pdo-odbc",
+			"dependencies": [
+				"pdo"
+			]
+		},
+		"pdo_pgsql": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-pdo-pgsql",
+			"dependencies": [
+				"pdo"
+			],
+			"libraries": [
+				"libpq"
+			]
+		},
+		"pdo_sqlite": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-pdo-sqlite",
+			"dependencies": [
+				"pdo"
+			],
+			"libraries": [
+				"libsqlite3"
+			],
+			"note": "Reconciled 2026-09-12 against this repo's actual compile/php/Dockerfile (php-static-autobuilder used different library names/deps for this extension)."
+		},
+		"simplexml": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-simplexml",
+			"dependencies": [
+				"libxml",
+				"iconv"
+			]
+		},
+		"soap": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-soap"
+		},
+		"xml": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-xml",
+			"dependencies": [
+				"libxml",
+				"iconv"
+			]
+		},
+		"xmlreader": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-xmlreader",
+			"dependencies": [
+				"libxml",
+				"dom",
+				"iconv"
+			]
+		},
+		"xmlwriter": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-xmlwriter",
+			"dependencies": [
+				"libxml",
+				"iconv"
+			]
+		},
+		"igbinary": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-igbinary"
+		},
+		"timezonedb": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-timezonedb"
+		},
+		"event": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-event=static",
+			"dependencies": [
+				"sockets"
+			],
+			"libraries": [
+				"libevent"
+			]
+		},
+		"parallel": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-parallel",
+			"libraries": [
+				"pthread"
+			]
+		},
+		"opentelemetry": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-opentelemetry"
+		},
+		"maxminddb": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-maxminddb",
+			"libraries": [
+				"libmaxminddb"
+			]
+		},
+		"csv": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-csv"
+		},
+		"lzf": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-lzf"
+		},
+		"translit": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-translit",
+			"dependencies": [
+				"iconv"
+			]
+		},
+		"geospatial": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-geospatial"
+		},
+		"trader": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-trader"
+		},
+		"haru": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-haru",
+			"repo": "https://github.com/dionx/pecl-haru.git",
+			"libraries": [
+				"libharu",
+				"libpng",
+				"zlib"
+			]
+		},
+		"dio": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-dio"
+		},
+		"sync": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-sync"
+		},
+		"ssh2": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-ssh2",
+			"dependencies": [
+				"zlib",
+				"openssl"
+			],
+			"libraries": [
+				"libssh2"
+			]
+		},
+		"ds": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-ds"
+		},
+		"teds": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-teds"
+		},
+		"jsonpath": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-jsonpath"
+		},
+		"msgpack": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-msgpack"
+		},
+		"simdjson": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-simdjson"
+		},
+		"xhprof": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-xhprof"
+		},
+		"yaml": {
+			"$comment": "Sourced from the extension's own GitHub repo/tags, not pecl.php.net's package archive — PECL's own listing lags behind (CLAUDE.md decision 34: 'often bien plus a jour' on GitHub).",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-yaml",
+			"repo": "php/pecl-file_formats-yaml",
+			"sourceTemplate": "https://github.com/php/pecl-file_formats-yaml/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"2.3.0"
+			],
+			"libraries": [
+				"libyaml"
+			]
+		},
+		"cmark": {
+			"$comment": "Sourced from krakjoe/cmark (the real PECL cmark extension's GitHub repo, verified via gh api against pecl.php.net's own package listing), not pecl.php.net's archive — same reasoning as yaml above (CLAUDE.md decision 34).",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-cmark",
+			"repo": "krakjoe/cmark",
+			"sourceTemplate": "https://github.com/krakjoe/cmark/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v1.2.0"
+			],
+			"libraries": [
+				"cmark"
+			]
+		},
+		"apcu": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-apcu",
+			"dependencies": [
+				"igbinary"
+			]
+		},
+		"yac": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-yac",
+			"dependencies": [
+				"igbinary"
+			]
+		},
+		"dbase": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-dbase"
+		},
+		"raphf": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-raphf"
+		},
+		"pecl_http": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-http",
+			"dependencies": [
+				"raphf"
+			],
+			"libraries": [
+				"ICU",
+				"zlib",
+				"nghttp2",
+				"openssl",
+				"libssh2",
+				"curl",
+				"pthread",
+				"libevent"
+			]
+		},
+		"bitset": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-bitset"
+		},
+		"ast": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-ast"
+		},
+		"componere": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-componere"
+		},
+		"zstd": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-zstd",
+			"libraries": [
+				"libzstd"
+			]
+		},
+		"ev": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-ev"
+		},
+		"brotli": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-brotli",
+			"libraries": [
+				"brotli"
+			]
+		},
+		"mailparse": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-mailparse",
+			"dependencies": [
+				"mbstring"
+			]
+		},
+		"bsdiff": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-bsdiff",
+			"dependencies": [
+				"bz2"
+			]
+		},
+		"ip2location": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-ip2location",
+			"libraries": [
+				"ip2location"
+			]
+		},
+		"ip2proxy": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-ip2proxy",
+			"libraries": [
+				"ip2proxy"
+			]
+		},
+		"pcsc": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-pcsc"
+		},
+		"stomp": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-stomp",
+			"libraries": [
+				"openssl"
+			]
+		},
+		"zephir_parser": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-zephir-parser"
+		},
+		"xdiff": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-xdiff",
+			"libraries": [
+				"libxdiff"
+			]
+		},
+		"crypto": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-crypto",
+			"dependencies": [
+				"openssl"
+			],
+			"libraries": [
+				"openssl"
+			]
+		},
+		"svm": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-svm"
+		},
+		"uopz": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-uopz"
+		},
+		"psr": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-psr"
+		},
+		"var_representation": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-var_representation"
+		},
+		"rar": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-rar"
+		},
+		"mongodb": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-mongodb --with-mongodb-client-side-encryption --with-mongodb-sasl",
+			"dependencies": [
+				"openssl"
+			]
+		},
+		"protobuf": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-protobuf"
+		},
+		"imagick": {
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-imagick",
+			"repo": "https://github.com/Imagick/imagick.git",
+			"libraries": [
+				"libImageMagick"
+			],
+			"note": "Not present in php-static-autobuilder's own matrix (Windows php builder never added it) — added 2026-09-12 since this repo does support it (compile/php/Dockerfile WITH_IMAGICK block)."
+		}
+	},
+	"plannedLibraries": {
+		"$comment": "Requested 2026-09-12: build out Dockerfiles for (ideally) every library + extension php-static-autobuilder's own matrix.json covers (CLAUDE.md decision 24). This section records real, gh-api-verified upstream sources + currently-latest versions for the ones not yet wired into a compile/<lib>/Dockerfile — data-entry done, Dockerfiles not written/tested yet. Excludes Windows-only libraries from php-static-autobuilder's list that don't apply to a WASM/Linux cross-compile (pthread-win32, wineditline, dirent, fbclient's nocrt Windows build). A few repos could not be auto-verified (no matching release/tag found via the GitHub API in one pass) and are marked 'checkUrl: manual' instead of a repo — needs a human/deeper look, not a confirmed gap.",
+		"zlib": {
+			"sourceType": "github-release",
+			"repo": "madler/zlib",
+			"versions": [
+				"1.3.2"
+			],
+			"note": "We already vendor zlib as 'libz' (zlib.net tarball, tested/working) — this is just recording the alternate GitHub-mirror source php-static-autobuilder uses, not a second copy to build."
+		},
+		"ICU": {
+			"sourceType": "github-release",
+			"repo": "unicode-org/icu",
+			"versions": [
+				"78.3"
+			],
+			"note": "For ext/intl. Needs icu.dat (~30MB) — see NOTICE.md, explicitly out of scope until reconsidered."
+		},
+		"liblzma": {
+			"sourceType": "github-release",
+			"repo": "tukaani-project/xz",
+			"versions": [
+				"5.8.4"
+			]
+		},
+		"libzstd": {
+			"sourceType": "github-release",
+			"repo": "facebook/zstd",
+			"versions": [
+				"1.5.7"
+			]
+		},
+		"c-ares": {
+			"sourceType": "github-release",
+			"repo": "c-ares/c-ares",
+			"versions": [
+				"1.34.8"
+			],
+			"note": "For curl async DNS."
+		},
+		"libevent": {
+			"sourceType": "github-release",
+			"repo": "libevent/libevent",
+			"versions": [
+				"2.1.13-stable"
+			],
+			"note": "For ext/event (PECL)."
+		},
+		"libenchant2": {
+			"sourceType": "github-release",
+			"repo": "rrthomas/enchant",
+			"versions": [
+				"2.8.21"
+			],
+			"note": "php-static-autobuilder's AbiWord/enchant has moved to rrthomas/enchant — verified via gh api."
+		},
+		"glib": {
+			"sourceType": "manual",
+			"checkUrl": "https://gitlab.gnome.org/GNOME/glib",
+			"note": "GNOME/glib GitHub mirror has no releases and no plain-numeric tags the automated resolver could find — check gitlab.gnome.org directly. Needed by enchant2."
+		},
+		"libffi": {
+			"sourceType": "github-release",
+			"repo": "libffi/libffi",
+			"versions": [
+				"3.8.0"
+			],
+			"note": "For ext/ffi."
+		},
+		"libxpm": {
+			"sourceType": "manual",
+			"checkUrl": "https://gitlab.freedesktop.org/xorg/lib/libxpm",
+			"note": "For ext/gd XPM support — low priority, GD already works without it."
+		},
+		"libintl": {
+			"sourceType": "manual",
+			"checkUrl": "https://ftp.gnu.org/pub/gnu/gettext/",
+			"note": "GNU gettext, for ext/gettext. No convenient GitHub mirror found — check ftp.gnu.org for the latest tarball."
+		},
+		"mpir_or_gmp": {
+			"sourceType": "manual",
+			"checkUrl": "https://gmplib.org/",
+			"note": "For ext/gmp. php-static-autobuilder uses the MPIR fork (Windows-oriented); on Linux/WASM the canonical GNU GMP (gmplib.org) is the more standard choice — needs a decision, not just a version check."
+		},
+		"c-client": {
+			"sourceType": "manual",
+			"checkUrl": "https://github.com/uw-imap/imap",
+			"note": "For ext/imap. The original University of Washington imap toolkit is unmaintained since ~2008 (last real release 2007f) — 'latest' is not a meaningful concept here. Community forks exist (e.g. uw-imap/imap) but aren't vetted."
+		},
+		"openldap": {
+			"sourceType": "manual",
+			"checkUrl": "https://openldap.org/software/download/",
+			"note": "For ext/ldap. GitHub mirror (openldap/openldap) has no releases and non-numeric tags (development branch names) — check openldap.org directly."
+		},
+		"libsasl": {
+			"sourceType": "github-release",
+			"repo": "cyrusimap/cyrus-sasl",
+			"versions": [
+				"2.1.28"
+			],
+			"note": "Dependency of ext/ldap (SASL auth)."
+		},
+		"libpq": {
+			"sourceType": "manual",
+			"checkUrl": "https://www.postgresql.org/ftp/source/",
+			"note": "For ext/pgsql, ext/pdo_pgsql. postgresql/postgres is not a real GitHub org (verified 404) — PostgreSQL's source releases live at postgresql.org, not vendored on GitHub the same way."
+		},
+		"libargon2": {
+			"sourceType": "github-release",
+			"repo": "P-H-C/phc-winner-argon2",
+			"versions": [
+				"20190702"
+			],
+			"note": "For ext/argon2 (also usable by password_hash())."
+		},
+		"fbclient": {
+			"sourceType": "manual",
+			"checkUrl": "https://github.com/FirebirdSQL/firebird/releases",
+			"note": "For pdo_firebird. php-static-autobuilder itself flags this as 'Missing static lib' — likely not WASM-cross-compile-friendly without real investigation."
+		},
+		"libxslt": {
+			"sourceType": "github-release",
+			"repo": "GNOME/libxslt",
+			"versions": [
+				"1.1.45"
+			],
+			"note": "For ext/xsl. php-static-autobuilder itself flags xsl as a 'Compiling error' extension — expect trouble."
+		},
+		"libmaxminddb": {
+			"sourceType": "github-release",
+			"repo": "maxmind/libmaxminddb",
+			"versions": [
+				"1.14.0"
+			],
+			"note": "For ext/maxminddb (PECL)."
+		},
+		"libharu": {
+			"sourceType": "github-release",
+			"repo": "libharu/libharu",
+			"versions": [
+				"2.4.6"
+			],
+			"note": "For ext/haru (PECL, PDF generation)."
+		},
+		"libjudy": {
+			"sourceType": "github-release",
+			"repo": "netdata/libjudy",
+			"versions": [
+				"1.0.5-netdata2"
+			],
+			"note": "For ext/bitset (PECL) — original Judy is unmaintained, netdata's fork is the active one."
+		},
+		"net-snmp": {
+			"sourceType": "github-tag",
+			"repo": "net-snmp/net-snmp",
+			"versions": [
+				"5.9.5"
+			],
+			"note": "For ext/snmp. php-static-autobuilder itself flags snmp as a 'Compiling error' extension — expect trouble."
+		},
+		"libtidy": {
+			"sourceType": "github-release",
+			"repo": "htacg/tidy-html5",
+			"versions": [
+				"5.8.0"
+			],
+			"note": "For ext/tidy."
+		},
+		"libuv": {
+			"sourceType": "github-release",
+			"repo": "libuv/libuv",
+			"versions": [
+				"1.52.1"
+			],
+			"note": "For ext/uv (PECL) — Emscripten already provides its own async I/O; a WASM build of libuv itself is unproven, treat as speculative."
+		},
+		"brotli": {
+			"sourceType": "github-release",
+			"repo": "google/brotli",
+			"versions": [
+				"1.2.0"
+			],
+			"note": "For ext/brotli (PECL)."
+		},
+		"jsonc": {
+			"sourceType": "github-release",
+			"repo": "json-c/json-c",
+			"versions": [
+				"0.19-20260627"
+			],
+			"note": "For ext/simdjson or similar JSON-C-backed PECL extensions."
+		}
+	}
+}
