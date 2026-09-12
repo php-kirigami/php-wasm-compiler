@@ -374,6 +374,8 @@ await asyncSpawn(
 		'--build-arg',
 		getArg('WITH_CMARK'),
 		'--build-arg',
+		getArg('WITH_MDHTML'),
+		'--build-arg',
 		// Sourced from their own GitHub repos, not pecl.php.net (CLAUDE.md
 		// decision 34). Same "hardcoded last-resort fallback for standalone
 		// build.js use" shape as OPENSSL_VERSION above -- cli.mjs always
@@ -381,6 +383,8 @@ await asyncSpawn(
 		`YAML_EXT_VERSION=${args.YAML_EXT_VERSION || '2.3.0'}`,
 		'--build-arg',
 		`CMARK_EXT_VERSION=${args.CMARK_EXT_VERSION || 'v1.2.0'}`,
+		'--build-arg',
+		`MDHTML_EXT_VERSION=${args.MDHTML_EXT_VERSION || 'v0.1.0'}`,
 		'--build-arg',
 		`EMSCRIPTEN_ENVIRONMENT=${platform}`,
 		'--build-arg',

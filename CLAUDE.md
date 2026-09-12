@@ -1530,6 +1530,93 @@ unless explicitly revisited:
       (`WITH_DEBUG=yes`/sourcemaps) for a real stack trace into the C
       source rather than a bare WASM function-index trace, before guessing
       at a fix.
+    - **✅ Root cause found and fixed for real, session continued
+      2026-09-12 with purchased credits.** The `object_properties_init()`
+      fix above was rebuilt and re-tested: the *original* shutdown crash
+      moved (not disappeared) to a *new* crash at `new
+      CommonMark\Node\Document()` itself, inside `zend_std_get_constructor`
+      — proof the previous fix was treating a symptom, not the cause.
+      Ruled out a general build problem first (`new stdClass()`,
+      `new Exception()`, `new ArrayObject()`, and even `new
+      CommonMark\CQL()` — the extension's *other*, unrelated class from
+      `call.c` — all worked correctly, including CQL correctly throwing a
+      catchable `ArgumentCountError`), narrowing the bug to something
+      specific to the `Node` class hierarchy alone. Read `src/node.h`
+      (fetched fresh from the real `krakjoe/cmark` v1.2.0 tag) and found
+      it: `php_cmark_node_t` doesn't embed a real `zend_object`, it
+      hand-rolls its own mimic struct —
+      `struct { zend_refcounted_h gc; uint32_t handle; zend_class_entry
+      *ce; const zend_object_handlers *handlers; HashTable *properties; }
+      std;` — so that every subtype's own struct (`php_cmark_node_text_t`,
+      `_heading_t`, etc.) can embed `php_cmark_node_t h` by value and add
+      its own trailing `zval` fields (`literal`, `fence`, ...) that double
+      as that subtype's declared-properties storage, all without a
+      separate allocation. This is a real, deliberate, and actually rather
+      elegant design — **but it requires this mimic struct's fields to
+      exactly match the real `zend_object`'s, in order, forever**, because
+      Zend's own internals (`object_properties_init`,
+      `zend_object_std_dtor`, `zend_std_get_constructor`, anything doing
+      `object->ce`/`object->properties_table`/etc.) read/write through
+      this memory via `zend_object*`-typed, *offset-based* field access —
+      they have no idea this is a hand-rolled mimic, they just trust the
+      byte layout. Fetched the real `zend_object` definition from the
+      exact `php-8.5.10` tag this project builds
+      (`Zend/zend_types.h`) and found the mismatch: real `zend_object` has
+      **six** fields — `gc, handle, extra_flags, ce, handlers, properties`
+      — plus a trailing `properties_table[1]`. Cmark's mimic is missing
+      `extra_flags` (a `uint32_t` inserted between `handle` and `ce`,
+      added to PHP at some point after cmark's last commit in 2019, for
+      `OBJ_EXTRA_FLAGS()`). Every field after the missing one — `ce`,
+      `handlers`, `properties`, and therefore the whole properties-table
+      region used by both `object_properties_init` (decision 35's earlier
+      patch) and by `zend_object_std_dtor`'s original, unpatched behavior
+      — was being read and written 4 bytes off from where cmark's own code
+      actually stores it, corrupting whatever real data happened to sit at
+      that wrong offset. This explains *both* crashes: the original one
+      (`zend_object_dtor_property` at shutdown, walking a misaligned
+      properties-table) and the new one this fix's own predecessor
+      accidentally caused (writing `object_properties_init`'s default
+      zvals 4 bytes off, smearing into `ce`/`handlers`, surfacing later at
+      the next `new`). Fix: **one line**, a new
+      `patches/cmark/php8-node-object-layout-extra-flags.patch` adding
+      `uint32_t extra_flags;` in the correct position inside `src/node.h`'s
+      mimic struct — the *only* place in the whole extension with this
+      hand-rolled shape (confirmed by grepping every other header for
+      `zend_refcounted_h gc`; every subtype embeds `php_cmark_node_t`
+      instead of redefining its own, so fixing this one struct fixes the
+      whole hierarchy). Verified all 5 cmark patches now apply cleanly
+      together, in the Dockerfile's alphabetical glob order, against a
+      fully pristine `v1.2.0` checkout, before spending a rebuild on it.
+    - **✅✅ Full end-to-end success, verified for real.** Rebuilt once more
+      (fifth `php.wasm` build this session) and re-ran the complete
+      original scenario: `\CommonMark\Parse("# Hello\n\nWorld")` → a real
+      `CommonMark\Node\Document` tree; `$doc instanceof Traversable` is
+      `true`; `foreach ($doc as $child)` genuinely walks the tree
+      (Document → Heading → Text → Heading → Paragraph → Text → Paragraph
+      → Document, matching cmark's own enter/leave visitor pattern) with
+      no crash; the whole request — including destroying every node object
+      at shutdown — completes with exit code 0. Also re-confirmed the
+      simpler cases from decision 35's earlier entries still hold (`new
+      CommonMark\Node\Document()` alone, `get_loaded_extensions()` lists
+      `cmark`). **This closes out the entire cmark investigation**: five
+      patches now live in `patches/cmark/`, each fixing one distinct,
+      real, independently-diagnosed PHP 7→8 (and PHP-version-drift)
+      incompatibility in unmodified upstream `krakjoe/cmark` v1.2.0 code:
+      (1) Node's own Traversable/abstract registration order, (2) the
+      original Zend object-handler signature migration (zval*→zend_object*),
+      (3) the same Traversable/abstract ordering bug on all 21 concrete
+      subclass registrations, (4) object-properties-table
+      initialization (harmless-now-redundant given fix 5, but not wrong —
+      left in place), (5) the actual root cause, a missing `extra_flags`
+      field in the extension's hand-rolled `zend_object` mimic struct.
+      **User's explicit follow-up (2026-09-12, after this fix landed)**:
+      package all five patches together and publish them as our own
+      maintained cmark fork/release (see the updated note earlier in this
+      same decision) — not just the one Zend API migration patch, the
+      whole accumulated set. Also requested: write down how to actually
+      *use* the now-working extension (see the new "cmark usage" note in
+      this file / wherever it ends up) so this is easy to pick back up
+      when `kirigami/kirigami` actually wants to consume it.
 
 ## Current status
 

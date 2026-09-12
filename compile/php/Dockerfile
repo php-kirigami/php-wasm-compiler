@@ -51,6 +51,7 @@ COPY ./compile/opcache/ /root/php-src/ext/opcache
 # ext/ before buildconf, same as the extensions above.
 ARG YAML_EXT_VERSION
 ARG CMARK_EXT_VERSION
+ARG MDHTML_EXT_VERSION
 
 RUN mkdir -p /root/php-src/ext/yaml && \
 	wget -O /root/yaml-ext.tar.gz https://github.com/php/pecl-file_formats-yaml/archive/refs/tags/${YAML_EXT_VERSION}.tar.gz && \
@@ -68,6 +69,14 @@ RUN mkdir -p /root/php-src/ext/cmark && \
 	rm /root/cmark-ext.tar.gz && \
 	cd /root/php-src/ext/cmark && \
 	git apply --no-index -v /root/patches-cmark/*.patch
+
+# php-kirigami/php-mdhtml (CLAUDE.md decision 37) — our own CommonMark+GFM
+# extension, replacing ext/cmark as the core, static-mode markdown
+# renderer. No patches: unlike ext/cmark, we own this source directly.
+RUN mkdir -p /root/php-src/ext/mdhtml && \
+	wget -O /root/mdhtml-ext.tar.gz https://github.com/php-kirigami/php-mdhtml/archive/refs/tags/${MDHTML_EXT_VERSION}.tar.gz && \
+	tar -xzf /root/mdhtml-ext.tar.gz -C /root/php-src/ext/mdhtml --strip-components=1 && \
+	rm /root/mdhtml-ext.tar.gz
 
 # Bring in the libraries
 RUN mkdir -p /root/lib/include /root/lib/lib /libs
@@ -90,6 +99,7 @@ COPY ./compile/libfreetype/ /root/builds/libfreetype
 COPY ./compile/libgd/ /root/builds/libgd
 COPY ./compile/libyaml/ /root/builds/libyaml
 COPY ./compile/libcmark/ /root/builds/libcmark
+COPY ./compile/libcmark-gfm/ /root/builds/libcmark-gfm
 
 RUN if [ "$WITH_JSPI" = "yes" ]; then \
 	find /root/builds -path '*/jspi/dist/root/lib' -type d -exec cp -r {}/. /root/lib \; ; \
@@ -171,6 +181,7 @@ ARG WITH_WS_NETWORKING_PROXY
 ARG WITH_IMAGICK
 ARG WITH_YAML
 ARG WITH_CMARK
+ARG WITH_MDHTML
 
 # The platform to build for: web or node
 ARG EMSCRIPTEN_ENVIRONMENT=web
@@ -342,6 +353,17 @@ RUN if [ "$WITH_CMARK" = "yes" ]; \
 		echo -n ' /root/lib/lib/libcmark.a ' >> /root/.emcc-php-wasm-sources; \
 	else \
 		echo -n ' --without-cmark ' >> /root/.php-configure-flags; \
+	fi;
+
+# Add mdhtml if needed (php-kirigami/php-mdhtml, our own CommonMark+GFM
+# extension built on cmark-gfm — CLAUDE.md decision 37, replaces cmark as
+# the core static-mode markdown extension)
+RUN if [ "$WITH_MDHTML" = "yes" ]; \
+	then \
+		echo -n ' --with-mdhtml=/root/lib ' >> /root/.php-configure-flags; \
+		echo -n ' /root/lib/lib/libcmark-gfm.a /root/lib/lib/libcmark-gfm-extensions.a ' >> /root/.emcc-php-wasm-sources; \
+	else \
+		echo -n ' --without-mdhtml ' >> /root/.php-configure-flags; \
 	fi;
 
 # Get and patch PHP

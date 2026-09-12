@@ -193,6 +193,7 @@ const IMPLEMENTED_EXTENSIONS = {
 	nodefs: 'WITH_NODEFS',
 	yaml: 'WITH_YAML',
 	cmark: 'WITH_CMARK',
+	mdhtml: 'WITH_MDHTML',
 };
 
 // These have no independent Dockerfile flag of their own: compile/php/Dockerfile
@@ -237,6 +238,7 @@ const LIB_TARGETS_BY_EXTENSION = {
 	imagick: ['libImageMagick_jspi'],
 	yaml: ['libyaml_jspi'],
 	cmark: ['libcmark_jspi'],
+	mdhtml: ['libcmark-gfm_jspi'],
 };
 
 /** Union of Makefile targets needed by every extension currently set to "static". */
@@ -761,6 +763,9 @@ function buildArgsForVersion(config, phpVersion) {
 	// archive (CLAUDE.md decision 34).
 	args.push(`--YAML_EXT_VERSION=${getMatrixExtensionVersion('yaml')}`);
 	args.push(`--CMARK_EXT_VERSION=${getMatrixExtensionVersion('cmark')}`);
+	// php-kirigami/php-mdhtml — our own extension, replacing cmark as the
+	// core static-mode markdown renderer (CLAUDE.md decision 37).
+	args.push(`--MDHTML_EXT_VERSION=${getMatrixExtensionVersion('mdhtml')}`);
 
 	const versionDir = phpVersion.replace(/\./g, '-');
 	const outputDir = path.join(
