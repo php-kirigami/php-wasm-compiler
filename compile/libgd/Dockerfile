@@ -80,8 +80,9 @@ RUN set -euxo pipefail; \
         -DAVIF_LIBRARY=/root/lib/lib/libavif.a \
         -DAVIF_INCLUDE_DIR=/root/lib/include \
         -Dlibavif_DIR=/root/lib/lib/cmake/libavif \
-        -DFreetype_LIBRARY=/root/lib/lib/libfreetype.a \
-        -DFreetype_INCLUDE_DIRS=/root/lib/include/freetype2 \
+        -DFREETYPE_LIBRARY=/root/lib/lib/libfreetype.a \
+        -DFREETYPE_INCLUDE_DIR_ft2build=/root/lib/include/freetype2 \
+        -DFREETYPE_INCLUDE_DIR_freetype2=/root/lib/include/freetype2 \
         -DICONV_LIBRARY=/root/lib/lib/libiconv.a \
         -DICONV_INCLUDE_DIR=/root/lib/include \
         -DBUILD_STATIC_LIBS=ON \

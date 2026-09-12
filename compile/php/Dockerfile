@@ -2589,6 +2589,7 @@ RUN set -euxo pipefail; \
 	-o /build/output/php.js \
 	-s EXIT_RUNTIME=1 \
 	-Wl,@/root/.wasm-exports \
+	-Wl,--export=__stack_pointer \
 	-Wl,--wrap=usleep \
 	-Wl,--wrap=select \
 	-Wl,--wrap=popen \

@@ -2,6 +2,8 @@
 !compile/
 !compile/php/
 !compile/php/php*.patch
+!patches/
+!patches/**
 !node-builds/
 !node-builds/**
 !web-builds/

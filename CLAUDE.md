@@ -1327,7 +1327,17 @@ unless explicitly revisited:
     - **Queued for later, not done now**: contribute the Zend API migration
       back upstream as a real PR (to `krakjoe/cmark` or the user's own
       `ZmotriN/php-cmark` fork) — flagged explicitly by the user mid-session
-      as a "think about this later" item, not a "do this now" one. Also
+      as a "think about this later" item, not a "do this now" one.
+      **Reconfirmed 2026-09-12, after decision 35's three follow-on cmark
+      bugs were found and fixed (Traversable/abstract ordering on Node and
+      on every subclass, plus the missing `zend_object_properties_size()`/
+      `object_properties_init()` in every `create_object`)**: the user
+      wants to package all four accumulated cmark patches together and
+      publish them as our own maintained fork/release once the current
+      rebuild confirms everything works end-to-end — not just the one
+      Zend API migration patch from this entry, the whole set. Revisit
+      once decision 35's final rebuild is green.
+      Also
       still open: `compile/extensions/*/vendor/`-style dependency
       auto-staging isn't relevant here (yaml/cmark are `mode: static`, no
       `vendorLib` mechanism involved — that machinery is specific to
@@ -1335,6 +1345,191 @@ unless explicitly revisited:
       exercised this new code path end-to-end yet — same "batch with the
       decision 32 `__stack_pointer` fix" reasoning as before, still
       pending.
+
+35. **Real cmark runtime bug found and fixed: `CommonMark\Node` registered
+    `Traversable` in the wrong order relative to becoming abstract
+    (2026-09-12).** Surfaced by the user actually consuming a built
+    `php.wasm` (`kiri phpinfo`), not by a build/link failure: `PHP Fatal
+    error: Class CommonMark\Node must implement interface Traversable as
+    part of either Iterator or IteratorAggregate`. Traced to
+    `Zend/zend_interfaces.c`'s `zend_implement_traversable()`: a class
+    implementing bare `Traversable` (not `Iterator`/`IteratorAggregate`
+    directly) is only exempted from this check if it already carries
+    `ZEND_ACC_EXPLICIT_ABSTRACT_CLASS` **at the exact moment**
+    `zend_class_implements()` registers the interface — confirmed by
+    reading `zend_do_implement_interface()` (`Zend/zend_inheritance.c`):
+    the interface is appended to `ce->interfaces[]` and its
+    "gets_implemented" hook fires immediately, synchronously, not deferred.
+    `krakjoe/cmark`'s `src/node.c` sets that flag in
+    `PHP_RINIT_FUNCTION(CommonMark_Node)` (once per **request**), but calls
+    `zend_class_implements(php_cmark_node_ce, 2, php_cmark_node_visitable_ce,
+    zend_ce_traversable)` back in `PHP_MINIT_FUNCTION` (once per **process**,
+    which always runs first) — so the exemption was always applied one
+    phase too late. Confirmed no other node subtype file (document, heading,
+    list, etc.) has this bug: none of them re-declare Traversable or set
+    the abstract flag themselves, they just inherit Node's already-resolved
+    interfaces. Confirmed the fix doesn't break anything else: `object_init_ex`
+    (used internally to instantiate Document/Heading/etc. objects) never
+    checks the abstract flag — only the `new` opcode does, and cmark never
+    uses it internally — so marking Node abstract earlier doesn't block
+    internal subclass instantiation; `ZEND_ACC_FINAL` deliberately stays in
+    RINIT (moving it to MINIT too would break every subclass's own MINIT,
+    which extends Node via `zend_register_internal_class_ex` and would hit
+    "cannot extend final class"). Fix: new
+    `patches/cmark/php8-node-traversable-abstract-order.patch` (second
+    patch file for cmark, applied by the same existing `git apply --no-index
+    /root/patches-cmark/*.patch` glob in `compile/php/Dockerfile` — no
+    Dockerfile change needed) moves `ZEND_ACC_EXPLICIT_ABSTRACT_CLASS` into
+    MINIT, right after `get_iterator` is set and before
+    `zend_class_implements()`. Verified with `git apply --no-index --check`
+    against a fresh pristine `v1.2.0` `src/node.c` download — applies
+    cleanly. Not yet verified against a real running `php.wasm` (that
+    requires the full rebuild below to finish).
+    - **Also discovered while investigating**: the Docker build cache for
+      this project was completely gone (no `kirigami-php-wasm:*` images at
+      all — only leftovers from an unrelated sibling project,
+      `kirigami-audiowaveform-wasm`), and 3 uncommitted files
+      (`.dockerignore`, `compile/libgd/Dockerfile`,
+      `compile/php/Dockerfile`) were sitting from an apparently-interrupted
+      prior rebuild attempt: `.dockerignore` allowing `patches/` into the
+      Docker build context, a libgd CMake `FREETYPE_*` variable casing fix,
+      and decision 32's `-Wl,--export=__stack_pointer` candidate fix (still
+      missing `--export=__table_base`, also identified as needed back then
+      — left as-is here, not re-investigated this round).
+    - **Real Make bug hit again while relaunching the build**:
+      `compile/base-image/.ready` was a **stale marker** — it still existed
+      on disk (dated *after* the Docker data wipe) even though the actual
+      `kirigami-php-wasm:base` image no longer existed, so `make` considered
+      `base-image` already satisfied and every lib build immediately failed
+      trying to `FROM kirigami-php-wasm:base` (Docker attempted to pull it
+      from Docker Hub instead of building it locally: "pull access denied").
+      This is exactly the failure mode decision 25's own `base-image/.ready`
+      fix was meant to prevent for *normal* rebuilds, but it doesn't protect
+      against the marker surviving an *external* wipe of the Docker image
+      store itself (this repo's files were untouched, only Docker's data
+      was gone) — deleted the stale `.ready` by hand to force `make` to
+      rebuild `base-image` for real. **Not fixed generically**: a future
+      session hitting "pull access denied for kirigami-php-wasm:base" again
+      should suspect this same stale-marker-vs-wiped-Docker-store mismatch
+      first.
+    - **Correction / continuation, same session**: the first rebuild
+      succeeded (base image + all libs + PHP, exit code 0), and a real
+      runtime smoke test (via `@php-wasm/universal`'s `loadPHPRuntime` +
+      `PHP.run`, same technique as decision 30, throwaway script) confirmed
+      `CommonMark\Node` itself no longer crashes MINIT — but immediately
+      surfaced the **exact same bug on every concrete subclass**:
+      `CommonMark\Node\Text` (the first one PHP reaches next). Root cause:
+      `zend_do_inherit_interfaces()` (`Zend/zend_inheritance.c`) calls
+      `do_implement_interface()` — which re-invokes `zend_implement_traversable`
+      — **for every interface a class inherits from its parent, not just
+      ones it declares itself**. Since every concrete node type
+      (`Document`, `Text`, `Heading`, `CodeBlock`, `Link`, ... — confirmed
+      21 registration call sites across 12 files) registers via
+      `zend_register_internal_class_ex(&ce, php_cmark_node_ce)` (or a
+      grandparent like `php_cmark_node_text_ce`), each one re-triggers the
+      same check, and none of them carry the abstract exemption. Ruled out
+      "just implement `zend_ce_iterator` directly instead of bare
+      `Traversable`" as the fix: read `zend_implement_iterator()` in the
+      same file and confirmed it only safely early-returns when a class's
+      `get_iterator` pointer differs from its parent's (true for `Node`
+      itself, which has no parent) — every subclass inherits the *identical*
+      `get_iterator` pointer unchanged, so that function would fall through
+      to dereferencing `funcs_ptr->zf_rewind->common.scope` for a
+      `rewind()` method that doesn't exist anywhere in this codebase (no
+      class defines real `current`/`key`/`next`/`rewind`/`valid` PHP
+      methods — iteration is entirely handled by the custom C
+      `get_iterator` handler) — a near-certain null-pointer dereference/wasm
+      trap. Also ruled out "mark every subclass abstract like Node" as a
+      blanket fix: confirmed (via `grep PHP_METHOD.*__construct`) that
+      **every single concrete node type has a public `__construct`** —
+      `new CommonMark\Node\Text("...")` is a documented, intended way to
+      *build* documents programmatically, not just parse them — so leaving
+      any of them permanently abstract would silently break that.
+    - **Actual fix**: toggle `ZEND_ACC_EXPLICIT_ABSTRACT_CLASS` on and back
+      off around each registration call only — set it on the local `ce`
+      right before `zend_register_internal_class_ex()` (satisfies the
+      check with zero cost, no method-table involvement, same safe path
+      Node already uses), then clear it on the *returned* persistent class
+      entry immediately after, before `PHP_MINIT_FUNCTION` returns and long
+      before any request could try to `new` it. New second patch file,
+      `patches/cmark/php8-subclass-traversable-abstract-order.patch`,
+      applies this 3-line wrap to all 21 call sites across
+      document/quote/list/item/block/paragraph/heading/break/text/code/
+      inline/media `.c` files (mechanical, generated via a small Perl
+      one-liner over freshly-downloaded pristine sources, not hand-typed —
+      see the process note below).
+    - **Process bug caught before it could waste a rebuild**: the first
+      attempt at writing both new patch files used the `Write` tool with
+      manually-composed diff text rather than the file the `diff -ru`
+      command actually produced. Comparing the two byte-for-byte
+      afterward turned up real corruption from the manual transcription —
+      lost leading spaces on blank context lines (unified diff requires
+      every hunk line to start with ' ', '+', or '-'; a bare empty line
+      is technically malformed) *and* actual typos (wrong namespace
+      string for `Emphasis`/`Strong`, a swapped method-table variable name
+      for `OrderedList`, missing `create_object` assignment lines).
+      `git apply --no-index --check` against a fresh pristine tree caught
+      this immediately (clean apply for the first, hand-typed patch by
+      luck/leniency; hard failures for the second). Fixed by copying the
+      raw `diff -ru` output directly into the repo files instead of
+      retyping it, then re-verifying. **Lesson for next time a patch file
+      is authored here**: always generate it with `diff -ru a b` (or `git
+      diff --no-index`) and copy the resulting file byte-for-byte — never
+      hand-compose unified-diff text — and always run `git apply --no-index
+      --check` against a *freshly downloaded* pristine copy (not the
+      working copy used to draft it) before trusting it in a Dockerfile
+      that costs a full rebuild to fail on.
+    - Second full rebuild kicked off in the background with all three
+      cmark patches (`php8-node-traversable-abstract-order.patch`,
+      `php8-object-handlers.patch`,
+      `php8-subclass-traversable-abstract-order.patch`, applied in that
+      alphabetical order by the Dockerfile's existing `*.patch` glob —
+      verified this exact three-patch sequence applies cleanly in one shot
+      against fully pristine sources before spending the rebuild on it).
+      Also still exercises decision 32's `__stack_pointer` export in the
+      same build.
+    - **✅ Second rebuild succeeded, and the originally-reported bug is
+      confirmed fixed.** Re-ran the decision-30-style `@php-wasm/universal`
+      smoke test: `get_loaded_extensions()` lists `cmark` (MINIT completes
+      cleanly for the whole extension, no more `E_CORE_ERROR`), and
+      `\CommonMark\Parse("# Hello\n\nWorld")` (the extension's real
+      top-level parse function — `ZEND_NS_NAMED_FE("CommonMark", Parse, ...)`
+      in `cmark.c`; there is no `Document::parse()` static method, that was
+      a wrong guess in the first test script) successfully parses markdown
+      into a `CommonMark\Node\Document` object tree. The fatal error the
+      user originally hit via `kiri phpinfo` is gone.
+    - **❌ New, separate, unresolved bug found while smoke-testing further**:
+      PHP crashes with a hard, uncatchable WASM trap
+      (`RuntimeError: memory access out of bounds` in
+      `zend_object_dtor_property` / `zend_object_std_dtor`, from Node's own
+      JS stack trace, not a catchable PHP exception) during **request
+      shutdown**, specifically when destroying **any** cmark `Node`-derived
+      object — reproduced with nothing but a bare
+      `new CommonMark\Node\Document()` and no parsing at all, so it is
+      unrelated to tree size/complexity. This means cmark objects can be
+      created and used within a request today, but the runtime currently
+      crashes when PHP tries to garbage-collect/destroy them at request
+      end. Likely area (not yet confirmed): `php_cmark_node_t`'s custom
+      object layout (`php_cmark_node_handlers.offset =
+      XtOffsetOf(php_cmark_node_t, std)`, a non-standard "zend_object
+      embedded mid-struct" layout) vs. how `zend_object_properties_size(ce)`
+      /`ecalloc` sizing interacts with `zend_declare_property_null`'s
+      9 declared properties (parent/previous/next/firstChild/lastChild/
+      startLine/endLine/startColumn/endColumn) during
+      `zend_object_std_dtor`'s properties-table walk — but this is a
+      hypothesis, not yet diagnosed the way the Traversable bug was (no
+      confirmed root cause in the actual C source yet). **Deliberately not
+      chased further this session** (token/time budget) — the object
+      handlers migration patch (`php8-object-handlers.patch`) is the most
+      likely place to have introduced or exposed this, but `free_obj`
+      itself was never in scope for that patch (its signature is unchanged
+      between PHP 7.4 and 8), so this could equally be a pre-existing
+      upstream bug that simply never had a chance to surface before (the
+      Traversable fatal crashed MINIT before any object was ever created).
+      Next session: reproduce with a debug PHP build
+      (`WITH_DEBUG=yes`/sourcemaps) for a real stack trace into the C
+      source rather than a bare WASM function-index trace, before guessing
+      at a fix.
 
 ## Current status
 

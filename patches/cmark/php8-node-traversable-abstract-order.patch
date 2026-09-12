@@ -1,0 +1,34 @@
+diff -ru a/src/node.c b/src/node.c
+--- a/src/node.c	2026-09-12 10:11:15.198159700 -0400
++++ b/src/node.c	2026-09-12 10:11:34.907994200 -0400
+@@ -404,6 +404,21 @@
+ 	php_cmark_node_ce->create_object = php_cmark_node_create;
+ 	php_cmark_node_ce->get_iterator = php_cmark_iterator_create;
+ 
++	/* kirigami/php-wasm-compiler (CLAUDE.md decision 35): must be set
++	 * before zend_class_implements() below adds Traversable directly
++	 * (without Iterator/IteratorAggregate) -- zend_implement_traversable()
++	 * only allows that combination when the class is already flagged
++	 * ZEND_ACC_EXPLICIT_ABSTRACT_CLASS at the moment the interface is
++	 * registered, else it errors: "must implement interface Traversable
++	 * as part of either Iterator or IteratorAggregate". Upstream (2019)
++	 * set this flag only in PHP_RINIT_FUNCTION below (once per request) --
++	 * too late, since MINIT (module init, once per process) already ran
++	 * zend_class_implements() by then. ZEND_ACC_FINAL stays in RINIT:
++	 * unlike ABSTRACT it is not checked by this hook, and setting it here
++	 * would break every Node subclass (Document, Heading, ...) that
++	 * extends Node in its own MINIT run right after this one. */
++	php_cmark_node_ce->ce_flags |= ZEND_ACC_EXPLICIT_ABSTRACT_CLASS;
++
+ #define php_cmark_node_property(n) \
+ 	zend_declare_property_null(php_cmark_node_ce, ZEND_STRL(n), ZEND_ACC_PUBLIC)
+ 
+@@ -439,7 +454,7 @@
+ 
+ PHP_RINIT_FUNCTION(CommonMark_Node)
+ {
+-	php_cmark_node_ce->ce_flags |= ZEND_ACC_FINAL|ZEND_ACC_EXPLICIT_ABSTRACT_CLASS;
++	php_cmark_node_ce->ce_flags |= ZEND_ACC_FINAL;
+ 
+ 	return SUCCESS;
+ }
