@@ -52,7 +52,7 @@ extensions:
   # cmark moved to mode: shared below (CLAUDE.md decision 36) — the core
   # build ships its own Kirigami markdown extension instead; cmark (now
   # fully fixed and verified, decision 35) stays available as an optional
-  # @kirigami/ext-cmark install for anyone who wants full CommonMark.
+  # @kirigami/phpext-cmark install for anyone who wants full CommonMark.
   # mdhtml (php-kirigami/php-mdhtml) is that core extension — CommonMark+GFM
   # via cmark-gfm (CLAUDE.md decision 37).
   mdhtml: { mode: static }
@@ -118,8 +118,9 @@ extensions:
   # rebuilding php.wasm (CLAUDE.md decisions 5, 30, 31). Each entry needs a
   # `source`: a path (relative to the repo root) to the extension's own
   # config.m4 + sources. Set `internal: true` for fixtures that should never
-  # be assembled into a publishable @kirigami/ext-<name> package (output
-  # stays under node-builds/, not packages/). ---
+  # be assembled into a publishable @kirigami/phpext-<name> package (output
+  # stays under node-builds/, not packages/). See CLAUDE.md decision 38 for
+  # the packages/ npm-workspaces monorepo this now feeds. ---
   kirigami_abi_probe:
     mode: shared
     source: compile/extensions/abi-probe

@@ -1,0 +1,13 @@
+{
+	"name": "php-wasm-compiler",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"compile": "node compile/cli.mjs",
+		"release": "node scripts/publish.js",
+		"release:dry": "node scripts/publish.js --dry-run"
+	}
+}

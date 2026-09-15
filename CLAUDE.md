@@ -1618,6 +1618,171 @@ unless explicitly revisited:
       this file / wherever it ends up) so this is easy to pick back up
       when `kirigami/kirigami` actually wants to consume it.
 
+36. **`ext/cmark` abandoned as the core, `mode: static` markdown extension —
+    despite being fully fixed and verified end-to-end by decision 35 — in
+    favor of a new, Kirigami-owned extension (2026-09-12).** *(Backfilled
+    from `matrix.json`'s own `extensions.cmark` "ABANDONED" note and
+    `config.yaml`'s comments — this decision and decision 37 happened in a
+    session whose narrative notes weren't carried into this file at the
+    time; reconstructed from repo state rather than a full blow-by-blow.)*
+    `config.yaml`'s `cmark` entry moved from `mode: static` to `mode:
+    shared` (`source: compile/extensions/cmark`, `vendorLib: libcmark`) —
+    still available as an optional install, just no longer baked into every
+    core build. `matrix.json`'s note preserves the full five-patch fix
+    write-up so it isn't lost if cmark is ever reconsidered.
+37. **`mdhtml` (new `php-kirigami/php-mdhtml` repo) added as the core,
+    `mode: static` markdown extension replacing cmark (2026-09-12).**
+    *(Backfilled, see decision 36's note.)* A Kirigami-owned CommonMark+GFM
+    extension built on `cmark-gfm` (`compile/libcmark-gfm/Dockerfile`,
+    `matrix.json`'s `libraries.libcmark-gfm` — `github/cmark-gfm` release
+    `0.29.0.gfm.13`) rather than plain `cmark` — GFM (tables, strikethrough,
+    autolinks, task lists) plus GitHub-flavored rendering, output as an HTML
+    string rather than a traversable object tree (no Zend object-layout
+    complexity to migrate, unlike cmark — see decision 35). `matrix.json`'s
+    `extensions.mdhtml` entry: `repo: php-kirigami/php-mdhtml`, pinned
+    `v0.1.0`. Wired into `compile/php/Dockerfile` (`WITH_MDHTML` flag,
+    `--with-mdhtml=/root/lib`, links `libcmark-gfm.a` +
+    `libcmark-gfm-extensions.a`) the same way cmark was. `config.yaml`'s
+    `mdhtml: { mode: static }` sits in the core's PECL-sourced group
+    alongside `yaml`.
+
+38. **This repo becomes an npm-workspaces monorepo for `@kirigami/phpext-*`
+    packages — one real published npm package per `mode: shared` extension
+    (2026-09-15).** Renamed the naming convention decisions 5/27/31
+    established (`@kirigami/ext-<name>`) to **`@kirigami/phpext-<name>`**
+    — extensions only (the core `mode: static` build stays a separate
+    package, `@kirigami/php-wasm`, assembled and published from the
+    `kirigami` repo per decision 15 — explicitly out of scope here, per the
+    user).
+    - **npm workspaces, not pnpm** — a correction to decision 2's claim
+      that the Kirigami ecosystem is "already Node/pnpm": checked the
+      sibling `kirigami` repo directly and found it actually uses plain npm
+      workspaces (`package.json`'s `"workspaces": ["packages/*"]`,
+      `package-lock.json`, no `pnpm-workspace.yaml`) plus a hand-rolled
+      `scripts/publish.js` — no Changesets either. Matched that exact
+      pattern here for consistency rather than introducing a different tool
+      the rest of the ecosystem doesn't use. New root `package.json`
+      (`private: true`, `workspaces: ["packages/*"]`, `scripts.release` /
+      `release:dry`).
+    - **`scripts/publish.js`** — adapted directly from
+      `../kirigami/scripts/publish.js`: same `alreadyPublished()` idiom
+      (skip a package whose exact `name@version` is already on the npm
+      registry — this is the actual "don't publish packages for nothing"
+      mechanism, not a git-diff heuristic), same pack-then-`npm
+      publish`-a-tarball flow, same interactive confirm/`--dry-run`/`--otp`
+      flags. Dropped: the jsDelivr schema-purge step (phpext packages ship
+      no JSON schemas) and the dependency-order topological sort (phpext
+      packages don't depend on each other). Added: a build phase up front
+      (`node compile/cli.mjs compile-extension`, `--skip-build` to opt out)
+      — kirigami's own script builds nothing itself, so this is a real
+      difference to accommodate that these packages are always freshly
+      compiled, not hand-written.
+    - **Version bumps are automatic and hash-driven, not manual** — the
+      other half of "don't publish for nothing." `compile/cli.mjs`'s new
+      `computeBuildHash()` hashes a package's actual compiled output
+      (`manifest.json` + every `*.so`, sorted, name+bytes); `.buildhash`
+      (committed, next to `package.json`) records the hash from the last
+      time the version was bumped. `syncExtensionPackage()` (replacing the
+      old hardcoded `EXTENSION_PACKAGE_VERSION = '0.1.0'` placeholder from
+      decision 27) bumps the patch version only when a fresh build's hash
+      differs from `.buildhash` — an unchanged rebuild leaves the version
+      (and `.buildhash`) untouched, so `scripts/publish.js`'s registry
+      check then correctly skips it. Verified with a standalone, no-Docker
+      reproduction of the exact algorithm against a copy of the real
+      sodium build output: unchanged rebuild → version held (`0.1.0` →
+      `0.1.0`), changed rebuild → bumped (`0.1.0` → `0.1.1`) — see the
+      scratchpad test run this session (not committed, `compile/cli.mjs`'s
+      real functions were copied verbatim for the test, then verified
+      identical to what actually landed in the file).
+    - **`packages/*/package.json` and `.buildhash` are now committed**, a
+      reversal of decision 31's "nothing here is hand-edited, don't commit
+      any of it" — `.gitignore` narrowed from a blanket `/packages/` ignore
+      to just `packages/*/manifest.json` and `packages/*/*.so` (the actual
+      compiled artifacts, still fully regenerated every build). The
+      distinction: `package.json`/`.buildhash` are mechanically
+      maintained, not hand-edited, but they ARE the real record of what
+      version was last published — exactly the kind of thing that belongs
+      in git (same category as a lockfile), unlike the multi-hundred-KB
+      `.so` binaries themselves.
+    - **`extensionPackageJson()` fleshed out** to match the field shape
+      every other `@kirigami/*` package.json in the `kirigami` repo uses
+      (`keywords`, `homepage`, `bugs.url`, `publishConfig.access: public`,
+      `author`) — previously a minimal `name`/`version`/`description`/
+      `license`/`repository`/`files` only.
+    - **`packages/phpext-sodium/README.md` and `packages/phpext-cmark/
+      README.md`** (new, committed) — written on the exact template
+      `../kirigami/packages/audiowaveform-wasm/README.md` uses (centered
+      header with the Kirigami logo, tagline, npm/license/node/website
+      badges, `---` rules, Table of contents, closing License/Author),
+      scaled to these packages' size. Each documents its own pinned
+      versions concretely (sodium: `ext/sodium` from the `PHP-8.5.10` tag +
+      vendored `libsodium 1.0.22`; cmark: `krakjoe/cmark v1.2.0` +
+      vendored `commonmark/cmark 0.31.2`, plus a table of all 5 patches)
+      rather than describing the mechanism only in the abstract.
+    - **`kirigami` package.json section added** (same day, follow-up):
+      every `@kirigami/plugin-<name>` package.json in the `kirigami` repo
+      already carries a `kirigami: { type: "plugin", minVersion, ... }`
+      metadata block (e.g. `packages/plugin-embed/package.json`) — extended
+      that same convention to `phpext-<name>` packages with `type:
+      "extension"` (CLAUDE.md decision 5's own term for this plugin kind).
+      New `buildKirigamiExtensionMetadata()` in `cli.mjs` fills it with:
+      `phpVersions` (the major.minor list this build ships, straight from
+      `config.php.versions`), `minVersion` (the oldest full PHP patch
+      version among them, e.g. `"8.5.10"`, resolved via
+      `supported-php-versions.mjs` — deliberately *not* a
+      `@kirigami/php-wasm` semver, since this repo has no visibility into
+      that package's own version number; the user chose "the PHP version
+      actually compiled against" as the honest thing to record instead),
+      `vendorLib: { name, version }` when the extension vendors one
+      (matrix.json-resolved, via the existing `getMatrixVersion()`),
+      and `buildHash` (the same hash `.buildhash` tracks, mirrored into
+      package.json so a consumer/scanner can read it without a second
+      file). Verified with the same no-Docker scratchpad technique as the
+      version-bump logic above, this time also importing the real
+      `matrix-version.mjs`/`supported-php-versions.mjs` (not fabricated
+      data) — produced `minVersion: "8.5.10"`,
+      `vendorLib: { name: "libsodium", version: "1.0.22" }` correctly.
+      **Real bug caught by this same syntax-check step**: a docstring
+      describing the plugin-package convention originally read
+      `packages/plugin-*/package.json` — the literal `*/` substring closed
+      the enclosing `/** */` JSDoc comment early (same failure shape as
+      decision 35's em-dash-inside-a-comment lesson, different character),
+      turning the rest of the comment into invalid code. Caught by
+      `node --check` before it ever reached a real build; reworded to name
+      one concrete example package instead of a glob pattern.
+    - **Not done this session** (no Docker build was run — a build for a
+      different project was already in progress on this machine, so
+      nothing here was compiled): the actual `packages/phpext-sodium/` and
+      `packages/phpext-cmark/` directories exist right now with only their
+      `README.md` — `package.json`, `.buildhash`, `manifest.json`, and the
+      `.so` files are only created by the next real (Docker-backed) `node
+      compile/cli.mjs compile-extension` run. The stale, pre-existing
+      `packages/ext-sodium/` (old naming, from decision 32's pilot, always
+      untracked) was deleted rather than renamed, since it's fully
+      regenerated anyway.
+39. **Decision 5's open question — which layer owns `@kirigami/phpext-*`
+    auto-detection — resolved: `@kirigami/php-wasm` itself, not the
+    `kirigami` framework (2026-09-15).** Stated directly by the user: install
+    `@kirigami/phpext-sodium`, and `@kirigami/php-wasm` "devra scanner parmi
+    les dépendances s'il y a des packages d'extension" at startup and load
+    them automatically — no manual wiring by the app author, no involvement
+    from the `kirigami` framework layer at all. Concretely, this needs (in
+    the `kirigami` repo, **not** this one — out of scope for this session):
+    a startup scan of the consuming app's `node_modules` for installed
+    `@kirigami/phpext-*` packages, then feeding each one's `manifest.json`
+    into `@php-wasm/universal`'s `resolvePHPExtension()` /
+    `{ format: 'manifest' }` loading path (already proven to work,
+    decision 30). The user's own framing — "exposer le fichier .so et la
+    config de base .ini" — already exists today without new work: a
+    shared extension's `manifest.json` (decision 5) already carries the
+    ini/env directives such a scanner needs; no separate raw `.ini` file is
+    shipped or required. This repo's job is only to guarantee the contract
+    a scanner would rely on — package name pattern `@kirigami/phpext-*`,
+    `manifest.json` + `*.so` always sitting at the installed package's
+    root — which decision 38's rename/workspace already satisfies. Actually
+    implementing the scan-and-load logic itself is `@kirigami/php-wasm`'s
+    own follow-up work in the `kirigami` repo, not tracked further here.
+
 ## Current status
 
 **Extraction done (2026-09-11).** Copied from `php-wasm-builder` into this
@@ -1746,10 +1911,15 @@ entry points).
   what's already in `config.yaml`.
 - `mode: shared` (separately loadable extension) — **implemented and
   end-to-end verified as of decisions 30-31** (`cli.mjs compile-extension`,
-  `@kirigami/ext-<name>` package assembly). Still missing: the real
-  `sodium`/libsodium pilot, `@kirigami/ext-<name>` version numbering
-  (decision 27), and the Kirigami-side auto-detection/auto-load layer
-  (decision 5's still-open "which layer owns this" question).
+  `@kirigami/phpext-<name>` package assembly, decision 38's npm-workspaces
+  monorepo + hash-driven version bumps). `sodium` and `cmark` are both real,
+  working pilots (decisions 32, 35). Still missing: actually running a
+  build to populate `packages/phpext-sodium/`/`packages/phpext-cmark/`
+  with real `package.json`/`manifest.json`/`*.so` (deferred this session,
+  no Docker build run — see decision 38), and the `@kirigami/php-wasm`-side
+  auto-detection/auto-load scan itself (decision 39 resolved *who* owns it
+  — `@kirigami/php-wasm`, not the `kirigami` framework — but the scan code
+  lives in the `kirigami` repo, not started).
 - `libssh2` — **done** (decision 24): vendored, cross-compiled, wired into
   `libcurl` for SFTP/SCP.
 - No npm package assembled yet for the **core** `mode: static` build from

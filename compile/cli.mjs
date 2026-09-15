@@ -9,10 +9,12 @@ import {
 	existsSync,
 	rmSync,
 	cpSync,
+	readdirSync,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import prompts from 'prompts';
@@ -22,6 +24,7 @@ import { hideBin } from 'yargs/helpers';
 import { updatePHPVersions } from './update-php-versions.mjs';
 import { updateLibVersions } from './update-lib-versions.mjs';
 import { getMatrixVersion, getMatrixExtensionVersion } from './matrix-version.mjs';
+import { phpVersions as SUPPORTED_PHP_VERSIONS } from '../supported-php-versions.mjs';
 
 const sourceDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(sourceDir, '..');
@@ -458,30 +461,153 @@ async function runUpdateVersionsCommand(argv) {
 	await updateLibVersions({ write: argv.write });
 }
 
-// Placeholder until CLAUDE.md decision 27's "what changed in the chain"
-// versioning scheme for @kirigami/ext-<name> packages is designed.
-const EXTENSION_PACKAGE_VERSION = '0.1.0';
-
 /**
  * A real (non-internal) shared extension's compiled output — manifest.json +
- * one .so per PHP version — is already everything an @kirigami/ext-<name>
+ * one .so per PHP version — is already everything an @kirigami/phpext-<name>
  * npm package needs to ship (CLAUDE.md decision 31): no extra JS glue, the
  * consumer loads it straight via @php-wasm/universal's
  * `{ format: 'manifest', manifestUrl: ... }`. This just adds the package.json
  * that output directory needs to actually be `npm publish`-able.
+ *
+ * Package name/output-dir convention: `@kirigami/phpext-<name>` (CLAUDE.md
+ * decision 38) — the pattern a future `@kirigami/php-wasm` dependency scanner
+ * (kirigami repo, not this one) globs for to auto-load installed extensions,
+ * per the user's 2026-09-15 direction. manifest.json already carries the
+ * ini/env directives that scanner needs (CLAUDE.md decision 5/30) — no
+ * separate .ini file is shipped.
+ *
+ * `kirigami` field: same `type`-discriminated metadata section every
+ * @kirigami/plugin-<name> package.json already carries (see the "kirigami"
+ * key in ../kirigami/packages/plugin-embed/package.json, `type: "plugin"`)
+ * — `type: "extension"` here, per CLAUDE.md decision 5's own terminology.
  */
-function extensionPackageJson(name) {
+function extensionPackageJson(name, version, kirigami) {
 	return {
-		name: `@kirigami/ext-${name}`,
-		version: EXTENSION_PACKAGE_VERSION,
+		name: `@kirigami/phpext-${name}`,
+		version,
 		description: `Kirigami PHP.wasm shared extension: ${name} (JSPI side module, see @kirigami/php-wasm)`,
-		license: 'GPL-2.0-or-later',
+		keywords: ['php-wasm', 'php', 'wasm', 'webassembly', 'kirigami', name],
+		homepage: 'https://php-kirigami.github.io',
+		bugs: { url: 'https://github.com/php-kirigami/php-wasm-compiler/issues' },
 		repository: {
 			type: 'git',
-			url: 'https://github.com/php-kirigami/php-wasm-compiler',
+			url: 'git+https://github.com/php-kirigami/php-wasm-compiler.git',
 		},
-		files: ['manifest.json', '*.so'],
+		publishConfig: { access: 'public' },
+		license: 'GPL-2.0-or-later',
+		author: 'Maxime Larrivée-Roy',
+		files: ['manifest.json', '*.so', 'README.md'],
+		kirigami,
 	};
+}
+
+/**
+ * Hash of the actual compiled output (manifest.json + every *.so, name and
+ * bytes) — used to decide whether a rebuild actually changed anything worth
+ * publishing (CLAUDE.md decision 38's answer to "don't publish packages for
+ * nothing"). Deterministic: file names are sorted before hashing.
+ */
+function computeBuildHash(outDir) {
+	const files = readdirSync(outDir)
+		.filter((f) => f === 'manifest.json' || f.endsWith('.so'))
+		.sort();
+	const hash = createHash('sha256');
+	for (const file of files) {
+		hash.update(file);
+		hash.update(readFileSync(path.join(outDir, file)));
+	}
+	return hash.digest('hex');
+}
+
+function bumpPatchVersion(version) {
+	const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+	if (!match) return '0.1.0';
+	const [, major, minor, patch] = match;
+	return `${major}.${minor}.${Number(patch) + 1}`;
+}
+
+function compareSemver(a, b) {
+	const pa = a.split('.').map(Number);
+	const pb = b.split('.').map(Number);
+	for (let i = 0; i < 3; i++) {
+		if (pa[i] !== pb[i]) return pa[i] - pb[i];
+	}
+	return 0;
+}
+
+/**
+ * The full PHP patch version (e.g. "8.5.10") each major.minor entry in
+ * config.yaml's php.versions resolves to, per supported-php-versions.mjs —
+ * the same source build.js itself uses to pick which PHP tag to download.
+ */
+function resolvePhpFullVersions(phpVersionList) {
+	return phpVersionList.map((version) => {
+		const entry = SUPPORTED_PHP_VERSIONS.find((p) => p.version === version);
+		if (!entry) {
+			throw new Error(`supported-php-versions.mjs has no entry for PHP ${version}.`);
+		}
+		return entry.lastRelease;
+	});
+}
+
+/**
+ * Builds the `kirigami` package.json section for a shared extension
+ * (CLAUDE.md decision 38's follow-up, 2026-09-15): `phpVersions` (major.minor
+ * list this build ships), `minVersion` (the oldest full PHP patch version
+ * among them — not a @kirigami/php-wasm semver, which this repo has no
+ * visibility into; the PHP version actually compiled/tested against is the
+ * honest thing to record), the vendored third-party library + its
+ * matrix.json-pinned version when the extension has one, and the same
+ * build-output hash `.buildhash` tracks (exposed here too so a consumer can
+ * read it straight off package.json without a second file).
+ */
+function buildKirigamiExtensionMetadata(ext, phpVersionList, buildHash) {
+	const fullVersions = resolvePhpFullVersions(phpVersionList);
+	const minVersion = fullVersions.reduce((min, v) => (compareSemver(v, min) < 0 ? v : min));
+
+	const kirigami = {
+		type: 'extension',
+		phpVersions: phpVersionList,
+		minVersion,
+	};
+	if (ext.vendorLib) {
+		kirigami.vendorLib = { name: ext.vendorLib, version: getMatrixVersion(ext.vendorLib) };
+	}
+	kirigami.buildHash = buildHash;
+	return kirigami;
+}
+
+/**
+ * Writes/updates a shared extension's package.json, bumping its patch
+ * version only when the freshly compiled output's hash differs from the one
+ * recorded in `.buildhash` at the last write — i.e. only when there is
+ * actually something new to publish. Both files are committed (mechanically
+ * maintained, not hand-edited — see .gitignore and CLAUDE.md decision 38).
+ */
+function syncExtensionPackage(outDir, ext, phpVersionList) {
+	const packageJsonPath = path.join(outDir, 'package.json');
+	const buildHashPath = path.join(outDir, '.buildhash');
+
+	const newHash = computeBuildHash(outDir);
+	const previousHash = existsSync(buildHashPath)
+		? readFileSync(buildHashPath, 'utf8').trim()
+		: null;
+	const previousVersion = existsSync(packageJsonPath)
+		? JSON.parse(readFileSync(packageJsonPath, 'utf8')).version
+		: '0.1.0';
+
+	const changed = newHash !== previousHash;
+	const version = changed && previousHash !== null ? bumpPatchVersion(previousVersion) : previousVersion;
+	const kirigami = buildKirigamiExtensionMetadata(ext, phpVersionList, newHash);
+
+	writeFileSync(
+		packageJsonPath,
+		JSON.stringify(extensionPackageJson(ext.name, version, kirigami), null, '\t') + '\n',
+		'utf8'
+	);
+	writeFileSync(buildHashPath, newHash + '\n', 'utf8');
+
+	return { version, changed };
 }
 
 function resolveCompileExtensionBin() {
@@ -548,7 +674,8 @@ async function runCompileExtensionCommand(argv) {
 		return;
 	}
 
-	const phpVersions = (config.php?.versions ?? []).join(',');
+	const phpVersionList = config.php?.versions ?? [];
+	const phpVersions = phpVersionList.join(',');
 	if (!phpVersions) {
 		throw new Error('config.yaml: php.versions is empty.');
 	}
@@ -561,12 +688,12 @@ async function runCompileExtensionCommand(argv) {
 	for (const ext of selected) {
 		const extSourceDir = path.resolve(repoRoot, ext.source);
 		const isInternal = Boolean(ext.internal);
-		// A real extension's output dir IS its future @kirigami/ext-<name>
+		// A real extension's output dir IS its future @kirigami/phpext-<name>
 		// package content — an internal fixture's output is just a throwaway
 		// test artifact, so it stays under node-builds/ instead of packages/.
 		const outDir = isInternal
 			? path.join(repoRoot, config.output?.dir ?? 'node-builds', 'extensions', ext.name)
-			: path.join(repoRoot, 'packages', `ext-${ext.name}`);
+			: path.join(repoRoot, 'packages', `phpext-${ext.name}`);
 
 		let extraCflags = ext.extraCflags ?? '';
 		let extraLdflags = ext.extraLdflags ?? '';
@@ -620,13 +747,12 @@ async function runCompileExtensionCommand(argv) {
 		await runCommand(compileExtensionBin, args);
 
 		if (!isInternal) {
-			const packageJsonPath = path.join(outDir, 'package.json');
-			writeFileSync(
-				packageJsonPath,
-				JSON.stringify(extensionPackageJson(ext.name), null, '\t') + '\n',
-				'utf8'
+			const { version, changed } = syncExtensionPackage(outDir, ext, phpVersionList);
+			console.log(
+				changed
+					? `@kirigami/phpext-${ext.name}@${version}: output changed, version bumped`
+					: `@kirigami/phpext-${ext.name}@${version}: output unchanged, version kept`
 			);
-			console.log(`Wrote ${packageJsonPath}`);
 		}
 	}
 }
