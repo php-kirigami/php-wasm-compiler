@@ -100,6 +100,41 @@ function checkPosixTools() {
 	}
 }
 
+const BASE_IMAGE_TAG = 'kirigami-php-wasm:base';
+
+/**
+ * `compile/Makefile`'s `base-image` target is keyed on base-image/.ready's
+ * mtime (see CLAUDE.md decision 25's caching fix), not on whether the
+ * Docker image it built actually still exists — a marker that survives an
+ * external reset of Docker's own image store (`docker system prune`, a
+ * WSL2 `.vhdx` wipe, a fresh Docker Desktop install) makes `make` think
+ * base-image is already satisfied, and every subsequent lib build then
+ * fails with "pull access denied" trying to pull it from a registry
+ * instead of building it locally (CLAUDE.md decision 35 hit this exact
+ * failure once already). Detect the mismatch here and delete the stale
+ * marker so `make base-image` rebuilds it for real on the next run.
+ */
+function checkBaseImage() {
+	const readyPath = path.join(repoRoot, 'compile', 'base-image', '.ready');
+	if (!existsSync(readyPath)) {
+		return;
+	}
+	let imageExists = true;
+	try {
+		execFileSync('docker', ['image', 'inspect', BASE_IMAGE_TAG], { stdio: 'pipe' });
+	} catch {
+		imageExists = false;
+	}
+	if (!imageExists) {
+		console.log(
+			`${BASE_IMAGE_TAG} not found in Docker despite compile/base-image/.ready ` +
+				'existing — removing the stale marker so `make` rebuilds the base ' +
+				'image for real instead of trying to pull it.'
+		);
+		rmSync(readyPath);
+	}
+}
+
 /**
  * Windows-only: this project keeps local dev environments close to the
  * Linux CI runners it will eventually build on (see CLAUDE.md, decision 8),
@@ -377,6 +412,7 @@ async function runBuildCommand(argv) {
 	checkMake();
 	checkPosixTools();
 	checkWindowsWslStack();
+	checkBaseImage();
 
 	const config = loadConfig(argv.config);
 
@@ -730,9 +766,17 @@ async function interactiveReview(config) {
 	}
 	config.extensions ??= {};
 	for (const name of Object.keys(IMPLEMENTED_EXTENSIONS)) {
-		config.extensions[name] = {
-			mode: extAnswer.enabled.includes(name) ? 'static' : 'off',
-		};
+		if (extAnswer.enabled.includes(name)) {
+			config.extensions[name] = { mode: 'static' };
+		} else if ((config.extensions[name]?.mode ?? 'off') !== 'shared') {
+			// Extensions that also have a static Dockerfile flag (e.g. cmark)
+			// but are currently configured as mode: shared were never a
+			// selectable choice here (see the `selected` check above, which
+			// only lights up on mode: static) — leave their shared config
+			// (source/vendorLib/configArgs) untouched instead of clobbering
+			// it to `{ mode: 'off' }`.
+			config.extensions[name] = { mode: 'off' };
+		}
 	}
 
 	const confirmAnswer = await prompts({
