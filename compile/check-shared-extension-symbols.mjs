@@ -85,10 +85,20 @@ async function main() {
 	}
 	console.log(`Checking extensions: ${extPackages.join(', ')}`);
 
+	// Dedupe by extension `name`: more than one package can bundle the same
+	// dependency (e.g. both phpext-mysqli and phpext-pdo_mysql bundle their
+	// own copy of mysqlnd) -- a real scanner must load each named extension
+	// only once, or the runtime logs a harmless but noisy "Module 'X' is
+	// already loaded" warning on the second attempt.
 	const entries = [];
+	const seenNames = new Set();
 	for (const pkgName of extPackages) {
 		const mod = await import(pathToFileURL(path.join(repoRoot, 'packages', pkgName, 'index.js')).href);
-		entries.push(...mod.default(phpVersion));
+		for (const entry of mod.default(phpVersion)) {
+			if (seenNames.has(entry.name)) continue;
+			seenNames.add(entry.name);
+			entries.push(entry);
+		}
 	}
 
 	const patchedPath = writePatchedCopy(jsPath);

@@ -2850,6 +2850,77 @@ unless explicitly revisited:
       and 45 already established, now also proving the dependency-free
       `register()` contract works in practice, not just in theory.
 
+47. **`pdo_mysql` added as a second `mode: shared` extension bundling the
+    same internal `mysqlnd` — the user's follow-up direction to keep going
+    on `mode: shared` extensions that ship with php-src itself (2026-09-16).
+    Built and runtime-verified on the first real attempt** (after one
+    codegen-only fix found before wasting a build on it).
+    - `compile/extensions/pdo_mysql/`: vendored complete from the
+      `PHP-8.5.10` tag (`gh api .../contents/ext/pdo_mysql`, decision 40's
+      "always get the real file list" lesson) — `CREDITS`, `config.w32`,
+      `tests/` excluded, same convention as `mysqli`.
+    - **Real, concretely-confirmed autoconf gotcha, fixed before building**:
+      `config.m4` declares itself via `PHP_ARG_WITH([pdo-mysql], ...)`
+      (no default -> "no"), not `PHP_ARG_ENABLE` — but `@php-wasm/compile-
+      extension`'s `build-in-docker.sh` always passes a hardcoded
+      `--enable-${EXTENSION_NAME}`, which autoconf silently ignores for a
+      `WITH`-style flag. Without `configArgs: '--with-pdo-mysql=mysqlnd'`
+      in `config.yaml`, the extension would have built a `.so` that never
+      actually compiled PDO_MYSQL in. Caught by reading the real
+      `config.m4` before the first build attempt, not discovered by a
+      failed build.
+    - **Same `mysqlnd` dependency shape as `mysqli`** (decision 42):
+      `PHP_ADD_EXTENSION_DEP(pdo_mysql, mysqlnd)`, `php_pdo_mysql_int.h`
+      `#include`s `ext/mysqlnd/mysqlnd_debug.h` directly — headers staged
+      the same way (`cp compile/extensions/mysqli/ext/mysqlnd/*.h
+      compile/extensions/pdo_mysql/ext/mysqlnd/`), `bundleExtensions:
+      [mysqlnd]` reuses the same internal package (no second mysqlnd
+      built/published). Also declares `PHP_ADD_EXTENSION_DEP(pdo_mysql,
+      pdo)` — needs **no** staging at all: `pdo`'s own `config.m4` defaults
+      to enabled and compile-extension's `Dockerfile.ext` never disables
+      it, so its headers land under `/usr/local/include/php/ext/pdo/`
+      automatically during the compile-extension build's own base-image
+      setup, and `pdo` itself is already `mode: static` in this repo's
+      core (no runtime bundling needed, only the compile-time headers).
+    - **Real build failure, fixed before it cost a second wasted rebuild**:
+      first attempt failed with `make: *** [.../mysql_sql_parser.c] Error
+      127` / `-o: command not found`. Root cause: `mysql_sql_parser.re`
+      needs `re2c` to generate `mysql_sql_parser.c`, and `config.m4`'s
+      `PHP_ADD_MAKEFILE_FRAGMENT` does pull in the vendored `Makefile.frag`
+      with the right `%.c: %.re` rule — but a plain `phpize`-based
+      standalone build (what compile-extension runs) never sets the
+      `$(RE2C)` make variable at all (that detection only happens in a
+      full `buildconf` of the whole php-src tree), so the rule's command
+      expanded to a bare ` -o mysql_sql_parser.c mysql_sql_parser.re` with
+      no program name. This is exactly why official PHP release tarballs
+      ship this extension with `mysql_sql_parser.c` pre-generated — fixed
+      the same way: generated it once via `docker run --rm -v
+      <dir>:/src -w /src kirigami-compile-extension:base re2c -o
+      mysql_sql_parser.c mysql_sql_parser.re` (re2c already installed in
+      the base image, decision 46) and committed the output alongside the
+      `.re` source, documented in `compile/extensions/pdo_mysql/
+      PROVENANCE.md`.
+    - **✅ Runtime-verified on the very next attempt** (no further
+      surprises): `compile/check-shared-extension-symbols.mjs` found zero
+      missing ABI exports, and the hand-rolled-loader test confirmed
+      `PDO::getAvailableDrivers()` lists `mysql` after loading `mysqlnd.so`
+      then `pdo_mysql.so` — proof the driver actually registers with the
+      static-core `PDO` class, not just that the `.so` loads.
+    - **Real, useful gap found and fixed in the tooling itself while
+      testing this**: with two packages (`phpext-mysqli` and
+      `phpext-pdo_mysql`) each bundling their own copy of `mysqlnd`, both
+      `check-shared-extension-symbols.mjs` and the hand-rolled-loader test
+      script would try to load `mysqlnd.so` twice (once per package),
+      producing a harmless-but-noisy `PHP Warning: Module "mysqlnd" is
+      already loaded`. Both scripts fixed to dedupe `register()` entries by
+      `name`, keeping only the first occurrence — a real design note for
+      `@kirigami/php-wasm`'s own future scanner too (decision 39): it must
+      dedupe by extension name across every installed `@kirigami/phpext-*`
+      package, not assume each one's bundle is independent.
+    - Config.yaml's old `pdo_mysql: { mode: 'off' }` entry (in the
+      "targeted, not wired yet" list) removed — replaced by the real
+      `mode: shared` entry.
+
 ## Current status
 
 **Extraction done (2026-09-11).** Copied from `php-wasm-builder` into this

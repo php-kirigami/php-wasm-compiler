@@ -129,7 +129,6 @@ extensions:
   # ~109 extensions including many PECL ones) is the point — even though
   # the current build matches a narrower reference build, the ambition is
   # every extension in this list eventually being toggleable. ---
-  pdo_mysql: { mode: 'off' }
   pdo_pgsql: { mode: 'off' }
   pgsql: { mode: 'off' }
   shmop: { mode: 'off' }
@@ -216,6 +215,28 @@ extensions:
   mysqli:
     mode: shared
     source: compile/extensions/mysqli
+    bundleExtensions: [mysqlnd]
+
+  # Second mysqlnd consumer (CLAUDE.md decision 47) -- a PDO driver, not a
+  # standalone mysqlnd-calling extension like mysqli, but the same shape:
+  # PHP_ADD_EXTENSION_DEP(pdo_mysql, mysqlnd) needs mysqlnd's Zend module
+  # already loaded, so `bundleExtensions` reuses the same already-built,
+  # internal `mysqlnd` package mysqli bundles (no second copy built).
+  # `pdo` itself (the other PHP_ADD_EXTENSION_DEP) is already `mode: static`
+  # above -- no bundling needed for it, just its headers at compile time
+  # (see compile/extensions/pdo_mysql/PROVENANCE.md).
+  #
+  # configArgs is NOT optional here, unlike mysqlnd/mysqli's own flags:
+  # pdo_mysql's config.m4 declares itself via PHP_ARG_WITH (not
+  # PHP_ARG_ENABLE), defaulting to "no" -- @php-wasm/compile-extension's
+  # own build script always passes --enable-<name>, which pdo_mysql's
+  # config.m4 doesn't recognize at all (silently ignored by autoconf), so
+  # without this the extension would build a .so that... doesn't actually
+  # have PDO_MYSQL compiled in. See PROVENANCE.md for the full reasoning.
+  pdo_mysql:
+    mode: shared
+    source: compile/extensions/pdo_mysql
+    configArgs: '--with-pdo-mysql=mysqlnd'
     bundleExtensions: [mysqlnd]
 
 # Version of each third-party library to use (see matrix.json for known
