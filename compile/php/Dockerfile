@@ -1056,6 +1056,24 @@ RUN echo '_stderr' >> /root/.JS_ABI_EXPORTS; \
 RUN echo '_strcmp' >> /root/.JS_ABI_EXPORTS; \
 	echo '_memset' >> /root/.JS_ABI_EXPORTS;
 
+# - strcasecmp: dba.so calls it (its handler-name lookup table does a
+#   case-insensitive compare) -- same shape as strcmp/memset above, but
+#   this one is resolved LAZILY (only when actually CALLED, via the dynamic
+#   linker's JS proxy stub), not eagerly via the GOT -- found by extending
+#   check-shared-extension-symbols.mjs to also patch that lazy-resolution
+#   site, not just the eager one, after it slipped past the first pass.
+RUN echo '_strcasecmp' >> /root/.JS_ABI_EXPORTS;
+
+# - atoi/memcmp: libflatfile/flatfile.c calls both (atoi parsing a numeric
+#   header field, memcmp comparing key bytes on lookup) -- also lazily
+#   resolved, only reachable by actually exercising a real dba_open()/
+#   dba_insert()/dba_fetch() round-trip, which is why both slipped past
+#   check-shared-extension-symbols.mjs's default smoke test (just
+#   get_loaded_extensions()) and needed the fuller functional test to
+#   surface, one at a time.
+RUN echo '_atoi' >> /root/.JS_ABI_EXPORTS; \
+	echo '_memcmp' >> /root/.JS_ABI_EXPORTS;
+
 RUN if [ "$(echo "$PHP_VERSION" | cut -d. -f1)" -ge 8 ] && [ "$WITH_JSPI" = "yes" ]; then \
 		{ \
 			echo '_clock_gettime'; \

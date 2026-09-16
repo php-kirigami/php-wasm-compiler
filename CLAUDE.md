@@ -2921,6 +2921,78 @@ unless explicitly revisited:
       "targeted, not wired yet" list) removed — replaced by the real
       `mode: shared` entry.
 
+48. **`dba` added as a third `mode: shared`, no-external-lib extension
+    (only the bundled `cdb`/`inifile`/`flatfile` backends); the symbol-check
+    tool's real blind spot (lazy-resolved symbols) found and fixed for good
+    via a new `smoke-test.php`-per-extension convention (2026-09-16).**
+    - **`dba` wiring**: vendored complete from the `PHP-8.5.10` tag
+      (`gh api ".../git/trees/PHP-8.5.10?recursive=1"` filtered to
+      `ext/dba/`, decision 40's lesson) — every `dba_*.c` backend file is
+      vendored even for libraries this build never links (qdbm/gdbm/ndbm/
+      db1-4/dbm/tcadb/lmdb all default to `no` in `config.m4`, but
+      `PHP_NEW_EXTENSION` compiles every backend file unconditionally, each
+      one `#ifdef`-guarded internally). No `configArgs` needed at all —
+      unlike `pdo_mysql`, `dba`'s own `config.m4` logic already turns the
+      three bundled-source backends (`cdb`/`inifile`/`flatfile`, no
+      external lib) on by default the moment `--enable-dba` is passed,
+      which `@php-wasm/compile-extension`'s own hardcoded
+      `--enable-${EXTENSION_NAME}` already provides for free. Full
+      reasoning in `compile/extensions/dba/PROVENANCE.md`.
+    - **The symbol-check tool's real gap, found by the user pointing out it
+      "doesn't seem to work well"**: `check-shared-extension-symbols.mjs`
+      (decision 47) only patched the EAGER (GOT) throw site — but `dba`
+      needed three more real ABI exports (`strcasecmp`, `atoi`, `memcmp`),
+      every one of them resolved LAZILY (only when actually CALLED, via the
+      dynamic linker's JS proxy stub — `resolveGlobalSymbol()`/
+      `resolveSymbol()`'s stub-function path, not `reportUndefinedSymbols()`'s
+      GOT loop), and none of them surfaced from the tool's own default smoke
+      test (a bare `get_loaded_extensions()` call touches no extension-
+      specific code at all). Each one needed a separate, ad-hoc, throwaway
+      debug script and a full rebuild to find — exactly the "one rebuild
+      per symbol" problem the tool was built to solve in the first place,
+      just for a resolution path it didn't cover yet.
+    - **Real fix, not a workaround**: patched the second resolution site too
+      (`resolved ||= resolveSymbol(prop); return resolved(...args);` →
+      logs `prop` to the same `Set` and returns `0` instead of calling
+      `undefined`), and — the actual structural fix — added a
+      `compile/extensions/<name>/smoke-test.php` convention: a small, real
+      PHP script exercising that extension's actual functions (not just
+      `function_exists()` checks), which the tool now discovers and runs,
+      **per extension, in its own fresh isolated runtime boot** (so one
+      extension's crash can't block or corrupt another's result, and
+      per-package `register()` output no longer needs cross-package
+      deduping either — each boot only ever loads one package's own
+      entries). Wrote real ones for all five extensions built so far:
+      `sodium` (real encrypt/decrypt round-trip — this exact call is what
+      originally surfaced decisions 32/45's `__stack_pointer`/`free`/
+      `emscripten_asm_const_int` gaps), `ftp` (every declared function
+      reachable — deliberately does NOT call `ftp_connect()` for real,
+      since this diagnostic's bare hand-rolled loader has no socket layer
+      at all, unlike `@kirigami/php-wasm`'s own Node-side SOCKFS proxy,
+      decision 22 — a real connect attempt could hang instead of failing
+      fast), `mysqli` (`mysqli_init()` instanceof check), `pdo_mysql`
+      (`PDO::getAvailableDrivers()` lists `mysql`), and `dba` (the exact
+      `dba_open`/`dba_insert`/`dba_fetch` flatfile round-trip that found
+      all three missing symbols). The tool now also prints a note listing
+      any checked package with no `smoke-test.php` yet, so this doesn't
+      silently regress for the next extension added without one.
+    - **✅ Re-verified clean after all three fixes + one real process
+      hiccup**: a rebuild was accidentally started twice concurrently
+      (a background job from before this fix that hadn't actually finished
+      yet, plus a fresh retry started without realizing the first was still
+      running) — both tried to `docker run --name kirigami-php-wasm-tmp`,
+      the second failing with a container-name conflict. Not a real bug:
+      the first one's own log confirmed a clean `EXIT_CODE=0`, and its
+      timestamp was newer than the failed second attempt's own recovery
+      attempt — the check-shared-extension-symbols.mjs tool's own report
+      (a clean "No missing ABI exports found" with all five
+      `smoke-test.php`s passing) was the actual confirmation it worked,
+      not either process's own reported exit code. **Lesson**: check for
+      an actually-running Docker build (`docker ps`) before assuming a
+      background rebuild died just because its own redirected log looks
+      incomplete at the moment of checking — it may simply still be
+      writing.
+
 ## Current status
 
 **Extraction done (2026-09-11).** Copied from `php-wasm-builder` into this

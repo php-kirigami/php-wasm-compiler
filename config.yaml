@@ -136,7 +136,6 @@ extensions:
   gettext: { mode: 'off' }
   gmp: { mode: 'off' }
   ldap: { mode: 'off' }
-  dba: { mode: 'off' }
   enchant: { mode: 'off' }
   tidy: { mode: 'off' }
   odbc: { mode: 'off' }
@@ -238,6 +237,16 @@ extensions:
     source: compile/extensions/pdo_mysql
     configArgs: '--with-pdo-mysql=mysqlnd'
     bundleExtensions: [mysqlnd]
+
+  # No external lib, no configArgs needed (CLAUDE.md decision 47's follow-up):
+  # @php-wasm/compile-extension's own --enable-dba default is already enough
+  # to turn on exactly the three bundled-source backends (cdb, inifile,
+  # flatfile) -- every other backend (qdbm/gdbm/ndbm/db1-4/dbm/tcadb/lmdb)
+  # needs an external lib this repo doesn't vendor and defaults to off on
+  # its own. See compile/extensions/dba/PROVENANCE.md.
+  dba:
+    mode: shared
+    source: compile/extensions/dba
 
 # Version of each third-party library to use (see matrix.json for known
 # versions + their source). "latest" = the newest entry known to
