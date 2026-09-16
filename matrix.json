@@ -644,11 +644,6 @@
 				"iconv"
 			]
 		},
-		"igbinary": {
-			"builtin": false,
-			"mandatory": false,
-			"switch": "--enable-igbinary"
-		},
 		"timezonedb": {
 			"builtin": false,
 			"mandatory": false,
@@ -1032,6 +1027,18 @@
 			"sourceTemplate": "https://github.com/php-kirigami/php-navicat/archive/refs/tags/{version}.tar.gz",
 			"versions": [
 				"v0.1.0"
+			],
+			"libraries": []
+		},
+		"igbinary": {
+			"$comment": "igbinary/igbinary -- faster binary serializer, no external lib. Its own config.m4 auto-detects apcu (checks for ext/apcu/apc_serializer.h at configure time) and registers itself as an APCu serializer when found -- this build also flips apcu's own \"apc.serializer\" ini default from \"php\" to \"igbinary\" (CLAUDE.md decision 45's follow-up, only when WITH_IGBINARY=yes).",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-igbinary",
+			"repo": "igbinary/igbinary",
+			"sourceTemplate": "https://github.com/igbinary/igbinary/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"3.2.15"
 			],
 			"libraries": []
 		}

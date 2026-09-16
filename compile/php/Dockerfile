@@ -54,6 +54,7 @@ ARG MDHTML_EXT_VERSION
 ARG JSONK_EXT_VERSION
 ARG APCU_EXT_VERSION
 ARG NAVICAT_EXT_VERSION
+ARG IGBINARY_EXT_VERSION
 ARG SIMDJSON_VERSION
 ARG YYJSON_VERSION
 
@@ -126,6 +127,29 @@ RUN mkdir -p /root/php-src/ext/apcu && \
 	wget -O /root/apcu-ext.tar.gz https://github.com/krakjoe/apcu/archive/refs/tags/${APCU_EXT_VERSION}.tar.gz && \
 	tar -xzf /root/apcu-ext.tar.gz -C /root/php-src/ext/apcu --strip-components=1 && \
 	rm /root/apcu-ext.tar.gz
+
+# igbinary/igbinary -- faster binary serializer, no external lib. Fetched
+# after apcu (above) since its own config.m4 auto-detects apcu by checking
+# for ext/apcu/apc_serializer.h at configure time (real path, not a guess --
+# verified against igbinary's own config.m4) and, if found, registers
+# itself as an APCu serializer at its own MINIT. The apc.serializer default
+# is only flipped to "igbinary" further below, guarded on $WITH_IGBINARY —
+# see the "Add igbinary if needed" block — since defaulting to a serializer
+# that was never compiled in would break apcu whenever igbinary is off.
+RUN mkdir -p /root/php-src/ext/igbinary && \
+	wget -O /root/igbinary-ext.tar.gz https://github.com/igbinary/igbinary/archive/refs/tags/${IGBINARY_EXT_VERSION}.tar.gz && \
+	tar -xzf /root/igbinary-ext.tar.gz -C /root/php-src/ext/igbinary --strip-components=1 && \
+	rm /root/igbinary-ext.tar.gz && \
+	# igbinary's own php_igbinary.h #includes "ext/standard/php_smart_string.h",
+	# a compat header real PHP 8.x no longer ships (superseded by
+	# Zend/zend_smart_string.h) -- confirmed as a real, known gap, not a
+	# guess: @php-wasm/compile-extension's own build environment
+	# (compile-extension/docker/Dockerfile.ext) synthesizes this exact same
+	# one-line shim for this exact same reason. Mirrored here rather than
+	# patching igbinary's own source, since it's a pure compat forwarding
+	# header, not a real behavior difference.
+	mkdir -p /root/php-src/ext/standard && \
+	echo '#include "Zend/zend_smart_string.h"' > /root/php-src/ext/standard/php_smart_string.h
 
 # php-kirigami/php-navicat (the user's own project) -- native client for
 # Navicat Premium's own HTTP-tunnel protocol (ntunnel_mysql.php). Reuses the
@@ -259,6 +283,7 @@ ARG WITH_MDHTML
 ARG WITH_JSONK
 ARG WITH_APCU
 ARG WITH_NAVICAT
+ARG WITH_IGBINARY
 
 # The platform to build for: web or node
 ARG EMSCRIPTEN_ENVIRONMENT=web
@@ -473,6 +498,18 @@ RUN if [ "$WITH_NAVICAT" = "yes" ]; \
 		echo -n ' --with-navicat=/root/lib ' >> /root/.php-configure-flags; \
 	else \
 		echo -n ' --without-navicat ' >> /root/.php-configure-flags; \
+	fi;
+
+# Add igbinary if needed (igbinary/igbinary). Only flips apcu's own
+# apc.serializer default to "igbinary" when igbinary is actually being
+# built -- defaulting to a serializer that was never compiled in would
+# break apcu outright (see the "igbinary/igbinary" fetch comment above).
+RUN if [ "$WITH_IGBINARY" = "yes" ]; \
+	then \
+		echo -n ' --enable-igbinary ' >> /root/.php-configure-flags; \
+		/root/replace.sh 's/STD_PHP_INI_ENTRY\("apc\.serializer", "php",/STD_PHP_INI_ENTRY("apc.serializer", "igbinary",/g' /root/php-src/ext/apcu/php_apc.c; \
+	else \
+		echo -n ' --disable-igbinary ' >> /root/.php-configure-flags; \
 	fi;
 
 # Get and patch PHP
@@ -1000,6 +1037,24 @@ RUN echo '_emscripten_asm_const_int' >> /root/.JS_ABI_EXPORTS;
 #   found the same way as atoll, one real runtime failure at a time.
 RUN echo '_free' >> /root/.JS_ABI_EXPORTS; \
 	echo '_strlen' >> /root/.JS_ABI_EXPORTS;
+
+# - stderr/stdin: same shape, same reason (openssl/zlib linked into
+#   mysqlnd.so). stdout was never observed missing (no code path in
+#   sodium/ftp/mysqlnd/mysqli actually reaches it), so it's deliberately
+#   not added here -- added only if a real failure ever names it, per this
+#   project's own "fix concretely-observed problems, not guesses" rule.
+RUN echo '_stderr' >> /root/.JS_ABI_EXPORTS; \
+	echo '_stdin' >> /root/.JS_ABI_EXPORTS;
+
+# - strcmp/memset: same shape as atoll/free/strlen above -- mysqlnd.so/
+#   mysqli.so call them directly, this main module never does, so DCE drops
+#   the export even though the functions are still compiled in. Found via
+#   compile/check-shared-extension-symbols.mjs (a throwaway-patched copy of
+#   the already-built php_*.js that logs every currently-missing GOT symbol
+#   in one run instead of aborting on the first one), which is why both
+#   landed in the same commit despite being two distinct symbols.
+RUN echo '_strcmp' >> /root/.JS_ABI_EXPORTS; \
+	echo '_memset' >> /root/.JS_ABI_EXPORTS;
 
 RUN if [ "$(echo "$PHP_VERSION" | cut -d. -f1)" -ge 8 ] && [ "$WITH_JSPI" = "yes" ]; then \
 		{ \

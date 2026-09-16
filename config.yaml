@@ -82,6 +82,12 @@ extensions:
   # (native) and validated end-to-end against a mock tunnel server; not yet
   # tried in this wasm build.
   navicat: { mode: static }
+  # igbinary/igbinary -- faster binary serializer, no external lib. Also
+  # becomes apcu's own default serializer for this build (apc.serializer
+  # ini default flipped from "php" to "igbinary" in compile/php/Dockerfile,
+  # only when this is on) — queued in CLAUDE.md decision 43, picked up now
+  # that apcu's own persistence question resolved "yes".
+  igbinary: { mode: static }
 
   # --- OFF to match the reference build's Configure Command, which shows
   # --disable-opcache / --disable-soap / --disable-fileinfo /
@@ -176,13 +182,29 @@ extensions:
   # mysqlnd is never published on its own — it's bundled into @kirigami/
   # phpext-mysqli below (one npm install, two .so + two manifests inside;
   # a real merged single .so was considered and rejected as too much C work
-  # for now). Compression support disabled to avoid needing a vendored zlib
-  # for this pilot; SSL support is already off by default (see
-  # compile/extensions/mysqlnd/PROVENANCE.md).
+  # for now).
+  #
+  # Compression (zlib) and extended SSL (openssl) support both enabled
+  # (CLAUDE.md decision 45's follow-up) — compression is mysqlnd's own
+  # config.m4 default, just needs zlib to actually be findable; SSL defaults
+  # off unless $PHP_OPENSSL is set (never true in this isolated build
+  # container), hence the explicit --with-mysqlnd-ssl. Both libz and
+  # libopenssl are already vendored/built for the static core (compile/libz/,
+  # compile/libopenssl/) — vendorLibs stages both into
+  # source/vendor/{libz,libopenssl} and overrides PHP_SETUP_ZLIB/
+  # PHP_SETUP_OPENSSL's own PKG_CHECK_MODULES([ZLIB]/[OPENSSL], ...) probes
+  # the same way sodium's pkgConfigVar already does for LIBSODIUM (both
+  # macros are pkg-config-based, confirmed by reading php-src's real
+  # build/php.m4).
   mysqlnd:
     mode: shared
     source: compile/extensions/mysqlnd
-    configArgs: '--disable-mysqlnd-compression-support'
+    configArgs: '--with-mysqlnd-ssl'
+    vendorLibs:
+      - lib: libz
+        pkgConfigVar: ZLIB
+      - lib: libopenssl
+        pkgConfigVar: OPENSSL
     internal: true
   # No vendorLib: mysqli doesn't link a C library, it calls into mysqlnd's own
   # Zend module at runtime. compile/extensions/mysqli/ext/mysqlnd/ stages

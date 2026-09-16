@@ -14,14 +14,15 @@ php/php-src/git/trees/<ext/mysqlnd sha>`) before vendoring — `CREDITS`,
 `config-win.h`, `config.w32` (Windows build) are the only files in the real
 extension not vendored here.
 
-**Built with compression support and SSL both disabled**
-(`config.yaml`'s `configArgs: '--disable-mysqlnd-compression-support'` — SSL
-is off by default already, since `config.m4`'s `$PHP_OPENSSL` check is
-unset in an isolated `@php-wasm/compile-extension` build) — both would
-otherwise need a vendored dependency (`zlib` for compression, `libopenssl`
-for SSL) neither of which this pilot build needs to prove the core
-mechanism. Add them back later (as `vendorLib`s, same pattern as
-`sodium`/`compile/extensions/sodium`) once basic connectivity works.
+**Compression support and extended SSL are both enabled** (CLAUDE.md
+decision 45's follow-up) — `config.yaml`'s `vendorLibs` stages the already
+built-for-the-static-core `libz`/`libopenssl` into `source/vendor/`, and
+`--with-mysqlnd-ssl` overrides the default-off SSL flag (which otherwise
+depends on `$PHP_OPENSSL`, always unset in an isolated
+`@php-wasm/compile-extension` build). Both were disabled in an earlier
+pilot pass to prove the core mysqlnd/mysqli mechanism without a vendored
+dependency first — the pattern used here is the exact same `vendorLib`
+mechanism `sodium`/`compile/extensions/sodium` already validated.
 
 This is the companion module `mysqli` (`compile/extensions/mysqli/`) depends
 on — see that extension's own `PROVENANCE.md` for the two-shared-extensions

@@ -25,6 +25,14 @@ packages/*/*.so
 # field) — copied fresh from compile/<lib>/jspi/dist/ on every run.
 compile/extensions/*/vendor/
 
+# @php-wasm/compile-extension's Docker asset cache, assembled fresh from
+# files this repo already owns every time `cli.mjs compile-extension` runs
+# (compile/setup-compile-extension-cache.mjs, CLAUDE.md decision 45's
+# follow-up) — not the tool's own npm-version-keyed cache, and not to be
+# confused with compile/vendor/compile-extension-docker-assets/, which IS
+# committed (the two files genuinely specific to the tool itself).
+compile/.compile-extension-cache/
+
 # Compiled third-party libraries (rebuilt via `make`, not committed — see
 # CLAUDE.md decision on not vendoring prebuilt binaries)
 compile/*/asyncify/

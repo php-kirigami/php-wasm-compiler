@@ -382,6 +382,8 @@ await asyncSpawn(
 		'--build-arg',
 		getArg('WITH_NAVICAT'),
 		'--build-arg',
+		getArg('WITH_IGBINARY'),
+		'--build-arg',
 		// Sourced from their own GitHub repos, not pecl.php.net (CLAUDE.md
 		// decision 34). Same "hardcoded last-resort fallback for standalone
 		// build.js use" shape as OPENSSL_VERSION above -- cli.mjs always
@@ -399,6 +401,8 @@ await asyncSpawn(
 		`APCU_EXT_VERSION=${args.APCU_EXT_VERSION || 'v5.1.28'}`,
 		'--build-arg',
 		`NAVICAT_EXT_VERSION=${args.NAVICAT_EXT_VERSION || 'v0.1.0'}`,
+		'--build-arg',
+		`IGBINARY_EXT_VERSION=${args.IGBINARY_EXT_VERSION || '3.2.15'}`,
 		'--build-arg',
 		`IMAGICK_EXT_VERSION=${args.IMAGICK_EXT_VERSION || '3.8.1'}`,
 		'--build-arg',

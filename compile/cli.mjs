@@ -24,6 +24,8 @@ import { hideBin } from 'yargs/helpers';
 import { updatePHPVersions } from './update-php-versions.mjs';
 import { updateLibVersions } from './update-lib-versions.mjs';
 import { getMatrixVersion, getMatrixExtensionVersion } from './matrix-version.mjs';
+import { prepareCompileExtensionCache } from './setup-compile-extension-cache.mjs';
+import { patchCompileExtensionTags } from './patch-compile-extension-tags.mjs';
 import { phpVersions as SUPPORTED_PHP_VERSIONS } from '../supported-php-versions.mjs';
 
 const sourceDir = path.dirname(fileURLToPath(import.meta.url));
@@ -235,6 +237,7 @@ const IMPLEMENTED_EXTENSIONS = {
 	jsonk: 'WITH_JSONK',
 	apcu: 'WITH_APCU',
 	navicat: 'WITH_NAVICAT',
+	igbinary: 'WITH_IGBINARY',
 };
 
 // These have no independent Dockerfile flag of their own: compile/php/Dockerfile
@@ -466,25 +469,27 @@ async function runUpdateVersionsCommand(argv) {
 /**
  * A real (non-internal) shared extension's compiled output — manifest.json +
  * one .so per PHP version — is already everything an @kirigami/phpext-<name>
- * npm package needs to ship (CLAUDE.md decision 31): no extra JS glue, the
- * consumer loads it straight via @php-wasm/universal's
- * `{ format: 'manifest', manifestUrl: ... }`. This just adds the package.json
- * that output directory needs to actually be `npm publish`-able.
+ * npm package needs to ship (CLAUDE.md decision 31). This just adds the
+ * package.json that output directory needs to actually be `npm
+ * publish`-able.
  *
  * Package name/output-dir convention: `@kirigami/phpext-<name>` (CLAUDE.md
  * decision 38) — the pattern a future `@kirigami/php-wasm` dependency scanner
  * (kirigami repo, not this one) globs for to auto-load installed extensions,
- * per the user's 2026-09-15 direction. manifest.json already carries the
- * ini/env directives that scanner needs (CLAUDE.md decision 5/30) — no
- * separate .ini file is shipped.
+ * per the user's 2026-09-15 direction.
+ *
+ * No runtime `dependencies` (CLAUDE.md decision 46, superseding decision 42's
+ * `@php-wasm/universal` dependency): the generated `index.js` below is
+ * dependency-free, so these packages carry no npm dependency of their own —
+ * `@kirigami/php-wasm` owns 100% of the actual loading (copying the `.so`
+ * into its VM's FS and writing `php.ini`), not a shared library both sides
+ * depend on.
  *
  * `kirigami` field: same `type`-discriminated metadata section every
  * @kirigami/plugin-<name> package.json already carries (see the "kirigami"
  * key in ../kirigami/packages/plugin-embed/package.json, `type: "plugin"`)
  * — `type: "extension"` here, per CLAUDE.md decision 5's own terminology.
  */
-const PHP_WASM_UNIVERSAL_VERSION = '3.1.53'; // matches @php-wasm/compile-extension's own pin, decision 30
-
 function extensionPackageJson(name, version, kirigami) {
 	return {
 		name: `@kirigami/phpext-${name}`,
@@ -503,7 +508,6 @@ function extensionPackageJson(name, version, kirigami) {
 		type: 'module',
 		main: 'index.js',
 		types: 'index.d.ts',
-		dependencies: { '@php-wasm/universal': PHP_WASM_UNIVERSAL_VERSION },
 		files: ['manifest.json', 'manifest-*.json', '*.so', 'index.js', 'index.d.ts', 'README.md'],
 		kirigami,
 	};
@@ -515,83 +519,73 @@ function extensionPackageJson(name, version, kirigami) {
  * own description of the intended @kirigami/php-wasm auto-load flow: "glob
  * the available extension packages -> call register -> register returns
  * the .so files to mount and the ini to add -> php-wasm loads the files
- * into its vm"). Reads this package's own manifest(s) and resolves them via
- * @php-wasm/universal's resolvePHPExtension(), in `kirigami.bundles` order
- * (a dependency like mysqlnd must resolve — and later load — before the
- * package's own extension, e.g. mysqli) so the caller can feed the result
- * straight into withResolvedPHPExtensions() without knowing anything about
- * this package's internal manifest layout.
+ * into its vm").
  *
- * Reads manifest/.so bytes from disk directly (fs, not fetch()) rather than
- * resolvePHPExtension's own `format: 'manifest'` + manifestUrl fetch path —
- * confirmed while testing this pilot that Node's native fetch() doesn't
- * support file:// URLs, which that path relies on; a real installed
- * package's files are always local disk anyway, so there's nothing to gain
- * from routing through fetch() here.
+ * CLAUDE.md decision 46: deliberately has zero npm dependencies (was
+ * @php-wasm/universal's resolvePHPExtension() in decision 42 — dropped per
+ * the user's explicit direction to eliminate the extension packages'
+ * dependency on it, since @kirigami/php-wasm will do its own .so-staging and
+ * php.ini generation rather than relying on a shared library both sides
+ * depend on differently). Just reads this package's own manifest(s) — kept
+ * as-is (still the on-disk format @php-wasm/compile-extension itself
+ * produces) — and resolves each one to a plain `{ name, soPath }`, in
+ * `kirigami.bundles` order (a dependency like mysqlnd must resolve — and
+ * later load — before the package's own extension, e.g. mysqli). The caller
+ * decides the actual `.ini` filename/content and where to stage the `.so`;
+ * this only guarantees array order reflects real load order.
  */
 function extensionIndexJs(ext) {
 	const manifestNames = [...(ext.bundleExtensions ?? []).map((name) => `manifest-${name}.json`), 'manifest.json'];
 	return `// Generated by php-wasm-compiler's \`compile/cli.mjs compile-extension\`
-// (CLAUDE.md decision 42) — do not hand-edit, it's regenerated on every build.
+// (CLAUDE.md decision 42/46) — do not hand-edit, it's regenerated on every build.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { resolvePHPExtension } from '@php-wasm/universal';
 
 const packageDir = path.dirname(fileURLToPath(import.meta.url));
 const manifestNames = ${JSON.stringify(manifestNames)};
 
 /**
  * Resolves every extension artifact this package ships for \`phpVersion\`
- * (major.minor, e.g. "8.5"), in the order they must be loaded. Feed the
- * result straight into @php-wasm/universal's withResolvedPHPExtensions().
+ * (major.minor, e.g. "8.5"), in the order they must be loaded. Each entry's
+ * \`soPath\` is an absolute path to the compiled \`.so\` on disk — the caller
+ * (@kirigami/php-wasm) reads its bytes, copies it into its own VM FS, and
+ * writes the matching \`php.ini\` \`extension=\` directive itself.
  */
-export default async function register(phpVersion) {
-	const resolved = [];
-	for (const manifestName of manifestNames) {
+export default function register(phpVersion) {
+	return manifestNames.map((manifestName) => {
 		const manifest = JSON.parse(readFileSync(path.join(packageDir, manifestName), 'utf8'));
 		const artifact = manifest.artifacts.find((a) => a.phpVersion === phpVersion);
 		if (!artifact) {
 			throw new Error(\`\${manifest.name}: no artifact for PHP \${phpVersion} in \${manifestName}.\`);
 		}
-		const bytes = readFileSync(path.join(packageDir, artifact.sourcePath));
-		resolved.push(await resolvePHPExtension({ name: manifest.name, source: { format: 'so', bytes } }));
-	}
-	// PHP scans PHP_INI_SCAN_DIR alphabetically by filename, not in the order
-	// these are pushed above -- a bundled extension (manifestNames.length > 1)
-	// needs its dependency's .ini to sort first regardless of how the bare
-	// extension names compare (e.g. "mysqli.ini" sorts before "mysqlnd.ini",
-	// the wrong way around for mysqli's PHP_ADD_EXTENSION_DEP on mysqlnd).
-	// Force the real load order with a numeric filename prefix.
-	if (manifestNames.length > 1) {
-		resolved.forEach((r, i) => {
-			if (r.iniPath) {
-				const slash = r.iniPath.lastIndexOf('/');
-				r.iniPath = r.iniPath.slice(0, slash + 1) + String(i).padStart(2, '0') + '-' + r.iniPath.slice(slash + 1);
-			}
-		});
-	}
-	return resolved;
+		return { name: manifest.name, soPath: path.join(packageDir, artifact.sourcePath) };
+	});
 }
 `;
 }
 
 /**
- * Type declaration for `extensionIndexJs()`'s generated `index.js` —
- * `register()`'s return type (`ResolvedPHPExtension[]`) is
- * `@php-wasm/universal`'s own, imported rather than duplicated.
+ * Type declaration for `extensionIndexJs()`'s generated `index.js` — no
+ * external import (CLAUDE.md decision 46), `register()`'s return type is
+ * declared inline.
  */
 function extensionIndexDts() {
 	return `// Generated by php-wasm-compiler's \`compile/cli.mjs compile-extension\`
-// (CLAUDE.md decision 42) — do not hand-edit, it's regenerated on every build.
-import type { ResolvedPHPExtension } from '@php-wasm/universal';
+// (CLAUDE.md decision 42/46) — do not hand-edit, it's regenerated on every build.
+
+export interface RegisteredPHPExtension {
+	/** The extension's bare name, e.g. "sodium" (matches manifest.json's own "name"). */
+	name: string;
+	/** Absolute path to the compiled .so on disk. */
+	soPath: string;
+}
 
 /**
  * Resolves every extension artifact this package ships for \`phpVersion\`
- * (major.minor, e.g. "8.5"), in the order they must be loaded. Feed the
- * result straight into @php-wasm/universal's withResolvedPHPExtensions().
+ * (major.minor, e.g. "8.5"), in the order they must be loaded.
  */
-export default function register(phpVersion: string): Promise<ResolvedPHPExtension[]>;
+export default function register(phpVersion: string): RegisteredPHPExtension[];
 `;
 }
 
@@ -732,14 +726,54 @@ function resolveCompileExtensionBin() {
 }
 
 /**
+ * Normalizes an extension's vendored-lib declaration to a list of
+ * `{ lib, pkgConfigVar }` entries — accepts either the original singular
+ * `vendorLib`/`pkgConfigVar` pair (sodium -> libsodium, one lib) or the
+ * plural `vendorLibs` array (mysqlnd -> libz + libopenssl, two libs with
+ * two different PKG_CHECK_MODULES variable names). Never both at once.
+ */
+function normalizedVendorLibs(ext) {
+	if (ext.vendorLibs) {
+		if (ext.vendorLib) {
+			throw new Error(
+				`config.yaml: extension "${ext.name}" has both "vendorLib" and "vendorLibs" — use only one.`
+			);
+		}
+		return ext.vendorLibs;
+	}
+	return ext.vendorLib ? [{ lib: ext.vendorLib, pkgConfigVar: ext.pkgConfigVar }] : [];
+}
+
+/**
+ * Formats one `VAR=value` pair for `--config-args`, quoting it when `value`
+ * contains whitespace so compile-extension's own tokenizer (which re-splits
+ * the whole --config-args string on whitespace, respecting quotes — the
+ * same shape as a shell command line) keeps it as a single token.
+ */
+function quoteConfigArg(name, value) {
+	return /\s/.test(value) ? `${name}="${value}"` : `${name}=${value}`;
+}
+
+/**
  * `--extra-cflags`/`--extra-ldflags` paths for a vendored dependency lib
  * staged under <extension source>/vendor/<lib>/ (see `stageVendorLib()`) —
- * pure string computation so it can also be shown in `--dry-run`.
+ * pure string computation so it can also be shown in `--dry-run`. Reads the
+ * real archive filenames from the lib's own build output rather than
+ * assuming a single `<lib>.a` (true for libsodium, but libopenssl's build
+ * produces libssl.a + libcrypto.a, not a "libopenssl.a" that doesn't
+ * exist) — falls back to that assumption only when the lib hasn't been
+ * built yet (a --dry-run before the first `make <lib>_jspi`).
  */
-function vendorLibFlags(vendorLib) {
+function vendorLibFlags(lib) {
+	const libDir = path.join(repoRoot, 'compile', lib, 'jspi', 'dist', 'root', 'lib', 'lib');
+	const archives = existsSync(libDir)
+		? readdirSync(libDir)
+				.filter((name) => name.endsWith('.a'))
+				.sort()
+		: [`${lib}.a`];
 	return {
-		cflags: `-I/build/vendor/${vendorLib}/include`,
-		ldflags: `/build/vendor/${vendorLib}/lib/${vendorLib}.a`,
+		cflags: `-I/build/vendor/${lib}/include`,
+		ldflags: archives.map((name) => `/build/vendor/${lib}/lib/${name}`).join(' '),
 	};
 }
 
@@ -777,17 +811,25 @@ function buildExtensionArgs(ext, phpVersions, outDir) {
 	let extraLdflags = ext.extraLdflags ?? '';
 	let configArgs = ext.configArgs ?? '';
 
-	if (ext.vendorLib) {
-		const { cflags, ldflags } = vendorLibFlags(ext.vendorLib);
+	for (const { lib, pkgConfigVar } of normalizedVendorLibs(ext)) {
+		const { cflags, ldflags } = vendorLibFlags(lib);
 		extraCflags = [cflags, extraCflags].filter(Boolean).join(' ');
 		extraLdflags = [ldflags, extraLdflags].filter(Boolean).join(' ');
-		if (ext.pkgConfigVar) {
+		if (pkgConfigVar) {
 			// ext.configArgs' config.m4 PKG_CHECK_MODULES([<var>], ...) skips
 			// its own pkg-config probe when these are already set (there's no
 			// real pkg-config/*.pc for a vendored lib inside the container).
+			// A lib that produces more than one .a (e.g. libopenssl ->
+			// libcrypto.a + libssl.a) makes `ldflags` itself contain a space —
+			// compile-extension's own --config-args value is later re-split on
+			// whitespace (its Ce() tokenizer), so a multi-archive VAR=value
+			// pair must be quoted here to survive as one token, same as a
+			// shell command line. Verified this round-trips correctly through
+			// this repo's own Windows shell:true quoting (runCommand() below)
+			// before relying on it in a real build.
 			configArgs = [
-				`${ext.pkgConfigVar}_CFLAGS=${cflags}`,
-				`${ext.pkgConfigVar}_LIBS=${ldflags}`,
+				quoteConfigArg(`${pkgConfigVar}_CFLAGS`, cflags),
+				quoteConfigArg(`${pkgConfigVar}_LIBS`, ldflags),
 				configArgs,
 			]
 				.filter(Boolean)
@@ -824,8 +866,8 @@ function buildExtensionArgs(ext, phpVersions, outDir) {
 async function buildOneExtensionArtifact(ext, outDir, phpVersions, compileExtensionBin, manifestName) {
 	const { extSourceDir, args } = buildExtensionArgs(ext, phpVersions, outDir);
 	console.log(`\n=== Compiling shared extension "${ext.name}" ===`);
-	if (ext.vendorLib) {
-		stageVendorLib(extSourceDir, ext.vendorLib);
+	for (const { lib } of normalizedVendorLibs(ext)) {
+		stageVendorLib(extSourceDir, lib);
 	}
 	mkdirSync(outDir, { recursive: true });
 	await runCommand(compileExtensionBin, args);
@@ -869,6 +911,18 @@ async function runCompileExtensionCommand(argv) {
 
 	if (!argv['dry-run']) {
 		checkDocker();
+		// Points @php-wasm/compile-extension at a cache we assemble ourselves
+		// from files this repo already owns, instead of letting it fetch
+		// Docker assets from WordPress/wordpress-playground on first use
+		// (CLAUDE.md decision 45's follow-up) — every mode:shared extension
+		// now builds against the exact same, already-patched base image our
+		// own kirigami-php-wasm:base uses.
+		process.env.PHP_WASM_COMPILE_EXTENSION_CACHE_DIR = prepareCompileExtensionCache();
+		// Renames the tool's own hardcoded "playground-php-wasm:*" image tags
+		// to "kirigami-compile-extension:*" — purely cosmetic (the images
+		// already have zero WordPress/wordpress-playground dependency as of
+		// the line above), but confusing to leave un-renamed once true.
+		patchCompileExtensionTags();
 	}
 	const compileExtensionBin = resolveCompileExtensionBin();
 
@@ -1117,6 +1171,10 @@ function buildArgsForVersion(config, phpVersion) {
 	// php-kirigami/php-navicat — our own extension, reuses the already-linked
 	// libcurl for its HTTP transport.
 	args.push(`--NAVICAT_EXT_VERSION=${getMatrixExtensionVersion('navicat')}`);
+	// igbinary/igbinary — also becomes apcu's default serializer for this
+	// build (CLAUDE.md decision 43's queued follow-up, picked up in
+	// decision 45).
+	args.push(`--IGBINARY_EXT_VERSION=${getMatrixExtensionVersion('igbinary')}`);
 	// Imagick/imagick — pinned to a real tag instead of the "master" branch
 	// (matrix.json's own "imagick" note: needed to fix phpinfo() showing
 	// the raw "@PACKAGE_VERSION@" placeholder, PECL-packaging-only
