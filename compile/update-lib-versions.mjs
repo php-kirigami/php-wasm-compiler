@@ -32,10 +32,17 @@ async function fetchJSON(url) {
  * Some projects (e.g. curl's "curl-8_22_0") separate version components with
  * underscores instead of dots — normalize those first. ImageMagick tags
  * carry a trailing "-NN" patch counter ("7.1.2-31") that's significant (not
- * a prerelease suffix to discard) — keep it when present.
+ * a prerelease suffix to discard) — keep it when present. cmark-gfm tags
+ * carry a trailing ".gfm.N" patch counter ("0.29.0.gfm.13") that's equally
+ * significant — without this, the plain-numeric regex below stops at the
+ * first ".gfm" and silently truncates every cmark-gfm version down to its
+ * upstream cmark base ("0.29.0"), which isn't a real cmark-gfm release on
+ * its own and would regress matrix.json's pinned version if written.
  */
 function normalizeVersion(tag) {
-	const match = tag.replace(/_/g, '.').match(/(\d+(?:\.\d+){1,3}(?:-\d+)?)/);
+	const match = tag
+		.replace(/_/g, '.')
+		.match(/(\d+(?:\.\d+){1,3}(?:-\d+)?(?:\.gfm\.\d+)?)/);
 	return match ? match[1] : tag;
 }
 
@@ -61,8 +68,15 @@ async function latestGithubTag(repo) {
 	);
 	// ImageMagick tags this way ("7.1.2-31" — a trailing "-NN" patch counter,
 	// not a prerelease suffix), so allow it alongside plain dotted versions.
+	// freetype tags this way ("VER-2-14-3" — dashes instead of dots); convert
+	// to the dotted form matrix.json actually stores (the Dockerfile does the
+	// reverse substitution itself) before applying the same numeric filter.
 	const versions = tags
 		.map((t) => t.name)
+		.map((name) => {
+			const verDashed = name.match(/^VER-(\d+(?:-\d+)+)$/i);
+			return verDashed ? verDashed[1].replace(/-/g, '.') : name;
+		})
 		.filter((name) => /^v?\d+(\.\d+){1,3}(-\d+)?$/.test(name))
 		.map(normalizeVersion);
 	if (versions.length === 0) {
@@ -106,20 +120,34 @@ export async function updateLibVersions({ write = false } = {}) {
 		}
 
 		const current = lib.versions[lib.versions.length - 1];
-		if (latest !== current) {
-			console.log(`${name}: ${current ?? '(none)'} → ${latest}`);
-			if (!lib.versions.includes(latest)) {
-				lib.versions.push(latest);
-			}
-			changed++;
+		if (latest === current) {
+			continue;
 		}
+		if (lib.versions.includes(latest)) {
+			// Already recorded elsewhere in the array (typically a version
+			// that was deliberately reordered away from "latest" after
+			// failing to build — see e.g. matrix.json's own libjpeg note,
+			// CLAUDE.md decision 26/33). Nothing to actually change here;
+			// don't report a misleading "current → latest" bump for it.
+			continue;
+		}
+		console.log(`${name}: ${current ?? '(none)'} → ${latest}`);
+		lib.versions.push(latest);
+		changed++;
+	}
+
+	if (write) {
+		// Refresh lastChecked on every real (non-dry-run) check, not just
+		// ones that changed something -- it records when the matrix was
+		// last actually verified against upstream, not just when it was
+		// last edited.
+		matrix.lastChecked = new Date().toISOString();
+		writeFileSync(matrixPath, JSON.stringify(matrix, null, '\t') + '\n');
 	}
 
 	if (changed === 0) {
 		console.log('✨ All GitHub-hosted libraries are already up to date!');
 	} else if (write) {
-		matrix.lastChecked = new Date().toISOString();
-		writeFileSync(matrixPath, JSON.stringify(matrix, null, '\t') + '\n');
 		console.log(`\nWrote ${changed} update(s) to ${matrixPath}`);
 	} else {
 		console.log(`\n${changed} update(s) found (dry run — pass --write to persist).`);

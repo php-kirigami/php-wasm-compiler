@@ -7,13 +7,14 @@ node_modules/
 /output/
 
 # Assembled npm packages for mode:shared extensions (@kirigami/phpext-<name>,
-# npm workspace under packages/*, see CLAUDE.md decision 38). package.json
-# and .buildhash ARE committed — they're mechanically maintained by
+# npm workspace under packages/*, see CLAUDE.md decision 38). package.json,
+# index.js, and .buildhash ARE committed — they're mechanically maintained by
 # `compile/cli.mjs compile-extension` (patch version bumps only when the
 # build output's hash actually changes) rather than hand-edited, but they're
 # the real source of truth for what's published, not throwaway output.
 # Only the compiled artifacts themselves are regenerated and ignored:
 packages/*/manifest.json
+packages/*/manifest-*.json
 packages/*/*.so
 
 # Packed tarballs produced by scripts/publish.js before `npm publish`.

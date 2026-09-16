@@ -97,10 +97,21 @@ RUN /root/replace.sh "s/src_files\s*\+=\s*glob_in_path\(profile_src_dir,\s*'\*\.
 #    │  skip those flags when │   │  add these flags when  │
 #    │      calling emcc      │   │    calling emcc        │
 #    └────────────────────────┘   └────────────────────────┘
+# "em++" needs the exact same treatment as "emcc" below -- found via a
+# real build failure (php-jsonk's one C++ translation unit, the first in
+# this pipeline, silently missed EMCC_FLAGS -- including "-D__x86_64__" --
+# entirely, because only "emcc" was ever patched here; "em++" is a
+# genuinely separate script/entry point in emsdk, not a symlink to
+# "emcc"). emcc-for-php-wasm.sh resolves which original binary to call by
+# its own invocation name ("$0"), so the same script works for both.
 RUN <<EOF
     set -euo pipefail
     cp /root/emsdk/upstream/emscripten/emcc /root/emsdk/upstream/emscripten/emcc2
     cp /root/emsdk/upstream/emscripten/emcc.py /root/emsdk/upstream/emscripten/emcc2.py
     cp /root/emcc-for-php-wasm.sh /root/emsdk/upstream/emscripten/emcc
     chmod a+x /root/emsdk/upstream/emscripten/emcc
+    cp /root/emsdk/upstream/emscripten/em++ /root/emsdk/upstream/emscripten/em++2
+    cp /root/emsdk/upstream/emscripten/em++.py /root/emsdk/upstream/emscripten/em++2.py
+    cp /root/emcc-for-php-wasm.sh /root/emsdk/upstream/emscripten/em++
+    chmod a+x /root/emsdk/upstream/emscripten/em++
 EOF

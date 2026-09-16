@@ -1,5 +1,6 @@
 {
-	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. No automatic refresh yet (unlike supported-php-versions.mjs for PHP) — to be built lib by lib.",
+	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. GitHub-hosted libraries (sourceType github-release/github-tag) are auto-refreshed via `node compile/cli.mjs update-versions` (compile/update-lib-versions.mjs); everything else (tarball/sourceforge/googlesource sources) still has to be checked manually via its own checkUrl.",
+	"lastChecked": "2026-09-16T08:04:25.423Z",
 	"libraries": {
 		"libcurl": {
 			"sourceType": "github-release",
@@ -61,7 +62,7 @@
 			"sourceType": "github-release",
 			"repo": "libjpeg-turbo/libjpeg-turbo",
 			"sourceTemplate": "https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/{version}/libjpeg-turbo-{version}.tar.gz",
-			"note": "Default policy (2026-09-12): always try the latest version first. update-lib-versions.mjs's github-tag fallback is noisy for this repo (its tags mix in historical IJG libjpeg versions like 'jpeg-9') — 3.2.0 confirmed as latest via the GitHub Releases page directly. TESTED and REVERTED 2026-09-12: 3.2.0 fails a real build — it added a bundled `src/spng/` (PNG) module that uses raw x86 SSE2 intrinsics (`__m128i`, `_mm_cvtsi128_si32`) unconditionally reachable under our `-D__x86_64__` compile flag, which don't exist under Emscripten without `-msimd128`. Stayed on 3.0.3. Would need a real patch (disable spng, or add SIMD polyfill flags) to move forward — not attempted. IMPORTANT: 3.2.0 is deliberately NOT last in `versions` (out of chronological order) — since decision 28 wired compile/Makefile's LIBJPEG_VERSION to `MATRIX_VERSION` (the array's last entry), putting the known-broken version last would make the very next `make libjpeg_jspi` try to build it.",
+			"note": "Default policy (2026-09-12): always try the latest version first. update-lib-versions.mjs's github-tag fallback is noisy for this repo (its tags mix in historical IJG libjpeg versions like 'jpeg-9') — 3.2.0 confirmed as latest via the GitHub Releases page directly. TESTED and REVERTED 2026-09-12: 3.2.0 fails a real build — it added a bundled `src/spng/` (PNG) module that uses raw x86 SSE2 intrinsics (`__m128i`, `_mm_cvtsi128_si32`) unconditionally reachable under our `-D__x86_64__` compile flag, which don't exist under Emscripten without `-msimd128`. Stayed on 3.0.3. Would need a real patch (disable spng, or add SIMD polyfill flags) to move forward — not attempted. IMPORTANT: 3.2.0 is deliberately NOT last in `versions` (out of chronological order) — since decision 28 wired compile/Makefile's LIBJPEG_VERSION to `MATRIX_VERSION` (the array's last entry), putting the known-broken version last would make the very next `make libjpeg_jspi` try to build it. Re-checked 2026-09-16 via `update-lib-versions.mjs`: GitHub's real latest release is still 3.2.0 (no newer fix upstream) — the script itself used to report this as a misleading `3.0.3 → 3.2.0` \"update\" every time, since it only compared against the array's *last* entry rather than checking whether the version was already recorded elsewhere; fixed the script to recognize 3.2.0 is already present and stay silent instead.",
 			"versions": [
 				"3.2.0",
 				"3.0.3"
@@ -156,6 +157,7 @@
 		},
 		"freetype": {
 			"$comment": "GD's FreeType dependency for text rendering (imagettftext/gdImageStringFT). Moved here from plannedLibraries 2026-09-12 once compile/libfreetype/Dockerfile was written and wired into compile/libgd/Dockerfile + compile/php/Dockerfile's WITH_GD block. Tag format is VER-<version with dots replaced by dashes>, e.g. 2.14.3 -> VER-2-14-3; the Dockerfile does that substitution itself.",
+			"note": "Bug found and fixed 2026-09-16: update-lib-versions.mjs's github-tag lookup only ever matched plain dotted version tags, so it couldn't resolve anything here at all (\"could not resolve a version\") — freetype's own VER-2-14-3 dashed tag convention never matched. Fixed the script to convert VER-<N>-<N>-<N> tags to dotted form before filtering/comparing, same as it already did for ImageMagick's own non-standard tag suffix. Re-checked afterward: 2.14.3 is confirmed still latest upstream.",
 			"sourceType": "github-tag",
 			"repo": "freetype/freetype",
 			"sourceTemplate": "https://github.com/freetype/freetype/archive/refs/tags/VER-{version-dashed}.tar.gz",
@@ -183,11 +185,30 @@
 		},
 		"libcmark-gfm": {
 			"$comment": "GitHub's own CommonMark+GFM C library (github/cmark-gfm), for the new ext/mdhtml (CLAUDE.md decision 37, static build) -- the Kirigami markdown extension that replaces ext/cmark, which was tried both statically (decision 35) and as a mode:shared package (decision 38) before being dropped entirely (decision 40). Builds two static archives from one source tree, libcmark-gfm.a (core) and libcmark-gfm-extensions.a (table/strikethrough/autolink/tagfilter/tasklist), see compile/libcmark-gfm/Dockerfile.",
+			"note": "Real bug found and fixed 2026-09-16, before it could cause damage: update-lib-versions.mjs's normalizeVersion() stripped a tag at its first non-numeric segment, so cmark-gfm's own '0.29.0.gfm.13' tag was silently truncated to '0.29.0' -- not a real, independent cmark-gfm release, just the mangled remainder of the actual one. Writing that would have regressed compile/libcmark-gfm/Dockerfile's resolved version. Fixed the regex to also capture a trailing '.gfm.N' suffix. Re-checked afterward: 0.29.0.gfm.13 is confirmed still latest upstream.",
 			"sourceType": "github-release",
 			"repo": "github/cmark-gfm",
 			"sourceTemplate": "https://github.com/github/cmark-gfm/archive/refs/tags/{version}.tar.gz",
 			"versions": [
 				"0.29.0.gfm.13"
+			]
+		},
+		"simdjson": {
+			"$comment": "For ext/jsonk (CLAUDE.md's jsonk decision) -- decode engine. Not built via a compile/lib*/Dockerfile+Makefile target like every other entry here: it ships as a single-header amalgamation (simdjson.h + simdjson.cpp) fetched as GitHub release assets straight into ext/jsonk/vendor/simdjson/ by compile/php/Dockerfile itself (no build step of its own), same layout php-jsonk's own vendor/build/stage.sh uses for a native dev build. Listed here anyway so getMatrixVersion() has one place to resolve it from, matching matrix.json's own \"latest = last versions[] entry\" convention.",
+			"sourceType": "github-release",
+			"repo": "simdjson/simdjson",
+			"sourceTemplate": "https://github.com/simdjson/simdjson/releases/download/v{version}/simdjson.h",
+			"versions": [
+				"4.6.11"
+			]
+		},
+		"yyjson": {
+			"$comment": "For ext/jsonk (CLAUDE.md's jsonk decision) -- encode engine + schema-document reader. Same \"vendored flat file, no Dockerfile/Makefile target\" shape as simdjson above (yyjson.h + yyjson.c fetched directly from the tagged ref into ext/jsonk/vendor/yyjson/).",
+			"sourceType": "github-tag",
+			"repo": "ibireme/yyjson",
+			"sourceTemplate": "https://raw.githubusercontent.com/ibireme/yyjson/{version}/src/yyjson.h",
+			"versions": [
+				"0.13.0"
 			]
 		}
 	},
@@ -340,7 +361,8 @@
 			],
 			"libraries": [
 				"libavif"
-			]
+			],
+			"note": "À merger avec l'Extension GD"
 		},
 		"gettext": {
 			"builtin": true,
@@ -442,7 +464,8 @@
 			"switch": "--with-readline",
 			"libraries": [
 				"wineditline"
-			]
+			],
+			"note": "Pas sur que ça fonctionne avec la vm de PHP-wasm"
 		},
 		"shmop": {
 			"builtin": true,
@@ -772,9 +795,12 @@
 			"builtin": false,
 			"mandatory": false,
 			"switch": "--enable-apcu",
-			"dependencies": [
-				"igbinary"
-			]
+			"repo": "krakjoe/apcu",
+			"sourceTemplate": "https://github.com/krakjoe/apcu/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v5.1.28"
+			],
+			"note": "On va probablement la mettre dans le core si la mémoire persiste dans la vm de php-wasm -- being tried now: added to config.yaml as mode: static (CLAUDE.md's jsonk/apcu decision). Verified 2026-09-16 against apcu's real config.m4: igbinary (removed from \"dependencies\" above, that field doesn't exist on this entry anymore) is only an optional faster serializer it detects at runtime, not a hard PHP_ADD_EXTENSION_DEP -- the field carried over from php-static-autobuilder's matrix.json was wrong. Its rwlock/mutex pthread capability probes use AC_RUN_IFELSE but already supply a real cross-compiling action (assume yes, same as native) -- unlike ext/cmark's AC_TRY_RUN (CLAUDE.md decision 34), no patch needed there. Not yet build-tested: whether Emscripten's non-`-pthread` build actually resolves the pthread_mutex*/pthread_rwlock* symbols APCu's own \"yes\" assumption links against is unconfirmed."
 		},
 		"yac": {
 			"builtin": false,
@@ -959,11 +985,15 @@
 			"builtin": false,
 			"mandatory": false,
 			"switch": "--with-imagick",
-			"repo": "https://github.com/Imagick/imagick.git",
+			"repo": "Imagick/imagick",
+			"sourceTemplate": "https://github.com/Imagick/imagick/archive/refs/tags/{version}.tar.gz",
 			"libraries": [
 				"libImageMagick"
 			],
-			"note": "Not present in php-static-autobuilder's own matrix (Windows php builder never added it) — added 2026-09-12 since this repo does support it (compile/php/Dockerfile WITH_IMAGICK block)."
+			"note": "Not present in php-static-autobuilder's own matrix (Windows php builder never added it) — added 2026-09-12 since this repo does support it (compile/php/Dockerfile WITH_IMAGICK block). Was tracking the unpinned 'master' branch directly (compile/php/Dockerfile's own IMAGICK_BRANCH=\"master\" for PHP 8.x) until a real, user-noticed bug: php_imagick.h ships `#define PHP_IMAGICK_VERSION \"@PACKAGE_VERSION@\"` literally (its own comment: \"deliberately left as PACKAGE_VERSION in source code\") — a placeholder only ever substituted by PECL's own packaging tool (`pecl package`, reading package.xml) at release-tarball-build time, which this pipeline's plain `git clone`/tag-tarball fetch never runs, so phpinfo() displayed the raw, unsubstituted string. Fixed 2026-09-16 by pinning to the real latest tag (3.8.1) instead of floating on master (also makes the build reproducible, closing the same class of gap decision 11 already flagged for oniguruma) and sed-replacing @PACKAGE_VERSION@ with that same pinned version in compile/php/Dockerfile right after fetching.",
+			"versions": [
+				"3.8.1"
+			]
 		},
 		"mdhtml": {
 			"$comment": "php-kirigami/php-mdhtml -- our own CommonMark+GFM extension (cmark-gfm-based), replacing ext/cmark as the core, static-mode markdown renderer (CLAUDE.md decision 37; see extensions.cmark's own 'ABANDONED' note). config.m4 uses PHP_ARG_WITH (--with-mdhtml[=DIR]), same shape as ext/cmark's own --with-cmark.",
@@ -978,6 +1008,32 @@
 			"libraries": [
 				"libcmark-gfm"
 			]
+		},
+		"jsonk": {
+			"$comment": "php-kirigami/php-jsonk (the user's own project) -- fast JSON encode/decode + JSON Schema validation, built on vendored simdjson (decode)+yyjson (encode/schema-doc reads), see matrix.json's own \"simdjson\"/\"yyjson\" entries above. Has a HARD zend_module_dep on \"json\" and \"pcre\" -- it can't load without ext/json already loaded, so this build doesn't (and can't) disable ext/json: php-src's own ext/json/config.m4 takes no PHP_ARG_ENABLE at all in PHP 8.5, there is no --disable-json flag to begin with. \"Replacing json\" (as requested) is done by flipping jsonk's own \"jsonk.replace_json_functions\" ini default from its upstream \"0\" to \"1\" for this build (a one-line sed via /root/replace.sh in compile/php/Dockerfile, not a patches/jsonk/*.patch file -- too small a literal-string change to warrant one). Not yet build-tested: the first C++ extension in this pipeline (config.m4's PHP_REQUIRE_CXX/-std=c++17), though JSPI mode's existing -fwasm-exceptions flag (decision 6) means real C++ exceptions are already supported if simdjson's amalgamation ever needs them (jsonk_decode.cpp itself only uses simdjson's non-throwing .get() API).",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-jsonk",
+			"repo": "php-kirigami/php-jsonk",
+			"sourceTemplate": "https://github.com/php-kirigami/php-jsonk/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v0.1.0",
+				"v0.1.1",
+				"v0.1.2"
+			],
+			"libraries": []
+		},
+		"navicat": {
+			"$comment": "php-kirigami/php-navicat (the user's own project) -- native client for Navicat Premium's HTTP-tunnel protocol (ntunnel_mysql.php), reverse-engineered from Navicat's own server scripts. config.m4 uses PHP_ARG_WITH (--with-navicat[=DIR]), reusing the libcurl already linked in via the WITH_CURL block for the static build -- no separate .emcc-php-wasm-sources entry needed, libcurl.a is already appended there.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-navicat",
+			"repo": "php-kirigami/php-navicat",
+			"sourceTemplate": "https://github.com/php-kirigami/php-navicat/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v0.1.0"
+			],
+			"libraries": []
 		}
 	},
 	"plannedLibraries": {
@@ -1130,7 +1186,7 @@
 			"versions": [
 				"1.0.5-netdata2"
 			],
-			"note": "For ext/bitset (PECL) — original Judy is unmaintained, netdata's fork is the active one."
+			"note": "For ext/bitset (PECL) — original Judy is unmaintained, netdata's fork is the active one. | A été surpassé par une nouvelle extension php que j'.ai vu sur PIE"
 		},
 		"net-snmp": {
 			"sourceType": "github-tag",
@@ -1154,7 +1210,7 @@
 			"versions": [
 				"1.52.1"
 			],
-			"note": "For ext/uv (PECL) — Emscripten already provides its own async I/O; a WASM build of libuv itself is unproven, treat as speculative."
+			"note": "For ext/uv (PECL) — Emscripten already provides its own async I/O; a WASM build of libuv itself is unproven, treat as speculative. | Probablement qu'on va s'en foutre de celle là"
 		},
 		"brotli": {
 			"sourceType": "github-release",

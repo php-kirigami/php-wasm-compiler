@@ -107,8 +107,11 @@ echo bin2hex($ciphertext);
 - `*.so` — one JSPI side module per PHP version listed above.
 - `manifest.json` — extension metadata (name, per-version artifact paths,
   ini/env directives) consumed by `@php-wasm/universal`'s
-  `resolvePHPExtension()` / `{ format: 'manifest' }` loader — this is what
-  `@kirigami/php-wasm`'s auto-loader reads.
+  `resolvePHPExtension()`.
+- `index.js` (+ `index.d.ts`) — default-exports `register(phpVersion)`,
+  resolving this package's artifact ready to feed into `@php-wasm/universal`'s
+  `withResolvedPHPExtensions()`. This is what `@kirigami/php-wasm`'s
+  auto-loader calls — install the package and it's picked up automatically.
 - `package.json`'s `kirigami` field — `{ type: "extension", phpVersions,
   minVersion, vendorLib: { name, version }, buildHash }`, mirroring the same
   `kirigami` metadata convention every `@kirigami/plugin-<name>` package

@@ -1853,6 +1853,920 @@ unless explicitly revisited:
       (make shared-mode versions of the other already-static extensions),
       a separate, bigger follow-up not yet scoped.
 
+41. **`sockets` added to the static core build, not `mode: shared`
+    (2026-09-15).** Follow-up to decision 40: the user asked to build
+    `mode: shared` packages for the other `mode: off`, not-yet-wired
+    extensions (`pdo_mysql`, `pgsql`, `sockets`, `gmp`, `ldap`, `tidy`,
+    `intl`, etc. — deliberately *not* the already-static ones like
+    curl/gd/imagick/openssl/xml, which stay static exactly as they are —
+    "REGARDE, curl, gd, imagick, openssl, xml sont DÉJÀ STATIQUES"). Checked
+    `ext/sockets/config.m4` (`PHP-8.5.10` tag) first: `PHP_ARG_ENABLE`
+    only, no external library, no `PHP_ADD_EXTENSION_DEP` — it compiles
+    from php-src's own bundled sources with nothing but a configure flag,
+    the same shape as `exif`/`mbstring`/`mysql` in
+    `IMPLEMENTED_EXTENSIONS`'s existing "no vendored lib" group. The user's
+    call: an extension this cheap (no dependency, no extra build weight)
+    should just be static, not opt-in — `mode: shared` is for extensions
+    that actually cost something to include. Wired exactly like
+    `exif`/`mbregex`'s existing `--enable-x`/`--disable-x` blocks:
+    `compile/php/Dockerfile` (`ARG WITH_SOCKETS` + a new "Add sockets if
+    needed" block), `compile/build.js` (`getArg('WITH_SOCKETS')` forwarded
+    as a `--build-arg`; no yargs `.option()` or `platformDefaults` entry
+    added, since `WITH_YAML`/`WITH_MDHTML` already established this isn't
+    required for `getArg()` to work — `cli.mjs` always passes the flag
+    explicitly), `compile/cli.mjs`'s `IMPLEMENTED_EXTENSIONS` map
+    (`sockets: 'WITH_SOCKETS'`), `config.yaml` (moved from the long
+    `mode: off` list into the static group). Verified with `--dry-run`
+    (no Docker): the resolved `build.js` invocation now includes
+    `--WITH_SOCKETS=yes` in the right place.
+    - **Still not started**: the actual `mode: shared` extensions from the
+      `off` list this whole detour was about. `mysqli` was floated as a
+      candidate next — real research done, not yet built: its
+      `config.m4` (`PHP-8.5.10` tag) needs no external C library (it uses
+      the bundled `mysqlnd` driver, same as the static build's own
+      `WITH_MYSQL` block already does), but it does declare
+      `PHP_ADD_EXTENSION_DEP(mysqli, mysqlnd)` — mysqlnd is a real,
+      separate Zend module (its own `MINIT`, not just a linkable library),
+      so a working `mode: shared` `mysqli` needs `mysqlnd` built and
+      loaded as *its own* shared extension first. Checked
+      `@php-wasm/compile-extension`'s README "Dependencies" section: it
+      only documents linking external C libraries (`.a` archives via
+      `--extra-cflags`/`--extra-ldflags`), nothing about one shared
+      PHP-extension module depending on another being loaded first — this
+      would be a genuinely new, unvalidated pattern (two coordinated
+      `@kirigami/phpext-*` packages, `mysqlnd` then `mysqli`, relying on
+      Emscripten's side-module dynamic linker resolving `mysqli`'s
+      imports against symbols `mysqlnd`'s side module previously
+      exported/imported — plausible by analogy with how a real ELF `.so`
+      loaded earlier makes its symbols visible to one loaded after it, but
+      unconfirmed). Recommended validating the simpler, already-proven
+      "off → shared, no dependency" pattern first (a candidate like `ftp`
+      or `gettext` — though `gettext` turned out to need `libintl`, a real
+      external lib, so not as trivial as first assumed either) before
+      attempting the two-extension `mysqlnd`+`mysqli` pair — not yet
+      decided by the user which order to actually go in.
+
+42. **`ftp` and `mysqli`+`mysqlnd` built as real `mode: shared` packages;
+    a genuine `@kirigami/php-wasm`-side auto-load contract designed and
+    generated; the actual runtime blocker turned out to be decision 32's
+    already-known bug, not a new one (2026-09-15).**
+    - **`ftp`**: vendored complete from the `PHP-8.5.10` tag (`gh api
+      repos/php/php-src/git/trees/<sha>` used to get the real, complete file
+      list first — after decision 40's cmark incident, no more guessing at
+      what files an extension needs). No external library
+      (`--with-ftp-ssl` defaults off since `$PHP_OPENSSL` is unset in an
+      isolated `compile-extension` build). Compiled successfully on the
+      first try.
+    - **`mysqlnd`+`mysqli`**: also vendored complete from the same tag.
+      `ext/mysqlnd`'s own file is `config9.m4`, not `config.m4` (a
+      php-src-tree-only numbered-fragment convention for `buildconf`) —
+      renamed for `phpize` to find it. `mysqlnd` built with
+      `--disable-mysqlnd-compression-support` (skips a zlib dependency) and
+      SSL support off by default (skips an openssl dependency) — both
+      avoidable for this pilot. `mysqli.c`'s `#include "ext/mysqlnd/*.h"`
+      (its own compile-time dependency on mysqlnd's headers) resolves
+      because `@php-wasm/compile-extension`'s build environment only
+      installs a *minimal* php-src tree (confirmed in its own README's
+      troubleshooting section) — `ext/mysqlnd/` isn't in it since mysqlnd
+      is itself optional. Fixed by copying mysqlnd's complete header set
+      (not its `.c` files — never referenced by mysqli's own
+      `PHP_NEW_EXTENSION` list) into `compile/extensions/mysqli/ext/
+      mysqlnd/`, the exact relative path mysqli's own quoted `#include`s
+      expect. Both compiled successfully.
+    - **User decision: mysqlnd+mysqli ship as ONE npm package, not two** —
+      asked directly rather than assumed. Checked the actual
+      `php-extension-manifest-schema.json` first: it has no field for "load
+      this other extension first," so there's no way to express the
+      dependency at the manifest level alone. Implemented as: `mysqlnd`
+      marked `internal: true` in `config.yaml` (never published on its
+      own — reusing the existing internal-fixture mechanism, decision 31)
+      and `mysqli` given a new `bundleExtensions: [mysqlnd]` field.
+      `cli.mjs`'s `runCompileExtensionCommand()` refactored
+      (`buildExtensionArgs()` / `buildOneExtensionArtifact()` extracted)
+      so a "primary" extension can trigger building each of its
+      `bundleExtensions` into its *own* output directory first, renaming
+      the tool's always-`manifest.json` output to `manifest-<name>.json`
+      each time so multiple manifests coexist in one package directory
+      without clobbering each other. A full (`--name`-less) run now
+      excludes any extension referenced by another's `bundleExtensions`
+      from its own top-level build (redundant Docker time otherwise) while
+      keeping it directly targetable (`compile-extension mysqlnd`) for
+      isolated debugging. `computeBuildHash()` widened to hash every
+      `manifest*.json`, not just the literal `manifest.json`.
+      `extensionPackageJson()`'s `kirigami` metadata gained a `bundles`
+      field (`['mysqlnd']`) recording the load order. Verified end-to-end
+      with a real build: `packages/phpext-mysqli/` came out with
+      `manifest-mysqlnd.json` + `manifest.json` + both `.so` files + one
+      `package.json` correctly listing `kirigami.bundles: ["mysqlnd"]`.
+    - **The actual `@kirigami/php-wasm` auto-load contract, designed and
+      generated now rather than left entirely to decision 39's future
+      "kirigami repo, not started" scanner** — the user described the
+      intended flow directly: "php-wasm load => glob les packages
+      d'extensions disponibles -> call register -> le register retourne
+      les so à monter et le ini à ajouter -> php-wasm load les fichiers
+      dans sa vm et ajoute les infos ini." Implemented as a generated
+      `index.js` in every non-internal shared-extension package, exporting
+      `async function register(phpVersion)`: reads the package's own
+      manifest(s) in `kirigami.bundles` order, resolves each via
+      `@php-wasm/universal`'s `resolvePHPExtension()`, and returns the
+      resolved array ready for `withResolvedPHPExtensions()` — the future
+      `@kirigami/php-wasm` scanner (kirigami repo, still not started) needs
+      only `glob('node_modules/@kirigami/phpext-*')` + `import(pkg).then(m
+      => m.register(phpVersion))`, no per-package knowledge of bundled
+      manifests or load order required. `extensionPackageJson()` gained
+      `type: "module"`, `main: "index.js"`, and a real
+      `dependencies: { "@php-wasm/universal": "3.1.53" }` (pinned to match
+      `compile/package.json`'s own `@php-wasm/compile-extension` version,
+      decision 30) — the first time a phpext package has had a real
+      runtime dependency. **Real, load-bearing finding while writing this**:
+      `resolvePHPExtension()`'s `format: 'manifest'` + `manifestUrl` path
+      goes through `fetch()` internally, and Node's native `fetch()`
+      (undici) does not support `file://` URLs — confirmed by hitting
+      `TypeError: fetch failed ... not implemented... yet...` directly.
+      Since an installed npm package's files are always on local disk
+      anyway, `register()` was written to read `manifest*.json` and `*.so`
+      bytes itself via `node:fs` and call `resolvePHPExtension()` with
+      `format: 'so'` directly — sidesteps the broken path entirely rather
+      than working around it with a custom `fetch`. This is a real
+      constraint worth remembering for any other code in this ecosystem
+      that might reach for `format: 'manifest'` + a `file://` URL.
+    - **The runtime smoke test (real goal: does `mysqli.so` actually load
+      with `mysqlnd.so`'s symbols resolved?) never got that far — both
+      failed for a different, already-documented reason.** Wrote a real
+      `@php-wasm/universal` loader test (same technique as decision 30,
+      using the cached `php-wasm-universal-3.1.53.tgz` tarball from that
+      earlier session rather than re-fetching) against our own
+      `node-builds/8-5/php_8_5.wasm`. Both `mysqlnd.so` and `mysqli.so`
+      (and, presumably, `sodium.so` too — same shape) failed to load with
+      the exact `LinkError: ... "__stack_pointer": imported mutable global
+      must be a WebAssembly.Global object` decision 32 already diagnosed
+      months ago for sodium — meaning the mysqlnd→mysqli dependency
+      question is **still open**, blocked behind this pre-existing,
+      unrelated core bug. Checked `compile/php/Dockerfile`'s final `emcc`
+      link step directly: `-Wl,--export=__stack_pointer` was present (the
+      half of decision 32's candidate fix that must have been applied in
+      an earlier, undocumented session) but `-Wl,--export=__table_base`
+      was still missing — exactly the gap decision 32 and decision 35's
+      "discovered while investigating" note both flagged and never
+      resolved. Added the missing line. This requires a full `php.wasm`
+      core rebuild to test (this pipeline's slowest step) — explicitly
+      confirmed with the user before spending it (disk space is no longer
+      the constraint it was per the `project-disk-space-resolved` memory,
+      but the RAM/build-time cost is still real). Rebuild kicked off in
+      the background; not yet finished as of this writing. Once it lands,
+      re-run: (1) the sodium runtime test that's been blocked since
+      decision 32, (2) the real mysqlnd→mysqli dependency question this
+      whole detour was actually trying to answer, (3) regenerate
+      `packages/phpext-{sodium,ftp,mysqli}/` with the new `index.js` (none
+      of the three have it yet — added to the generator after their most
+      recent real builds).
+    - **First rebuild attempt failed — on a completely different, brand-new
+      bug**: `ext/sockets` (just added to the static core, decision 41)
+      failed to compile: `error: incomplete definition of type 'struct
+      sockaddr_ll'` and `error: use of undeclared identifier 'SKF_AD_OFF'`/
+      `'BPF_RET'`/etc. (32 error lines total, all in `sockets.c`, confirmed
+      the only file affected by grepping the whole build log). Root cause:
+      `ext/sockets/sockets.c` guards its `AF_PACKET` (raw Ethernet socket
+      address handling, `struct sockaddr_ll`) and `SO_ATTACH_REUSEPORT_CBPF`
+      (classic BPF socket-filter attachment) code paths with plain `#ifdef
+      AF_PACKET` / `#ifdef SO_ATTACH_REUSEPORT_CBPF` — true on real Linux
+      that both the named constant AND the associated kernel struct/macros
+      (`struct sockaddr_ll`, `SKF_AD_OFF`, `BPF_RET`, `BPF_A`, `BPF_LD`,
+      `BPF_W`, `BPF_ABS`, `SKF_AD_CPU`, `SKF_AD_QUEUE`, `struct
+      sock_filter`, `struct sock_fprog`) are always defined together, but
+      Emscripten's partial POSIX emulation defines the two named constants
+      alone without any of the rest. Fixed with a new
+      `patches/sockets/wasm-af-packet-cbpf.patch` — all 11 guard sites
+      (9× `AF_PACKET`, 2× `SO_ATTACH_REUSEPORT_CBPF`) changed to also
+      require `!defined(__EMSCRIPTEN__)`, disabling both entire feature
+      blocks under this pipeline's only real target rather than chasing
+      individual missing macros one at a time (this pipeline is
+      Emscripten-only, so the condition is unconditionally correct here,
+      not just a narrow workaround). Verified the same way as every cmark
+      patch (decision 35's lesson): generated via a real `diff -ru`
+      between a pristine `PHP-8.5.10` download and a hand-edited copy,
+      then `git apply --no-index --check` against a **third**, separately
+      downloaded pristine copy, confirmed byte-identical (modulo CRLF)
+      to the intended result before trusting it. Wired into
+      `compile/php/Dockerfile` right after the existing `php8.5.patch`/
+      `apply-mysqlnd-patch.sh` application, `cd`'d into `php-src` first
+      (this patch's `-p1` path prefix is `ext/sockets/sockets.c`, unlike
+      the main patch's `php-src/ext/...` — applied from a different
+      directory accordingly). `patches/README.md` updated: its "not wired
+      up yet" status was stale even before this (cmark already wired
+      `patches/cmark/` the same way, just never reflected here) —
+      corrected to describe the real, current state (wired for php-src
+      extensions via `compile/php/Dockerfile`, still not wired for the
+      third-party lib Dockerfiles). Second rebuild (with this patch)
+      kicked off; also not yet finished as of this writing.
+
+43. **`jsonk` (php-kirigami/php-jsonk, the user's own project) and `apcu`
+    (krakjoe/apcu) wired into the static core build (2026-09-16). Neither
+    has been build-tested yet — this decision documents the wiring and a
+    real, verified structural constraint found while scoping it, not a
+    finished/proven result.**
+    - **The literal request — "disable json by default so jsonk replaces
+      it" — is not achievable, and jsonk's own design doesn't need it to
+      be.** Verified directly, not assumed: `php-src`'s real
+      `ext/json/config.m4` (`PHP-8.5.10` tag) takes no `PHP_ARG_ENABLE` at
+      all — there is no `--disable-json` flag in PHP 8.5, ext/json is an
+      unconditional core extension. Separately, `jsonk.c`'s own
+      `zend_module_dep` declares `ZEND_MOD_REQUIRED("json")` — jsonk
+      refuses to load unless `json` is already loaded, because its
+      replacement mechanism clones the `zend_internal_function` struct
+      PHP's own `zend_register_functions()` built for `json_encode`/
+      `json_decode` (via jsonk's aliased `jsonk_json_encode_replacement`/
+      `jsonk_json_decode_replacement` functions) and splices it into the
+      `json_encode`/`json_decode` slots of the *same* function table
+      ext/json's MINIT already populated — the extension's own doc
+      comments spell this out. So "json" can't be disabled, and jsonk
+      itself would refuse to load if it somehow were. What actually
+      realizes "jsonk replaces json" is jsonk's own existing
+      `jsonk.replace_json_functions` ini setting (`STD_PHP_INI_BOOLEAN`,
+      upstream default `"0"`) — flipped to default `"1"` for this build via
+      a one-line `/root/replace.sh` sed in `compile/php/Dockerfile` (not a
+      `patches/jsonk/*.patch` file — too small a literal-string change to
+      warrant one, unlike the multi-file cmark/sockets patches). From
+      userland, `json_encode()`/`json_decode()` are transparently
+      jsonk-backed from process start; `json_last_error()`/
+      `json_last_error_msg()` stay compatible since jsonk's replacement
+      wrappers deliberately write to ext/json's own `JSON_G(error_code)`,
+      not jsonk's separate error state.
+    - **jsonk wiring**: `--enable-jsonk` (config.m4 requires
+      `vendor/simdjson/simdjson.h` and `vendor/yyjson/yyjson.h` to already
+      exist, checked before `buildconf`). Both are vendored as flat
+      amalgamated files with no build step of their own (simdjson.h +
+      simdjson.cpp as GitHub release assets; yyjson.h + yyjson.c fetched
+      directly from the tagged ref) — fetched straight into
+      `ext/jsonk/vendor/{simdjson,yyjson}/` by `compile/php/Dockerfile`
+      itself, the same layout jsonk's own `vendor/build/stage.sh` produces
+      for a native dev build, but *not* via a separate
+      `compile/lib*/Dockerfile` + Makefile target the way every other
+      third-party lib in this pipeline is built — there's no real
+      compilation to do ahead of time, so it didn't need one. `matrix.json`
+      gained `libraries.simdjson`/`libraries.yyjson` entries anyway (pinned
+      `4.6.11`/`0.13.0`, matching jsonk's own matrix.json) purely so
+      `getMatrixVersion()` has one place to resolve them from, and
+      `extensions.jsonk` (repo, sourceTemplate, `v0.1.0`), following the
+      yaml/mdhtml pattern (CLAUDE.md decisions 34/37). `cli.mjs`'s
+      `IMPLEMENTED_EXTENSIONS` gained `jsonk: 'WITH_JSONK'`; `build.js`
+      forwards `WITH_JSONK`/`JSONK_EXT_VERSION`/`SIMDJSON_VERSION`/
+      `YYJSON_VERSION` as `--build-arg`s (decision 34's lesson: both files
+      need updating, or a flag cli.mjs generates gets silently dropped).
+      No `LIB_TARGETS_BY_EXTENSION` entry needed (no compile/Makefile
+      target exists for it).
+    - **This is the pipeline's first C++ extension** (config.m4 calls
+      `PHP_REQUIRE_CXX()`, sets `CXXFLAGS="$CXXFLAGS -std=c++17"` —
+      simdjson 4.x requires C++17). De-risked, not just hoped: JSPI mode's
+      existing `-fwasm-exceptions -sSUPPORT_LONGJMP=wasm` flags (decision
+      6, always on in this pipeline) mean real C++ exception handling is
+      already available if simdjson's amalgamation needs it internally;
+      confirmed `jsonk_decode.cpp` (the one C++ translation unit in the
+      extension) itself only uses simdjson's non-throwing `.get()`-style
+      DOM API (`el.get_bool().get(b)`, etc.), not `throw`/`catch`, by
+      reading the actual file rather than assuming. Left
+      `PHP_ADD_LIBRARY(stdc++, 1, JSONK_SHARED_LIBADD)` (config.m4's own
+      native-Linux workaround for a real RTTI-symbol double-free bug on
+      real Linux builds) untouched rather than guessing whether an
+      Emscripten equivalent is needed — this pipeline's hand-rolled final
+      `emcc` link step doesn't consume automake `SHARED_LIBADD` variables
+      the way a normal native build's linker invocation would, so whether
+      this matters at all here is unconfirmed and left for the first real
+      build to reveal, per this project's own established methodology
+      (fix concretely-observed build failures, don't pre-patch guesses).
+    - **apcu wiring**: `--enable-apcu`, no external lib, no vendoring —
+      pure php-src-bundled-style sources fetched fresh like
+      exif/mbstring/sockets. `matrix.json`'s pre-existing `extensions.apcu`
+      entry (a data-only placeholder ported from php-static-autobuilder,
+      decision 24/28, carrying the user's own earlier note: "on va
+      probablement la mettre dans le core si la mémoire persiste dans la
+      vm de php-wasm" — a direct prediction of this exact moment) gained
+      real `repo`/`sourceTemplate`/`versions` fields matching the
+      yaml/mdhtml shape. **Real bug in that placeholder found and fixed
+      while wiring it**: it listed `dependencies: ["igbinary"]`, ported
+      from php-static-autobuilder's own matrix.json — checked against
+      apcu's actual, current `config.m4` (`krakjoe/apcu` tag `v5.1.24`+)
+      and found no `PHP_ADD_EXTENSION_DEP` on igbinary at all; igbinary is
+      only an optional faster serializer APCu detects at runtime if
+      present, never a hard configure dependency. Removed the field rather
+      than carry the wrong claim forward.
+    - **Checked apcu's own cross-compile safety, learning from the cmark
+      incident (decision 34)**: apcu's `config.m4` runs two `AC_RUN_IFELSE`
+      pthread-capability probes (rwlock support, mutex `PTHREAD_PROCESS_
+      SHARED` support) that *execute* a compiled test binary — the same
+      shape that broke `ext/cmark`'s `AC_TRY_RUN` under cross-compilation
+      and needed a real patch. Read the actual macro calls this time
+      before assuming a patch was needed again: both already supply a real
+      4th ("action if cross-compiling") argument that assumes success
+      (native rwlock/mutex support, `-lpthread` added) — so, unlike cmark,
+      **no patch is needed for configure to complete**. What's genuinely
+      unconfirmed (needs a real build, not more reading): whether
+      Emscripten's non-`-pthread` build actually resolves the
+      `pthread_mutex*`/`pthread_rwlock*`/`PTHREAD_PROCESS_SHARED` symbols
+      that "assumed yes" path links against, or whether the shared-memory
+      cache (`apc_mmap.c`/`apc_shm.c`, `mmap`-based by default via
+      `--disable-apcu-mmap`'s inverse) runs into the same "Emscripten's
+      mmap/munmap support is incomplete" issue this pipeline already works
+      around for its own core (`compile/php-wasm-memory-storage`, see the
+      Extraction/Context sections) — a real, known risk flagged here
+      rather than discovered blind.
+    - **The actual open question this was added to answer, restated
+      precisely**: whether APCu's shared cache genuinely persists across
+      separate `PHP.run()` calls within the *same* `php-wasm` runtime
+      instance (MINIT runs once per process; RINIT/RSHUTDOWN per request
+      boundary) — plausible in principle since APCu's cache lives in
+      module-global state set up at MINIT, not torn down per-request, but
+      unconfirmed until actually tested against a real build.
+    - **✅ Real build attempted, two real bugs found and fixed (2026-09-16),
+      third rebuild in progress as of this writing.** `node compile/cli.mjs
+      --quiet --dry-run` had already confirmed the full arg chain resolves
+      correctly; the first *real* (non-dry-run) build surfaced what
+      dry-run couldn't:
+      1. **jsonk's `vendor/simdjson/simdjson.h` existence check resolves
+         against the wrong directory for this repo's static, whole-tree
+         build**: `configure: error: simdjson not found at
+         vendor/simdjson/simdjson.h -- run vendor/build/stage.sh first`.
+         Root cause: `config.m4`'s guard (and its `PHP_ADD_INCLUDE`/
+         `PHP_NEW_EXTENSION` source paths) are plain relative paths,
+         correct for jsonk's own documented standalone `phpize` build
+         (cwd == `ext/jsonk` when `configure` runs there) but not for a
+         full-`php-src`-tree build, where the *one* generated `./configure`
+         script runs with cwd == `php-src/` — so the same relative path
+         resolves to `php-src/vendor/simdjson/simdjson.h` instead. Fixed
+         *here* (not in jsonk's own `config.m4`) by also copying the
+         already-vendored `ext/jsonk/vendor/{simdjson,yyjson}/` directories
+         to `php-src/vendor/{simdjson,yyjson}/` right after fetching them —
+         covers the guard check and, defensively, any other relative
+         reference the same macros might make, without knowing for certain
+         which of PHP's build macros resolve relative to `$ext_srcdir` vs.
+         the tree root. Documented on the jsonk side too, per the user's
+         request: `php-jsonk`'s own `CLAUDE.md` (decision 20) and
+         `README.md` ("Building from source") now describe this exact
+         caveat for anyone else statically linking jsonk into a full
+         `php-src` tree, without changing jsonk's own code (documentation
+         only, as asked) — the root-cause fix (`config.m4` using
+         `$ext_srcdir`-relative paths) is noted there as a follow-up, not
+         attempted.
+      2. **apcu's `apc_shm.c` fails the final `php.wasm` link with
+         `undefined symbol: shmget/shmat/shmctl/shmdt`** — real SysV IPC
+         syscalls that Emscripten's musl-derived libc *declares* (so the
+         compile step itself doesn't fail) but never implements, and this
+         repo's final link always uses `-s ERROR_ON_UNDEFINED_SYMBOLS=1`.
+         Confirmed via `krakjoe/apcu`'s real `apc_shm.c`: unlike
+         `apc_mmap.c`, it has no `#ifdef APC_MMAP`-style guard at all —
+         `apc_shm_attach()`/`apc_shm_detach()` are unconditionally compiled
+         and referenced by `apc_sma.c`'s runtime mmap-vs-shm dispatch, even
+         though the default build (`--enable-apcu-mmap`, on by default,
+         decision 43's earlier text already noted this) should never
+         actually call them. Fixed with a new
+         `patches/apcu/apcu-emscripten-shm-stub.patch` (first entry in that
+         folder) wrapping the four-syscall implementation in
+         `#if !defined(__EMSCRIPTEN__)` and replacing it with a
+         `zend_error_noreturn`-on-attach / no-op-on-detach stub otherwise —
+         a fatal error if ever actually reached is the honest behavior,
+         since reaching it would mean the mmap backend was unexpectedly
+         bypassed. Verified the same way as every other patch in this repo
+         (decision 35's lesson): generated via a real `diff -ru` against a
+         pristine `v5.1.28` download, then `git apply --no-index --check`
+         against a **third**, separately downloaded pristine copy before
+         trusting it. Wired into `compile/php/Dockerfile` right alongside
+         the existing `patches/sockets/` application (same `cd php-src &&
+         git apply --no-index` step), unconditionally (matches sockets'
+         own always-applied pattern, since `ext/apcu`'s source is always
+         fetched regardless of `WITH_APCU`, only `--enable`/`--disable` is
+         conditional). `patches/README.md` updated to list it as a second
+         real example.
+      - Both bugs were found by running the actual pipeline, not by static
+        analysis, consistent with every other "real build surfaces a real
+        bug" entry in this file (decisions 17-20, 24-26, 32, 34-35, 42).
+        The apcu-persistence question (previous bullet) and jsonk's real
+        C++ link are still open until this third rebuild (with both fixes
+        applied) either succeeds or surfaces the next real issue.
+      3. **Third real bug: a pipeline-wide, cross-cutting build-environment
+         gap, not a jsonk or apcu bug at all — `em++` was never patched the
+         same way `emcc` was.** The third rebuild attempt got past both
+         fixes above and reached the final `emcc`/`wasm-opt` link step,
+         which failed with `[wasm-validator error in function
+         zif_jsonk_decode/zif_jsonk_validate/zif_jsonk_json_decode_
+         replacement] call param types must match` — every call site to
+         `jsonk_decode_impl` (the one function defined in `jsonk_decode.cpp`,
+         the pipeline's first real C++ translation unit), always on
+         argument index 2 and 3 (`flags`/`depth`, both `zend_long`).
+         Diagnosed concretely, not guessed: `zend_long` is `int64_t`
+         exactly when `__x86_64__` is defined (confirmed straight from
+         `Zend/zend_long.h`'s real `PHP-8.5.10` source — `#if
+         defined(__x86_64__) || ... # define ZEND_ENABLE_ZVAL_LONG64 1`),
+         and this whole pipeline relies on `-D__x86_64__` being injected
+         into every compile via the `EMCC_FLAGS` env var
+         (`compile/base-image/Dockerfile`'s `emcc-for-php-wasm.sh` wrapper).
+         Spun up a throwaway container from the already-built
+         `kirigami-php-wasm:base` image to check directly: `emcc` had been
+         replaced with the wrapper (dated to this repo's own build), but
+         `em++` was still the untouched original emsdk file (dated to the
+         emsdk release itself) — `em++` is a **genuinely separate
+         script/entry point** in emsdk, not a symlink to `emcc`, and the
+         original patch (whenever it was written, predates this session)
+         only ever touched `emcc`. So every `.cpp` file compiled in this
+         pipeline has *always* silently missed `EMCC_FLAGS` (and
+         `EMCC_SKIP`) entirely — `-D__x86_64__` included — meaning
+         `jsonk_decode.cpp` was compiled with `zend_long` as plain
+         `int32_t` (the non-`__x86_64__` branch), while every C caller
+         (correctly compiled with `-D__x86_64__` via the patched `emcc`)
+         assumed `int64_t` — a real 32-vs-64-bit ABI mismatch between one
+         C++ translation unit and the rest of the build, caught by
+         `wasm-opt`'s post-link validator (not a silent corruption, at
+         least — Binaryen refused to emit a binary it couldn't validate).
+         This was invisible before now simply because jsonk is this
+         pipeline's first real C++ extension — nothing before it (GD,
+         ImageMagick, curl, etc.) is C++, and `intl`'s own "this is used by
+         intl (which links C++ code)" comments elsewhere in
+         `compile/php/Dockerfile` were never actually exercised (intl is
+         still `mode: off`). **Not a jsonk bug** — confirmed by reading
+         jsonk_decode.cpp/.h side by side, the declaration and definition
+         agree exactly; the user's own initial framing (fix it in
+         `php-jsonk`, commit, tag) doesn't apply here, no change was made
+         to that repo for this one. Fixed in `compile/base-image/Dockerfile`
+         (the "Patch emcc..." `RUN <<EOF` block now also backs up
+         `em++`/`em++.py` to `em++2`/`em++2.py` and installs the same
+         wrapper as `em++`) and `compile/base-image/emcc-for-php-wasm.sh`
+         (the hardcoded final `.../emcc2 "${args[@]}" ...` call changed to
+         `"$(dirname "$0")/$(basename "$0")2" ...` — resolves which
+         original binary to re-invoke from its own invocation name, so one
+         script file correctly serves as both `emcc` and `em++`).
+         **Consequence**: this is a `base-image` change, so the next build
+         must rebuild `kirigami-php-wasm:base` for real (not from Docker's
+         cache) — and every lib image built `FROM` it loses its own cache
+         too, even though none of their actual `RUN` steps changed
+         (Docker's layer cache is keyed by lineage, not just content) — a
+         real, one-time cost of fixing something this early in the
+         pipeline, not a sign anything else is wrong. A fourth rebuild
+         (all three fixes applied) is in progress.
+      4. **Fourth real bug, also unrelated to jsonk/apcu/em++: `WITH_OPCACHE
+         = no` was never actually build-tested since PHP 8.5's "OPcache
+         made non-optional" RFC, and it's missing `--disable-opcache-jit`.**
+         The fourth attempt got past the em++ fix and a transient network
+         502 fetching libwebp (unrelated, just retried), then failed
+         *earlier* than the jsonk/apcu issues, inside `emmake make -j14
+         libphp.la` itself: `error: "JIT not supported on this platform"`
+         from `ext/opcache/jit/zend_jit.h`, compiling
+         `zend_accelerator_module.c`/`zend_file_cache.c`/`zend_persist.c`.
+         The user asked directly whether an existing opcache patch had been
+         erased — checked concretely (git log, `patches/`, `git diff`):
+         nothing was touched or deleted; `jit_stubs.c` (lines ~989-1012,
+         present since the original extraction commit) is intact and
+         solves a *different* problem (supplying no-op link-time symbols
+         for the JIT functions whose real bodies get emptied out by this
+         Dockerfile's very first step — used at the *final* `emcc` link,
+         never reached yet in this failure). Root cause, confirmed by
+         reading `ext/opcache/config.m4` from the exact `php-8.5.10` tag:
+         `PHP_ARG_ENABLE([opcache-jit], ..., [yes], [no])` runs
+         unconditionally (not gated behind `--enable`/`--disable-opcache`
+         at all, matching the RFC), defaults to JIT enabled, and its
+         `AS_CASE([$host_cpu], ...)` arch check incorrectly concludes "real
+         x86_64" here because the *main* PHP `./configure` invocation
+         (unlike every third-party lib Dockerfile's own configure call) is
+         never given an explicit `--host wasm32-unknown-emscripten` —
+         autoconf's `config.guess` falls back to the actual Docker host's
+         real x86_64 CPU. That sets `HAVE_JIT`/`-DIR_TARGET_X64 -DIR_PHP`
+         (confirmed present in the real failing compile command in the
+         build log) and pulls in `zend_jit.h`, whose own `#if
+         defined(__x86_64__) || ...` needs the *compiler* to also define
+         `__x86_64__` — true throughout the rest of this pipeline only via
+         `EMCC_FLAGS`, which is exported for the `emmake make -j14
+         libphp.la` step but apparently doesn't reach this particular
+         compile (not fully root-caused *why* — could be it, could be
+         something else in this one path — but the fix doesn't require
+         knowing: `--disable-opcache-jit` is JIT's own dedicated escape
+         hatch, skips the `$host_cpu` check entirely, and this project's
+         `WITH_OPCACHE=yes` branch already relies on exactly this flag).
+         **Why this is surfacing only now**: the original "full end-to-end
+         build succeeded" milestone (Context/Current-status sections)
+         predates decision 22, which is what first flipped `opcache` to
+         `mode: off` — nothing in this repo's history shows a full rebuild
+         with opcache off actually completing since. Fixed by adding
+         `--disable-opcache-jit --disable-huge-code-pages` to the `else`
+         (opcache-off) branch too, matching what the `yes` branch already
+         passes — `compile/php/Dockerfile`'s "Patch OPcache config.m4"
+         block. A fifth rebuild is in progress.
+      5. **Fifth real bug, also unrelated to jsonk/apcu: only 7 of 22 lib
+         targets had decision 24's `STRIP_SO` cleanup, and the base-image
+         rebuild's cache invalidation was the first thing to actually
+         re-trigger a from-scratch `libpng16` build and expose it.** The
+         fifth attempt got past the opcache fix and reached the real
+         `sapi/cli/php` link (itself only reachable because `emmake make
+         -j14 libphp.la` had failed for an unrelated reason and fallen
+         through to `|| emmake make -j14`, the default "all" target —
+         `sapi/cli/php` is supposed to be excluded via a `sed`-based
+         Makefile-rule removal a few steps earlier, whose own debug `grep`
+         output in this build's log shows *why* it's always been a no-op
+         for PHP 8.5.10: that Makefile spells the rule via a
+         `SAPI_CLI_PATH` variable, never a literal `sapi/cli/php:` line —
+         a separate, pre-existing, not-yet-fixed gap, left alone here since
+         it isn't what actually broke the build). The real failure: `wasm-
+         ld: error: attempted static link of dynamic object
+         /root/lib/lib/libpng16.so` — the exact failure shape decision 24
+         already diagnosed and fixed generically (`STRIP_SO`, a Makefile
+         macro removing stray `.so`/`.so.*` files that upstream `make
+         install` steps produce alongside the `.a` this pipeline actually
+         wants), but that decision scoped the fix to "only libz_jspi and
+         libopenssl_jspi... the only libs actually consumed as a build-time
+         dependency by other lib Dockerfiles" — an assumption later
+         decisions quietly outgrew (libssh2/nghttp2/libyaml/libsodium/
+         libcmark-gfm picked up their own `STRIP_SO` calls over time, per
+         `git grep`) but never applied comprehensively, and `libpng16`
+         specifically was never covered despite being consumed by both
+         `libgd` and `libImageMagick`'s own Dockerfiles *and* swept into
+         `compile/php/Dockerfile`'s shared `/root/lib`. This had been
+         silently latent because the base image (and therefore every lib
+         built `FROM` it) had stayed cached since whenever `libpng16` was
+         last actually rebuilt — this session's `em++` fix (bug 3) was the
+         first thing to force a real `kirigami-php-wasm:base` rebuild,
+         which cascaded into rebuilding `libpng16` for real and finally
+         producing the stray `.so` decision 24's original narrow fix never
+         protected against. Fixed by extending `STRIP_SO` to all 22 lib
+         targets in `compile/Makefile` (was 7) rather than patching
+         `libpng16` alone, since the same latent gap applies equally to
+         every other still-uncovered target the next time its cache gets
+         invalidated.
+         - **That fix alone wasn't enough — a sixth attempt hit a second,
+           related half of the same bug**: `emcc2: error:
+           /root/install/lib/libpng16.so: No such file or directory
+           ("/root/install/lib/libpng16.so" was expected to be an input
+           file...)`. The `.so` really was gone (`STRIP_SO` worked), but
+           `libpng16.la` — libtool's own metadata sidecar, left untouched
+           by the original `STRIP_SO` definition — was still sitting next
+           to the `.a`, and its `dlname='libpng16.so.16'`/
+           `library_names='libpng16.so.16.58.0 libpng16.so.16
+           libpng16.so'`/`libdir='/root/install/lib'` fields (verified by
+           reading the actual `.la` file) still point at the now-deleted
+           `.so`, at a `libdir` that isn't even this shared `/root/lib`
+           pool to begin with (it's copied verbatim from wherever
+           `libpng16` was originally built, inside its *own* Docker
+           container). Libtool, relinking `sapi/cli/php` and noticing the
+           `.la` "was moved" (a warning visible in the log for
+           `libyaml.la`/`libiconv.la` too), tries to honor that stale
+           metadata instead of just using the real `.a` sitting right next
+           to it. Fixed by widening `STRIP_SO`'s own definition to also
+           `rm -f $(1)/lib/*.la` — one change now protects all 22 targets,
+           rather than needing every future `.la`-producing lib to be
+           special-cased. Also manually deleted 18 already-stale `.la`
+           files (`libcurl`, `libiconv`, `libpng16`, `libsodium`,
+           `libssh2`, `libwebp`, `libxml2`, `libyaml`, `nghttp2`,
+           `oniguruma`) left over from before this fix existed — Make
+           considers their `.a` targets already up to date, so it would
+           never have re-run the (now-fixed) recipe to clean them up on
+           its own. A seventh rebuild is in progress.
+      6. **Sixth real bug, back in jsonk territory: simdjson's own x86 SIMD
+         backend detection reaches unavailable real SSE intrinsics under
+         Emscripten — fixed for real this time in `php-jsonk` itself, not
+         worked around here.** The seventh attempt got past the `.la` fix
+         and actually reached `em++` compiling `jsonk_decode.cpp`/
+         `vendor/simdjson/simdjson.cpp` — proof bug 3's `em++` patch works
+         — then failed on a genuinely new error: `.../compat/emmintrin.h:
+         "SSE2 instruction set not enabled"` / the same for `xmmintrin.h`.
+         Root cause: simdjson.h sees `__x86_64__` (this pipeline's own
+         `-D__x86_64__`, forced solely to make `zend_long` 64-bit, not a
+         real-hardware claim) and picks a genuine x86 SIMD implementation,
+         pulling in `<emmintrin.h>`; Emscripten's own compat shims for that
+         header (confirmed by reading the real file inside a throwaway
+         container from `kirigami-php-wasm:base`) guard themselves behind
+         `__SSE__`, which clang only predefines given an explicit
+         `-msimd128` — never implied by `-D__x86_64__` alone. **Fixed in
+         `php-jsonk` itself** (the user, having granted direct edit access
+         earlier for the vendor-path issue, explicitly repeated "va
+         modifier le source directement... et commit/tag" for this class
+         of bug too): `config.m4` now adds `-msimd128` to `CXXFLAGS`,
+         guarded to `case $CXX in *em++*)` so it never reaches jsonk's own
+         primary native-PECL build target. Committed, version bumped to
+         `0.1.1`, tagged `v0.1.1`, and pushed to `php-kirigami/php-jsonk`.
+         `matrix.json`'s `extensions.jsonk.versions` here gained `"v0.1.1"`.
+      7. **Seventh real bug: `v0.1.1`'s `-msimd128` fix was insufficient —
+         it only satisfied `emmintrin.h`'s own guard, then hit
+         `<x86intrin.h>`'s further sub-includes.** The eighth attempt
+         (v0.1.1) got past the SSE-not-enabled errors but failed on
+         `ia32intrin.h`/`ammintrin.h`: undeclared `__builtin_ia32_crc32*`/
+         `rdtscp`/`wbinvd` and "This header is only meant to be used on x86
+         and x64 architecture" — real x86 CPUID/RDTSC/AMD-only SSE4a
+         builtins with no wasm equivalent, confirmed by directly testing
+         `em++ -msimd128 -msse4.2 -include x86intrin.h` in a throwaway
+         container from `kirigami-php-wasm:base` (still fails, no flag
+         combination helps). Diagnosed the real structure by fetching
+         simdjson.h/.cpp directly and reading them: simdjson defaults
+         `SIMDJSON_IMPLEMENTATION_HASWELL`/`WESTMERE` to "on" whenever its
+         own `SIMDJSON_IS_X86_64` is true (unconditionally true here, since
+         that's exactly what `-D__x86_64__` triggers), compiling those x86
+         backends' source — reachable via `<x86intrin.h>` — even though
+         they'd never be selected as the "builtin" implementation without
+         real `-mavx2`/etc. **Real fix, verified with standalone `em++ -c`
+         tests before touching the real pipeline**: `-DSIMDJSON_
+         IMPLEMENTATION_ICELAKE=0 -DSIMDJSON_IMPLEMENTATION_HASWELL=0
+         -DSIMDJSON_IMPLEMENTATION_WESTMERE=0` (all three properly
+         `#ifndef`-guarded, confirmed compiles clean) plus `-DSIMDJSON_
+         EXPERIMENTAL_HAS_SSE2=0` for `simdjson.h`'s own separate SSE2 code
+         path (same `#ifndef` shape). **One piece couldn't be fixed via any
+         `-D` flag**: `simdjson.cpp`'s `detect_supported_architectures()`
+         x86 branch is gated by a *raw*, unguarded `#elif defined(__x86_64__)
+         || defined(_M_AMD64)` whose own body re-`#define`s
+         `SIMDJSON_IS_X86_64 1` unconditionally — confirmed by testing that
+         a command-line `-DSIMDJSON_IS_X86_64=0` gets silently overwritten
+         back to `1` by that line. That branch emits real x86 `cpuid`/
+         `xgetbv` inline asm. Since `php-wasm-compiler` downloads
+         `simdjson.cpp` directly (matrix.json's own `simdjson` entry,
+         independent of jsonk's `vendor/build/stage.sh`), the fix for
+         *this* one piece lives here, not in `php-jsonk`: a new
+         `patches/simdjson/emscripten-skip-x86-cpuid-detection.patch`
+         (generated via `diff -ru` against a pristine `v4.6.11` download,
+         verified with `git apply --no-index --check` against a fresh
+         third copy) adds `&& !defined(__EMSCRIPTEN__)` to that one
+         condition, falling through to simdjson's own existing portable
+         `instruction_set::DEFAULT` branch. Applied in
+         `compile/php/Dockerfile` right after `simdjson.cpp` is fetched
+         (`cd .../vendor/simdjson && git apply --no-index`), before the
+         copy to `php-src/vendor/` so both locations get the patched file.
+         All four `-D` defines went into `php-jsonk`'s own `config.m4`
+         (committed, version bumped to `0.1.2`, tagged `v0.1.2`, pushed —
+         see that repo's `CLAUDE.md` decision 21's correction for the full
+         writeup). `matrix.json`'s `extensions.jsonk.versions` gained
+         `"v0.1.2"`; `patches/README.md` updated to list this as a third
+         real example. Verified end-to-end via standalone `em++`
+         compiles of both `simdjson.cpp` (patched) and a `simdjson.h`-
+         including test file, both clean, before spending a ninth full
+         pipeline rebuild on it.
+    - **✅✅ Ninth rebuild succeeded end-to-end (2026-09-16) — real PHP
+      execution smoke-tested, not just a green Docker exit code.** Produced
+      `node-builds/8-5/php_8_5.js` (~394KB) + `node-builds/8-5/8_5_10/
+      php_8_5.wasm` (~26.5MB, valid `\0asm` + `dylink.0` header). Tested
+      with a throwaway `@php-wasm/universal@3.1.53` script (same technique
+      as decision 30), against the real build, not a simulation:
+      - `get_loaded_extensions()` lists both `jsonk` and `apcu` (alongside
+        every other static extension — `yaml`, `mdhtml`, `sockets`, etc.).
+      - `jsonk_decode()`/`jsonk_encode()` round-trip correctly.
+      - `ini_get('jsonk.replace_json_functions')` reads `1` (the flipped
+        default took effect) and plain `json_encode()`/`json_decode()`
+        calls are genuinely jsonk-backed — confirmed by output, not just
+        by the ini value being set.
+      - `apcu_store()`/`apcu_fetch()` work within a single request.
+      - **The actual question this whole decision was opened to answer**:
+        `apcu_store('persisted_key', ...)` in one `php.run()` call, then
+        `apcu_fetch('persisted_key')` in a **separate, later** `php.run()`
+        call on the *same* `PHP` instance, correctly returned the value
+        set in the first call. **APCu's cache does persist across separate
+        `PHP.run()` calls within the same php-wasm runtime instance** —
+        confirmed real, not theoretical. The earlier open risk (does
+        Emscripten's mmap backend even give APCu a stable arena) turned
+        out to be a non-issue in practice.
+      - **Unexpected, real finding while checking this**: `Zend OPcache`
+        already appears in `get_loaded_extensions()`, and
+        `ini_get('opcache.enable')` reads `1` with a working
+        `opcache_get_status()` — **despite `config.yaml`'s `opcache: {
+        mode: 'off' }`**. Root cause is exactly decision 43 bug 4's own
+        finding: PHP 8.5's "OPcache made non-optional" RFC means the
+        accelerator core (and its default-on `opcache.enable`) is always
+        active regardless of `--disable-opcache` — that flag (and the
+        `--disable-opcache-jit --disable-huge-code-pages` this decision
+        added to it) only ever controlled the JIT/huge-pages sub-features,
+        never the base accelerator's own on/off state. **This directly
+        answers the user's "once the build succeeds, we reactivate
+        opcache" follow-up (2026-09-16): there is nothing to reactivate,
+        it was never actually off.** `config.yaml`'s `opcache: mode: off`
+        and its own comment ("Be sure to disable OPcache if not needed")
+        are now misleading for this PHP version and should be revisited —
+        not done in this pass, flagged here for the next time opcache
+        itself is touched.
+      - This closes out the entire jsonk+apcu addition (decision 43): all
+        seven real bugs found during this session's rebuild cycle (jsonk
+        vendor-path resolution, apcu SysV shm, the pipeline-wide `em++`
+        patching gap, opcache-jit, `STRIP_SO` coverage + stale `.la`
+        metadata, and simdjson's x86 SIMD/cpuid detection — the last one
+        needed two separate correction passes) are fixed, committed, and
+        verified against a real, successful, fully-tested build.
+    - **Queued, explicitly conditional on the apcu-persistence question
+      above resolving "yes" (user, 2026-09-16): add `igbinary` (a faster
+      binary serializer PECL extension) and configure it as APCu's
+      serializer.** APCu detects and uses igbinary automatically when it's
+      loaded (no config wiring needed on APCu's side beyond it being
+      present — `apcu.serializer` becomes settable once igbinary registers
+      itself as a serializer via `php_serialize_register_handler()`).
+      "Set it so it's the serializer" most likely means defaulting
+      `apcu.serializer=igbinary` for this build (an ini-default override,
+      same shape as jsonk's `jsonk.replace_json_functions` flip earlier in
+      this decision) rather than leaving it opt-in — to be confirmed with
+      the user when this is actually picked up. Not started: no
+      `igbinary` entry anywhere yet (`config.yaml`, `matrix.json`,
+      `compile/php/Dockerfile`, `cli.mjs`, `build.js`). Deliberately
+      sequenced after the apcu-persistence question — no point wiring a
+      serializer for a cache that might not actually persist across
+      `PHP.run()` calls in the first place (also confirmed relevant on the
+      consumer side while discussing this: `../kirigami/packages/php-wasm/
+      index.js` keeps `runtime`/`runtimeNetwork` as module-level
+      singletons, `_getPHPRuntime()`/`_getPHPRuntimeWithNetwork()` called
+      only once — so MINIT genuinely runs once per Node process there,
+      the actual precondition APCu's persistence needs; the open question
+      is now narrowed to whether Emscripten's mmap gives APCu a stable
+      arena in the first place, not whether the same runtime instance is
+      reused).
+    - **Queued, not started**: the user separately floated ("il faudrait
+      éventuellement que le Dockerfile soit généré par la config et la
+      matrice") generating `compile/php/Dockerfile` itself from
+      `config.yaml` + `matrix.json` instead of hand-maintaining ARG/RUN
+      blocks per extension (this decision added four more such blocks by
+      hand, the same way decisions 34/37/41/42 each did). Explicitly not
+      attempted in this session — "éventuellement" (framed as a future
+      possibility, not an immediate instruction) and a Dockerfile-generator
+      is a real architectural change to a 900+-line, build-critical file
+      that deserves its own dedicated pass rather than being bundled into
+      an unrelated extension-wiring change. Worth scoping later: it would
+      need to account for the file's current mix of purely mechanical
+      blocks (jsonk/apcu/yaml/mdhtml/sockets's own `--enable-x`/`--disable-x`
+      pairs are already near-identical boilerplate) and genuinely bespoke
+      ones (GD's PHP-version-conditional external-vs-bundled branch, the
+      libxml2 PHP<7.4 sed patches, imagick's PHP7-vs-8 buildconf branch)
+      that a naive template probably can't collapse safely.
+
+44. **A real, pre-existing (unrelated to jsonk/apcu) `imagick` bug spotted
+    by the user directly in `phpinfo()`: "imagick module version" showed
+    the literal string `@PACKAGE_VERSION@` instead of a real version
+    number (2026-09-16).** Confirmed by reading `Imagick/imagick`'s real
+    `php_imagick.h`: `#define PHP_IMAGICK_VERSION "@PACKAGE_VERSION@"`,
+    with the extension's own comment admitting it's deliberate — the
+    placeholder is meant to be substituted by PECL's own `pecl package`
+    tool (reading `package.xml`'s `<version><release>` tag) at official
+    release-tarball-build time. This pipeline never runs that tool — it
+    just does a plain `git clone` of the extension's repo (`compile/php/
+    Dockerfile`'s `IMAGICK_BRANCH="master"` for PHP 8.x) — so the raw
+    placeholder string survived all the way into the compiled binary,
+    silently, since nothing about this affects actual functionality
+    (`ImageMagickVersion`/`getVersion()` etc. read from the real
+    ImageMagick C library, already correctly reported elsewhere in the
+    same `phpinfo()` table — only the wrapper *extension's own* version
+    string was wrong). Almost certainly present in every build of this
+    pipeline going back to the original Playground extraction; just never
+    actually looked at closely until now.
+    - **Also fixed the underlying non-reproducibility this bug rode in
+      on**: `IMAGICK_BRANCH="master"` tracked a floating branch with no
+      pin at all — the exact same class of gap decision 11 already
+      flagged for `oniguruma`, just never flagged for `imagick` before.
+      Pinned to `3.8.1` (verified via `gh api` as the real latest tagged
+      release, not a guess) instead. `matrix.json`'s existing `imagick`
+      entry (previously data-only — `repo`/`switch`/`libraries` only, no
+      `versions`) gained a real `sourceTemplate` + `versions: ["3.8.1"]`,
+      following the yaml/mdhtml/jsonk/apcu convention.
+    - **Fix**: `compile/php/Dockerfile`'s imagick block now clones
+      `--branch "$IMAGICK_EXT_VERSION"` (a new `ARG`, resolved from
+      `matrix.json` via `cli.mjs`/`build.js` exactly like every other
+      GitHub-sourced extension) instead of the hardcoded `"master"` for
+      PHP 8.x, and immediately sed-replaces `@PACKAGE_VERSION@` with that
+      same pinned version string in the freshly cloned `php_imagick.h`
+      before it gets copied into `php-src/ext/imagick`. The PHP 7.x branch
+      (`IMAGICK_BRANCH="3.7.0"`, dead code for this project — PHP 8.5 only,
+      decision 16) was deliberately left untouched, including its own
+      identical `@PACKAGE_VERSION@` exposure — out of scope, not the
+      target platform.
+    - **✅ Rebuilt and re-verified — pinning worked, but the substitution
+      itself had a real, second bug of its own, found and fixed the same
+      day.** The pin to `3.8.1` built cleanly (no functionality lost
+      moving off `master`). But `ReflectionExtension('imagick')-
+      >getVersion()` came back as the literal string
+      `"3.8.1PACKAGE_VERSION3.8.1"` — not the expected clean `"3.8.1"`.
+      Root cause: `replace.sh` shells out to `perl -pi.bak -e "$1"`, and
+      Perl treats a bare `@` inside an `-e` pattern string as **array
+      interpolation** (`@PACKAGE_VERSION` parsed as "interpolate the array
+      named `PACKAGE_VERSION`", silently expanding to empty since no such
+      array exists), not a literal character — confirmed directly with a
+      standalone `perl -pi.bak -e 's/@PACKAGE_VERSION@/3.8.1/g'` test
+      reproducing the exact same garbled output byte-for-byte. Every other
+      `/root/replace.sh` sed-style call in this Dockerfile happens to
+      target patterns with no bare `@` in them, so this specific gotcha
+      never surfaced before. Fixed by escaping both `@` as `\@` in the
+      pattern. Verified with the same standalone `perl` reproduction
+      before spending a rebuild on it, then confirmed for real: the
+      rebuilt `php.wasm`'s `imagick` extension now reports a clean
+      `"3.8.1"`.
+
+45. **The `mode: shared` `__stack_pointer` LinkError (decisions 32/42, open
+    for months) is fully resolved — `sodium`, `ftp`, and `mysqlnd`+`mysqli`
+    all now load and run correctly (2026-09-16).** Two independent bugs,
+    found and fixed one real failure at a time, per this project's own
+    established methodology.
+    - **Root cause of the LinkError, found via a dedicated research
+      subagent**: `-Wl,--export=__stack_pointer`/`--export=__table_base`
+      (decision 32's original candidate fix, sitting unverified in the
+      Dockerfile since some earlier session) does **not** survive
+      Binaryen's post-link `wasm-metadce`/`wasm-opt` dead-code-elimination
+      pass under `-sMAIN_MODULE=2 -O3` — confirmed by Emscripten's own
+      maintainer on `emscripten-core/emscripten#25952`, filed against our
+      exact pinned `4.0.19`: "the whole point of `-sMAIN_MODULE=2` is that
+      it only keeps alive things you ask for" via `-s EXPORTED_FUNCTIONS`,
+      not arbitrary `-Wl,` flags. Also confirmed WordPress Playground's own
+      current upstream `compile/php/Dockerfile` (fetched live via `gh api`)
+      has the **identical** gap — no `--export=` for these symbols at all —
+      so this was never "Playground solves it and we don't," it's a bug
+      neither pipeline had actually fixed; Playground's own core build
+      just never happens to load a side module complex enough to need it.
+      Real fix: route both symbols through the *existing*
+      `.JS_ABI_EXPORTS` → `-s EXPORTED_FUNCTIONS` pipeline (the same
+      mechanism already used for JSPI's own `___wasm_setjmp` family) —
+      `___stack_pointer`/`___table_base`, with the mandatory extra `_`
+      prefix `EXPORTED_FUNCTIONS` requires. Removed the dead `-Wl,--export=`
+      lines. Verified directly with a throwaway `emcc -sMAIN_MODULE=2`
+      test against `kirigami-php-wasm:base` (not a guess) before touching
+      the real Dockerfile.
+    - **Rebuilt and re-tested against `sodium.so`/`ftp.so`/`mysqlnd.so`/
+      `mysqli.so`: `__stack_pointer`/`__table_base` resolved, `ftp` loaded
+      immediately, but `sodium.so` and `mysqlnd.so` each hit a *different*,
+      real missing-symbol error** (`atoll` for mysqlnd, `emscripten_asm_
+      const_int` for sodium — libsodium's `randombytes_js.c` uses
+      `EM_ASM_INT` for JS-side randomness). Both are the same underlying
+      class of bug as `__stack_pointer`, just for different reasons:
+      - `atoll` (and, one rebuild later, `free`/`strlen`): genuine, ordinary
+        libc functions this main module only ever calls **internally**
+        (direct wasm calls need no export) — wasm-ld's DCE drops the
+        export even though the function itself stays compiled in. Fixed
+        the same way: added to `.JS_ABI_EXPORTS`. Confirmed via
+        `WebAssembly.Module.exports()` before/after: `atoll` went from
+        absent to present, and `mergeLibSymbols()` (the generated JS's own
+        runtime, already reads every real wasm export of a freshly
+        instantiated module into `wasmImports`) picked it up automatically
+        — no JS patch needed for real exports.
+      - `emscripten_asm_const_int`: **not** a real C symbol at all — a pure
+        JS-side Emscripten runtime helper, only ever generated into the
+        output JS when *something in this exact link* uses `EM_ASM`, which
+        this main module's own code never does. Forcing it into
+        `EXPORTED_FUNCTIONS` (same mechanism) does make Emscripten generate
+        the `_emscripten_asm_const_int` JS function, but — verified
+        directly by inspecting the generated JS — it produces **no real
+        wasm export**, so `mergeLibSymbols()` has nothing to copy into
+        `wasmImports` for it. Fixed with a companion JS patch: a new
+        `/root/replace.sh` call in the existing post-emcc cleanup block,
+        inserting `wasmImports["emscripten_asm_const_int"] =
+        _emscripten_asm_const_int;` right before Emscripten's own stable
+        `// include: postamble.js` marker (always immediately follows the
+        generated `wasmImports = {...}` literal, confirmed structurally
+        stable and extension-set-independent — unlike matching the
+        literal's own last property, which varies per build).
+      - Found each of these **empirically, one real runtime failure at a
+        time** (a temporary `console.warn` injected into the generated
+        `resolveSymbol()`/`reportUndefinedSymbols()` on an already-built
+        `php_8_5.js`, re-run against the test script, no rebuild needed
+        just to *find* the next symbol) — deliberately not guessed from a
+        static import-list diff of every `.so`, which would have
+        over-fixed for symbols some code paths never actually reach.
+    - **✅ `sodium` fully verified end-to-end**: `get_loaded_extensions()`
+      lists it, and `sodium_crypto_secretbox()` genuinely encrypts data.
+      This closes decision 32's original blocker for good.
+    - **A second, unrelated bug found for `mysqli`+`mysqlnd`**: once the
+      main-module export gaps above were fixed, `mysqlnd.so` itself loaded
+      fine, but `mysqli.so` failed differently — `bad export type for
+      'mysqlnd_global_stats': undefined (undefined)`, a genuine
+      cross-side-module **data** symbol (`PHPAPI MYSQLND_STATS *
+      mysqlnd_global_stats`, real, correctly defined in `mysqlnd_
+      connection.c`) that mysqli.c needs from mysqlnd once both are
+      loaded. Root cause, found by instrumenting the already-built JS
+      (`loadDynamicLibrary()`'s own call order), not guessed: PHP loads
+      shared extensions by scanning `PHP_INI_SCAN_DIR` and processing every
+      `.ini` file it finds **in alphabetical filename order** — our own
+      `packages/phpext-mysqli/index.js` generator (decision 42) resolved
+      `mysqlnd` before `mysqli` into its returned *array*, correctly
+      reflecting `bundleExtensions` order, but that array order has no
+      bearing on the `.ini` filenames `resolvePHPExtension()` derives from
+      each extension's bare `name` — `"mysqli.ini"` sorts alphabetically
+      *before* `"mysqlnd.ini"` (`i` < `n`), the wrong way around, so
+      `mysqli.so` was always being loaded first regardless of our careful
+      array ordering. Fixed in `cli.mjs`'s `extensionIndexJs()` generator
+      (not in `@php-wasm/universal`, which we don't control): when a
+      package bundles more than one manifest, each resolved extension's
+      `iniPath` is rewritten with a zero-padded numeric prefix matching its
+      position in the array (`00-mysqlnd.ini`, `01-mysqli.ini`) — the `.so`
+      path/content is untouched, only the ini filename's sort position
+      changes, general enough to cover any future multi-manifest bundle,
+      not just this one pair.
+    - **✅ `mysqli`/`mysqlnd` fully verified end-to-end too**: load order
+      confirmed correct (`mysqlnd.so` instantiated before `mysqli.so`),
+      both appear in `get_loaded_extensions()`, and `mysqli_init()` returns
+      a real `mysqli` object.
+    - **Also queued, not yet acted on**: while debugging why a `compile-
+      extension` build felt unusually slow, found (by reading its actual
+      installed source, not guessing) that `@php-wasm/compile-extension`
+      always builds its **own**, separate `playground-php-wasm:base` image
+      from Docker assets it fetches from `WordPress/wordpress-playground`
+      and caches locally (`~/.cache/php-wasm/compile-extension/docker-
+      assets/<hash>/php-wasm/`) — confirmed via direct diff that this
+      cached `compile/base-image/Dockerfile` differs from ours by exactly
+      the em++ patch (decision 43's fix) and is otherwise byte-identical,
+      meaning this tool's own side-module builds have never had that fix.
+      No CLI flag or env var exists to point it at our own
+      `kirigami-php-wasm:base` instead. Two fix paths identified, neither
+      attempted yet: (a) seed its local asset cache directly with our own
+      `compile/base-image/{Dockerfile,emcc-for-php-wasm.sh,replace.sh,
+      replace-across-lines.sh}` + `compile/php/php8.5.patch` (a "poison the
+      cache" trick — since the rest of the file is byte-identical, Docker's
+      own layer cache should reuse our already-built layers under the new
+      tag almost instantly) — cheap, no fork to maintain, but relies on
+      this tool's internal cache-path scheme staying stable across its own
+      version bumps; (b) fork `@php-wasm/compile-extension` for a real
+      `--base-image` override — more robust, more to maintain. Leaning
+      toward (a) first as a cheap experiment.
+
 ## Current status
 
 **Extraction done (2026-09-11).** Copied from `php-wasm-builder` into this
@@ -1979,13 +2893,25 @@ entry points).
 - No GitHub Actions workflow yet.
 - No final scoping of which PHP versions/extensions to support beyond
   what's already in `config.yaml`.
-- `mode: shared` (separately loadable extension) — **implemented and
-  end-to-end verified for real as of decision 40** (`cli.mjs
-  compile-extension`, `@kirigami/phpext-<name>` package assembly, decision
-  38's npm-workspaces monorepo + hash-driven version bumps): `sodium`'s real
-  build succeeded, `packages/phpext-sodium/` has a genuine `package.json`
-  (with the `kirigami` metadata section), `manifest.json`, `.buildhash`,
-  and `.so`. `cmark` was tried as a pilot (decisions 32, 35) but removed
+- `jsonk` and `apcu` (decision 43) — **✅ done, build-tested, and
+  runtime-verified for real.** `get_loaded_extensions()` lists both;
+  `jsonk_encode`/`decode` work and `json_encode`/`decode` are jsonk-backed
+  by default; APCu's cache genuinely persists across separate `PHP.run()`
+  calls on the same runtime instance (the open question decision 43 was
+  added to answer — confirmed "yes"). Took 7 real bugs and 9 rebuild
+  attempts to get here (see decision 43 for the full list) — none of them
+  were guesses, each was diagnosed from an actual build failure.
+- `mode: shared` (separately loadable extension) — **✅ fully implemented
+  AND runtime-verified for real, including complex/dependent extensions,
+  as of decision 45.** The long-standing `__stack_pointer` LinkError
+  (decisions 32/42) that blocked anything past a trivial fixture is fixed
+  for good (root cause: `-Wl,--export=` doesn't survive Binaryen's DCE
+  under `MAIN_MODULE=2 -O3`; real fix routes through `EXPORTED_FUNCTIONS`
+  instead). `sodium` (`sodium_crypto_secretbox()` genuinely encrypts data),
+  `ftp`, and the bundled `mysqlnd`+`mysqli` pair (`mysqli_init()` returns a
+  real object, load order fixed via decision 45's ini-filename-prefix
+  trick) all load and run correctly against a real build — not just build
+  successfully. `cmark` was tried as a pilot (decisions 32, 35) but removed
   entirely (decision 40) — not worth the maintenance cost. Still missing:
   the `@kirigami/php-wasm`-side auto-detection/auto-load scan itself
   (decision 39 resolved *who* owns it — `@kirigami/php-wasm`, not the
@@ -2088,3 +3014,16 @@ entry points).
   new `sourceType: "packagist"` in `matrix.json` alongside the existing
   `github-release`/`github-tag`, with GitHub direct as the fallback for
   extensions PIE doesn't cover — not a wholesale replacement.
+- **Floated (2026-09-16), not scoped**: generate `compile/php/Dockerfile`
+  from `config.yaml` + `matrix.json` instead of hand-maintaining an
+  ARG/fetch/configure-flag block per extension (decision 43's jsonk/apcu
+  addition, like decisions 34/37/41/42 before it, each added another
+  near-identical hand-written block). Needs its own scoping pass — see
+  decision 43's note on the mechanical-vs-bespoke block split before
+  attempting it.
+- **Requested (2026-09-16), for the next full build**: add `php-navicat`
+  (wired into `config.yaml`/`matrix.json`/`compile/php/Dockerfile` as
+  `mode: static` this session, but never actually build-tested in this
+  pipeline — only native-build-tested in its own repo) and `igbinary`
+  (not wired in at all yet — see decision 43's queued note on making it
+  APCu's default serializer) to the static core build.

@@ -45,6 +45,11 @@ extensions:
   openssl: { mode: static }
   imagick: { mode: static }
   nodefs: { mode: static }
+  # No external lib, no other extension dependency — pure php-src bundled
+  # code like exif/mbstring above, so no reason to make it opt-in (CLAUDE.md
+  # decision 41). Not part of the reference build's Configure Command
+  # (decision 22), but costs nothing to add.
+  sockets: { mode: static }
 
   # --- PECL, vendored from their own GitHub repos rather than pecl.php.net's
   # package archive (often stale there), see CLAUDE.md decision 34. ---
@@ -55,6 +60,28 @@ extensions:
   # (decision 40) — not worth the maintenance cost for a markdown parser
   # the core already covers.
   mdhtml: { mode: static }
+  # php-kirigami/php-jsonk (the user's own project) -- fast JSON encode/decode
+  # + JSON Schema validation via vendored simdjson (decode) + yyjson (encode).
+  # Hard-depends on "json" and "pcre" being loaded -- ext/json has no
+  # --disable-json flag at all in PHP 8.5 (php-src's own ext/json/config.m4
+  # takes no PHP_ARG_ENABLE), so it can't actually be switched off. "jsonk
+  # replaces json" is done instead by flipping jsonk's own
+  # "jsonk.replace_json_functions" ini default from upstream's "0" to "1" for
+  # this build (see compile/php/Dockerfile's jsonk block). First C++
+  # extension in this pipeline (needs a C++17 compiler); not yet build-tested
+  # end-to-end.
+  jsonk: { mode: static }
+  # krakjoe/apcu -- shared user/opcode cache. Added as an open experiment:
+  # does its cache actually persist across separate PHP.run() calls within
+  # the same php-wasm runtime instance? (matrix.json's own long-standing
+  # apcu note.) Not yet build-tested.
+  apcu: { mode: static }
+  # php-kirigami/php-navicat (the user's own project) -- native client for
+  # Navicat Premium's HTTP-tunnel protocol (ntunnel_mysql.php), reusing the
+  # libcurl already linked in above for the HTTP transport. Build-tested
+  # (native) and validated end-to-end against a mock tunnel server; not yet
+  # tried in this wasm build.
+  navicat: { mode: static }
 
   # --- OFF to match the reference build's Configure Command, which shows
   # --disable-opcache / --disable-soap / --disable-fileinfo /
@@ -99,10 +126,8 @@ extensions:
   pdo_mysql: { mode: 'off' }
   pdo_pgsql: { mode: 'off' }
   pgsql: { mode: 'off' }
-  sockets: { mode: 'off' }
   shmop: { mode: 'off' }
   sysvshm: { mode: 'off' }
-  ftp: { mode: 'off' }
   gettext: { mode: 'off' }
   gmp: { mode: 'off' }
   ldap: { mode: 'off' }
@@ -136,6 +161,40 @@ extensions:
     source: compile/extensions/sodium
     vendorLib: libsodium
     pkgConfigVar: LIBSODIUM
+
+  # Off-list extensions being moved to mode: shared (CLAUDE.md decision 42) —
+  # unlike sodium, these need no vendored C library at all, just php-src's own
+  # bundled sources, same shape as static-mode exif/mbstring/mysql.
+  ftp:
+    mode: shared
+    source: compile/extensions/ftp
+
+  # The first pair of mode:shared extensions where one depends on the other
+  # being loaded first (CLAUDE.md decision 42) — mysqli needs mysqlnd's Zend
+  # module already loaded (PHP_ADD_EXTENSION_DEP(mysqli, mysqlnd) in mysqli's
+  # own config.m4), not just a linkable C library. `internal: true` because
+  # mysqlnd is never published on its own — it's bundled into @kirigami/
+  # phpext-mysqli below (one npm install, two .so + two manifests inside;
+  # a real merged single .so was considered and rejected as too much C work
+  # for now). Compression support disabled to avoid needing a vendored zlib
+  # for this pilot; SSL support is already off by default (see
+  # compile/extensions/mysqlnd/PROVENANCE.md).
+  mysqlnd:
+    mode: shared
+    source: compile/extensions/mysqlnd
+    configArgs: '--disable-mysqlnd-compression-support'
+    internal: true
+  # No vendorLib: mysqli doesn't link a C library, it calls into mysqlnd's own
+  # Zend module at runtime. compile/extensions/mysqli/ext/mysqlnd/ stages
+  # mysqlnd's headers for the compile-time #include only — see
+  # compile/extensions/mysqli/PROVENANCE.md for the full mechanism and its
+  # unresolved-until-tested runtime assumption. `bundleExtensions` tells
+  # cli.mjs to also build mysqlnd into this same package directory, as
+  # manifest-mysqlnd.json (loaded before this package's own manifest.json).
+  mysqli:
+    mode: shared
+    source: compile/extensions/mysqli
+    bundleExtensions: [mysqlnd]
 
 # Version of each third-party library to use (see matrix.json for known
 # versions + their source). "latest" = the newest entry known to

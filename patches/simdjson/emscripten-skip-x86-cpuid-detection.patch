@@ -1,0 +1,12 @@
+diff -ru a/simdjson.cpp b/simdjson.cpp
+--- a/simdjson.cpp	2026-09-16 06:48:36.242343500 -0400
++++ b/simdjson.cpp	2026-09-16 06:48:51.090842100 -0400
+@@ -7988,7 +7988,7 @@
+   return instruction_set::NEON;
+ }
+
+-#elif defined(__x86_64__) || defined(_M_AMD64) // x64
++#elif (defined(__x86_64__) || defined(_M_AMD64)) && !defined(__EMSCRIPTEN__) // x64
+
+
+ namespace {

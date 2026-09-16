@@ -4,13 +4,23 @@ MAKEFILE_DIR := $(dir $(MAKEFILE_PATH))
 # Remove trailing slash if present
 MAKEFILE_DIR := $(patsubst %/,%,$(MAKEFILE_DIR))
 
-# Some upstream builds (zlib, OpenSSL) install both static (.a) and shared
-# (.so*) artifacts. wasm-ld refuses to statically link against the latter
-# ("attempted static link of dynamic object"), which breaks any consumer
-# that finds a dependency via a generic -L/-l search (autoconf's
-# AC_CHECK_LIB-style tests, e.g. libssh2's) rather than referencing the .a
-# file by exact path. Call this right after populating a lib's dist dir.
-STRIP_SO = rm -f $(1)/lib/*.so $(1)/lib/*.so.*
+# Some upstream builds (zlib, OpenSSL, libpng16, ...) install both static
+# (.a) and shared (.so*) artifacts. wasm-ld refuses to statically link
+# against the latter ("attempted static link of dynamic object"), which
+# breaks any consumer that finds a dependency via a generic -L/-l search
+# (autoconf's AC_CHECK_LIB-style tests, e.g. libssh2's) rather than
+# referencing the .a file by exact path. Also removes the matching *.la
+# libtool archive files: their own recorded `dlname`/`library_names`/
+# `libdir` metadata still points at the now-deleted .so (and, since it's
+# copied verbatim from wherever the lib was originally built inside its
+# own Docker container, often at a `libdir` that doesn't even exist in
+# this shared /root/lib pool at all) -- found as a real build failure
+# where libtool, relinking sapi/cli/php, tried to open
+# "/root/install/lib/libpng16.so" and errored "No such file or directory"
+# even with the .so already stripped, because the STALE .la was still
+# there directing it to look. Call this right after populating a lib's
+# dist dir.
+STRIP_SO = rm -f $(1)/lib/*.so $(1)/lib/*.so.* $(1)/lib/*.la
 
 # Reads a library's pinned version straight out of matrix.json (its "latest"
 # entry — see matrix.json's header comment and CLAUDE.md decision 27) instead
@@ -55,6 +65,7 @@ libzip/jspi/dist/1.2.0/root/lib/lib/libzip.a: base-image libz_jspi
 	docker build -f ./libzip/Dockerfile -t kirigami-php-wasm:libzip . --build-arg LIBZIP_VERSION=1.2.0 --build-arg JSPI=1 --progress=plain
 	CID=$$(docker create kirigami-php-wasm:libzip) && docker cp $$CID:/root/install/lib ./libzip/jspi/dist/1.2.0/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libzip) && docker cp $$CID:/root/install/include ./libzip/jspi/dist/1.2.0/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libzip/jspi/dist/1.2.0/root/lib)
 
 libzip-1.9.2_jspi: libzip/jspi/dist/1.9.2/root/lib/lib/libzip.a
 libzip/jspi/dist/1.9.2/root/lib/lib/libzip.a: base-image libz_jspi
@@ -62,6 +73,7 @@ libzip/jspi/dist/1.9.2/root/lib/lib/libzip.a: base-image libz_jspi
 	docker build -f ./libzip/Dockerfile -t kirigami-php-wasm:libzip . --build-arg LIBZIP_VERSION=1.9.2 --build-arg JSPI=1 --progress=plain
 	CID=$$(docker create kirigami-php-wasm:libzip) && docker cp $$CID:/root/install/lib ./libzip/jspi/dist/1.9.2/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libzip) && docker cp $$CID:/root/install/include ./libzip/jspi/dist/1.9.2/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libzip/jspi/dist/1.9.2/root/lib)
 
 LIBPNG_VERSION := $(call MATRIX_VERSION,libpng16)
 
@@ -71,6 +83,7 @@ libpng16/jspi/dist/root/lib/lib/libpng16.a: base-image libz_jspi
 	docker build -f ./libpng16/Dockerfile -t kirigami-php-wasm:libpng . --build-arg JSPI=1 --build-arg LIBPNG_VERSION=$(LIBPNG_VERSION)
 	CID=$$(docker create kirigami-php-wasm:libpng) && docker cp $$CID:/root/install/lib ./libpng16/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libpng) && docker cp $$CID:/root/install/include ./libpng16/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libpng16/jspi/dist/root/lib)
 
 LIBJPEG_VERSION := $(call MATRIX_VERSION,libjpeg)
 
@@ -82,6 +95,7 @@ libjpeg/jspi/dist/root/lib/lib/libjpeg.a: base-image libz_jspi
 	# The directory might exist if another build step failed and we're retrying now
 	mv ./libjpeg/jspi/dist/root/lib/lib32 ./libjpeg/jspi/dist/root/lib/lib || true
 	CID=$$(docker create kirigami-php-wasm:libpng) && docker cp $$CID:/root/lib/include ./libjpeg/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libjpeg/jspi/dist/root/lib)
 
 LIBWEBP_VERSION := $(call MATRIX_VERSION,libwebp)
 
@@ -91,6 +105,7 @@ libwebp/jspi/dist/root/lib/lib/libwebp.a: base-image libz_jspi
 	docker build -f ./libwebp/Dockerfile -t kirigami-php-wasm:libpng . --build-arg JSPI=1 --build-arg LIBWEBP_VERSION=$(LIBWEBP_VERSION)
 	CID=$$(docker create kirigami-php-wasm:libpng) && docker cp $$CID:/root/lib/lib ./libwebp/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libpng) && docker cp $$CID:/root/lib/include ./libwebp/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libwebp/jspi/dist/root/lib)
 
 LIBAOM_VERSION := $(call MATRIX_VERSION,libaom)
 
@@ -100,6 +115,7 @@ libaom/jspi/dist/root/lib/lib/libaom.a: base-image
 	docker build -f ./libaom/Dockerfile -t kirigami-php-wasm:libaom . --build-arg JSPI=1 --build-arg LIBAOM_VERSION=$(LIBAOM_VERSION)
 	CID=$$(docker create kirigami-php-wasm:libaom) && docker cp $$CID:/root/lib/lib ./libaom/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libaom) && docker cp $$CID:/root/lib/include ./libaom/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libaom/jspi/dist/root/lib)
 
 LIBAVIF_VERSION := $(call MATRIX_VERSION,libavif)
 
@@ -109,6 +125,7 @@ libavif/jspi/dist/root/lib/lib/libavif.a: base-image
 	docker build -f ./libavif/Dockerfile -t kirigami-php-wasm:libavif . --build-arg JSPI=1 --build-arg LIBAVIF_VERSION=$(LIBAVIF_VERSION)
 	CID=$$(docker create kirigami-php-wasm:libavif) && docker cp $$CID:/root/lib/lib ./libavif/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libavif) && docker cp $$CID:/root/lib/include ./libavif/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libavif/jspi/dist/root/lib)
 
 FREETYPE_VERSION := $(call MATRIX_VERSION,freetype)
 
@@ -118,6 +135,7 @@ libfreetype/jspi/dist/root/lib/lib/libfreetype.a: base-image libz_jspi libpng16_
 	docker build -f ./libfreetype/Dockerfile -t kirigami-php-wasm:libfreetype . --build-arg JSPI=1 --build-arg FREETYPE_VERSION=$(FREETYPE_VERSION) --progress=plain
 	CID=$$(docker create kirigami-php-wasm:libfreetype) && docker cp $$CID:/root/install/lib ./libfreetype/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libfreetype) && docker cp $$CID:/root/install/include ./libfreetype/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libfreetype/jspi/dist/root/lib)
 
 GD_VERSION := $(call MATRIX_VERSION,libgd)
 
@@ -128,6 +146,7 @@ libgd/jspi/dist/root/lib/lib/libgd.a: base-image libz_jspi libpng16_jspi libjpeg
 	CID=$$(docker create kirigami-php-wasm:libgd) && docker cp $$CID:/root/install/lib ./libgd/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libgd) && docker cp $$CID:/root/install/include ./libgd/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libgd) && docker cp $$CID:/root/install/bin ./libgd/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libgd/jspi/dist/root/lib)
 
 LIBXML2_VERSION := $(call MATRIX_VERSION,libxml2)
 
@@ -138,6 +157,7 @@ libxml2/jspi/dist/root/lib/lib/libxml2.a: base-image libz_jspi
 	CID=$$(docker create kirigami-php-wasm:libxml2) && docker cp $$CID:/root/lib/bin ./libxml2/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libxml2) && docker cp $$CID:/root/lib/lib ./libxml2/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libxml2) && docker cp $$CID:/root/lib/include ./libxml2/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libxml2/jspi/dist/root/lib)
 
 # Single OpenSSL version, not the two (1.1.0h/1.1.1t) upstream Playground
 # built in parallel — we only target one PHP version (8.5, see CLAUDE.md
@@ -180,6 +200,7 @@ libsqlite3/jspi/dist/root/lib/lib/libsqlite3.a: base-image libz_jspi
 		--progress=plain
 	CID=$$(docker create kirigami-php-wasm:libsqlite3) && docker cp $$CID:/root/lib/lib ./libsqlite3/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libsqlite3) && docker cp $$CID:/root/lib/include ./libsqlite3/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libsqlite3/jspi/dist/root/lib)
 	@if [ "${WITH_DEBUG}" = "yes" ]; then \
 		CID=$$(docker create kirigami-php-wasm:libsqlite3) && docker cp $$CID:/root/sqlite-src ./libsqlite3/ && docker rm $$CID; \
 	fi
@@ -192,6 +213,7 @@ libiconv/jspi/dist/root/lib/lib/libiconv.a: base-image libz_jspi
 	docker build -f ./libiconv/Dockerfile -t kirigami-php-wasm:libiconv . --build-arg JSPI=1 --build-arg LIBICONV_VERSION=$(LIBICONV_VERSION)
 	CID=$$(docker create kirigami-php-wasm:libiconv) && docker cp $$CID:/root/install/lib ./libiconv/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libiconv) && docker cp $$CID:/root/install/include ./libiconv/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libiconv/jspi/dist/root/lib)
 
 oniguruma_jspi: oniguruma/jspi/dist/root/lib/lib/libonig.a
 oniguruma/jspi/dist/root/lib/lib/libonig.a: base-image
@@ -199,6 +221,7 @@ oniguruma/jspi/dist/root/lib/lib/libonig.a: base-image
 	docker build -f ./oniguruma/Dockerfile -t kirigami-php-wasm:oniguruma . --progress=plain --build-arg JSPI=1
 	CID=$$(docker create kirigami-php-wasm:oniguruma) && docker cp $$CID:/root/lib/lib ./oniguruma/jspi/dist/root/lib/ && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:oniguruma) && docker cp $$CID:/root/lib/include ./oniguruma/jspi/dist/root/lib/ && docker rm $$CID
+	$(call STRIP_SO,./oniguruma/jspi/dist/root/lib)
 
 LIBSSH2_VERSION := $(call MATRIX_VERSION,libssh2)
 
@@ -262,6 +285,7 @@ libcurl/jspi/dist/root/lib/lib/libcurl.a: base-image libz_jspi libopenssl_jspi l
 	docker build -f ./libcurl/Dockerfile -t kirigami-php-wasm:libcurl . --progress=plain --build-arg JSPI=1 --build-arg CURL_VERSION=curl-$(CURL_VERSION)
 	CID=$$(docker create kirigami-php-wasm:libcurl) && docker cp $$CID:/root/curl-$(CURL_VERSION)/lib/.libs ./libcurl/jspi/dist/root/lib/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libcurl) && docker cp $$CID:/root/curl-$(CURL_VERSION)/include/ ./libcurl/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libcurl/jspi/dist/root/lib)
 
 IMAGEMAGICK_VERSION := $(call MATRIX_VERSION,libImageMagick)
 
@@ -272,6 +296,7 @@ libImageMagick/jspi/dist/root/lib/lib/libMagickCore-7.Q16HDRI.a: base-image libz
 	CID=$$(docker create kirigami-php-wasm:libImageMagick) && docker cp $$CID:/root/install/lib ./libImageMagick/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libImageMagick) && docker cp $$CID:/root/install/include ./libImageMagick/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libImageMagick) && docker cp $$CID:/root/install/bin ./libImageMagick/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libImageMagick/jspi/dist/root/lib)
 
 all: all_jspi
 all_jspi: libz_jspi libzip_jspi libpng16_jspi libjpeg_jspi libwebp_jspi libaom_jspi libavif_jspi libfreetype_jspi libgd_jspi libxml2_jspi libopenssl_jspi libsqlite3_jspi libiconv_jspi oniguruma_jspi libssh2_jspi nghttp2_jspi libcurl_jspi libImageMagick_jspi libsodium_jspi libyaml_jspi libcmark-gfm_jspi

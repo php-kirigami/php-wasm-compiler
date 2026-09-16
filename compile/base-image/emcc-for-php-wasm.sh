@@ -40,4 +40,13 @@ for ((i=${#args[@]} - 1; i >= 0; i--)); do
     fi
 done
 
-/root/emsdk/upstream/emscripten/emcc2 "${args[@]}" ${EMCC_FLAGS:-}
+# This same script is installed as both "emcc" and "em++" (see
+# compile/base-image/Dockerfile) -- found via a real build failure: only
+# "emcc" was patched originally, so any .cpp file in the pipeline (e.g.
+# ext/jsonk's one C++ translation unit) silently missed EMCC_FLAGS
+# entirely, including "-D__x86_64__" (the flag that makes zend_long
+# 64-bit under this build, see CLAUDE.md's "64 bit long support" section)
+# -- a real, cross-cutting ABI mismatch between C and C++ TUs, not
+# specific to any one extension. Resolving by invocation name (rather
+# than hardcoding "emcc2") keeps one script correct for both.
+"$(dirname "$0")/$(basename "$0")2" "${args[@]}" ${EMCC_FLAGS:-}

@@ -1,0 +1,51 @@
+{
+	"name": "@kirigami/phpext-mysqli",
+	"version": "0.1.0",
+	"description": "Kirigami PHP.wasm shared extension: mysqli (JSPI side module, see @kirigami/php-wasm)",
+	"keywords": [
+		"php-wasm",
+		"php",
+		"wasm",
+		"webassembly",
+		"kirigami",
+		"mysqli"
+	],
+	"homepage": "https://php-kirigami.github.io",
+	"bugs": {
+		"url": "https://github.com/php-kirigami/php-wasm-compiler/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/php-kirigami/php-wasm-compiler.git"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"license": "GPL-2.0-or-later",
+	"author": "Maxime Larrivée-Roy",
+	"type": "module",
+	"main": "index.js",
+	"types": "index.d.ts",
+	"dependencies": {
+		"@php-wasm/universal": "3.1.53"
+	},
+	"files": [
+		"manifest.json",
+		"manifest-*.json",
+		"*.so",
+		"index.js",
+		"index.d.ts",
+		"README.md"
+	],
+	"kirigami": {
+		"type": "extension",
+		"phpVersions": [
+			"8.5"
+		],
+		"minVersion": "8.5.10",
+		"bundles": [
+			"mysqlnd"
+		],
+		"buildHash": "a78092f4801583f1dcc9d2b01d6c3c87d60a97fc1b1c14327a2a56992993eb70"
+	}
+}

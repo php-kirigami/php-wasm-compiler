@@ -1,0 +1,41 @@
+diff -ru a/ext/apcu/apc_shm.c b/ext/apcu/apc_shm.c
+--- a/ext/apcu/apc_shm.c	2026-09-16 02:12:22.209605100 -0400
++++ b/ext/apcu/apc_shm.c	2026-09-16 02:13:04.371739500 -0400
+@@ -45,6 +45,18 @@
+ # define SHM_A 0222 /* write permission */
+ #endif
+
++/* Emscripten has no real SysV IPC (no separate OS processes to share a
++ * segment between): sys/shm.h's shmget/shmat/shmctl/shmdt are declared by
++ * its musl-derived libc headers but never actually implemented, which
++ * fails the final php.wasm link with "undefined symbol" under
++ * -s ERROR_ON_UNDEFINED_SYMBOLS=1 -- these two functions are still
++ * unconditionally compiled in and referenced by apc_sma.c's runtime
++ * mmap-vs-shm dispatch even when built with the default
++ * --enable-apcu-mmap (APC_MMAP), which is the only backend actually
++ * reachable on this target. Stubbed instead of implemented: a fatal error
++ * here means the mmap backend was unexpectedly bypassed, which should
++ * never happen given the default build flags. */
++#if !defined(__EMSCRIPTEN__)
+ static int apc_shm_create(size_t size)
+ {
+ 	int shmid;			/* shared memory id */
+@@ -88,6 +100,18 @@
+ 		apc_warning("apc_shm_detach: shmdt failed:");
+ 	}
+ }
++#else
++void *apc_shm_attach(size_t size)
++{
++	zend_error_noreturn(E_CORE_ERROR, "apc_shm_attach: SysV shared memory is not available under Emscripten -- APCu should be using the mmap backend (APC_MMAP) instead, see apc_shm.c");
++	return NULL;
++}
++
++void apc_shm_detach(void *shmaddr)
++{
++	(void) shmaddr;
++}
++#endif
+
+ /*
+  * Local variables:

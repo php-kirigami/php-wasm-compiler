@@ -1,0 +1,102 @@
+diff -ru pristine/ext/sockets/sockets.c patched/ext/sockets/sockets.c
+--- pristine/ext/sockets/sockets.c	2026-09-15 20:48:25.123573800 -0400
++++ patched/ext/sockets/sockets.c	2026-09-15 20:49:45.469888100 -0400
+@@ -100,7 +100,7 @@
+ #define PF_INET AF_INET
+ #endif
+ 
+-#if defined(AF_PACKET)
++#if defined(AF_PACKET) && !defined(__EMSCRIPTEN__)
+ #define PHP_ETH_PROTO_CHECK(protocol, family)								\
+ 	do {												\
+ 		/* We ll let EINVAL errno warning about miusage, too many protocols conflicts */	\
+@@ -1005,7 +1005,7 @@
+ #ifdef HAVE_IPV6
+ 	struct sockaddr_in6		*sin6;
+ #endif
+-#ifdef AF_PACKET
++#if defined(AF_PACKET) && !defined(__EMSCRIPTEN__)
+ 	struct sockaddr_ll              *sll;
+ #endif
+ 	char					addrbuf[INET6_ADDRSTRLEN];
+@@ -1060,7 +1060,7 @@
+ 			ZEND_TRY_ASSIGN_REF_STRING(addr, s_un->sun_path);
+ 			RETURN_TRUE;
+ 			break;
+-#ifdef AF_PACKET
++#if defined(AF_PACKET) && !defined(__EMSCRIPTEN__)
+ 		case AF_PACKET:
+ 			sll = (struct sockaddr_ll *) sa;
+ 			char ifrname[IFNAMSIZ];
+@@ -1175,7 +1175,7 @@
+ #ifdef HAVE_IPV6
+ 		&& domain != AF_INET6
+ #endif
+-#ifdef AF_PACKET
++#if defined(AF_PACKET) && !defined(__EMSCRIPTEN__)
+ 		&& domain != AF_PACKET
+ #endif
+ 		&& domain != AF_INET) {
+@@ -1401,7 +1401,7 @@
+ 				break;
+ 			}
+ #endif
+-#ifdef AF_PACKET
++#if defined(AF_PACKET) && !defined(__EMSCRIPTEN__)
+ 		case AF_PACKET:
+ 			{
+ 				struct sockaddr_ll *sa = (struct sockaddr_ll *) sock_type;
+@@ -1521,7 +1521,7 @@
+ #ifdef HAVE_IPV6
+ 	struct sockaddr_in6	sin6;
+ #endif
+-#ifdef AF_PACKET
++#if defined(AF_PACKET) && !defined(__EMSCRIPTEN__)
+ 	//struct sockaddr_ll     sll;
+ #endif
+ 	char				addrbuf[INET6_ADDRSTRLEN];
+@@ -1628,7 +1628,7 @@
+ 			ZEND_TRY_ASSIGN_REF_LONG(arg6, ntohs(sin6.sin6_port));
+ 			break;
+ #endif
+-#ifdef AF_PACKET
++#if defined(AF_PACKET) && !defined(__EMSCRIPTEN__)
+ 			/*
+ 		case AF_PACKET:
+ 			// TODO expose and use proper ethernet frame type instead i.e. src mac, dst mac and payload to userland
+@@ -1679,7 +1679,7 @@
+ #ifdef HAVE_IPV6
+ 	struct sockaddr_in6	sin6;
+ #endif
+-#ifdef AF_PACKET
++#if defined(AF_PACKET) && !defined(__EMSCRIPTEN__)
+ 	//struct sockaddr_ll      sll;
+ #endif
+ 	int					retval;
+@@ -1762,7 +1762,7 @@
+ 			retval = sendto(php_sock->bsd_socket, buf, ((size_t)len > buf_len) ? buf_len : (size_t)len, flags, (struct sockaddr *) &sin6, sizeof(sin6));
+ 			break;
+ #endif
+-#ifdef AF_PACKET
++#if defined(AF_PACKET) && !defined(__EMSCRIPTEN__)
+ 			/*
+ 		case AF_PACKET:
+ 			if (port_is_null) {
+@@ -2038,7 +2038,7 @@
+ #else
+ 	struct					timeval tv;
+ #endif
+-#ifdef SO_ATTACH_REUSEPORT_CBPF
++#if defined(SO_ATTACH_REUSEPORT_CBPF) && !defined(__EMSCRIPTEN__)
+ 	struct sock_filter cbpf[8] = {0};
+ 	struct sock_fprog bpfprog;
+ #endif
+@@ -2296,7 +2296,7 @@
+ 		}
+ #endif
+ 
+-#ifdef SO_ATTACH_REUSEPORT_CBPF
++#if defined(SO_ATTACH_REUSEPORT_CBPF) && !defined(__EMSCRIPTEN__)
+ 		case SO_ATTACH_REUSEPORT_CBPF: {
+ 			zend_long cbpf_val = zval_get_long(arg4);
+ 

@@ -51,6 +51,11 @@ COPY ./compile/opcache/ /root/php-src/ext/opcache
 # ext/ before buildconf, same as the extensions above.
 ARG YAML_EXT_VERSION
 ARG MDHTML_EXT_VERSION
+ARG JSONK_EXT_VERSION
+ARG APCU_EXT_VERSION
+ARG NAVICAT_EXT_VERSION
+ARG SIMDJSON_VERSION
+ARG YYJSON_VERSION
 
 RUN mkdir -p /root/php-src/ext/yaml && \
 	wget -O /root/yaml-ext.tar.gz https://github.com/php/pecl-file_formats-yaml/archive/refs/tags/${YAML_EXT_VERSION}.tar.gz && \
@@ -64,6 +69,72 @@ RUN mkdir -p /root/php-src/ext/mdhtml && \
 	wget -O /root/mdhtml-ext.tar.gz https://github.com/php-kirigami/php-mdhtml/archive/refs/tags/${MDHTML_EXT_VERSION}.tar.gz && \
 	tar -xzf /root/mdhtml-ext.tar.gz -C /root/php-src/ext/mdhtml --strip-components=1 && \
 	rm /root/mdhtml-ext.tar.gz
+
+# php-kirigami/php-jsonk (the user's own project) — fast JSON encode/decode +
+# JSON Schema validation. Vendors simdjson (decode) + yyjson (encode/schema
+# reads) as flat amalgamated files, same layout as its own
+# vendor/build/stage.sh recipe — fetched directly here rather than via a
+# separate compile/lib*/Dockerfile, since neither needs a real build step
+# (single-header/source releases). "json" is a hard module dependency of
+# jsonk (see its zend_module_dep) — it can't be disabled, and php-src's
+# ext/json/config.m4 has no --disable-json flag at all in PHP 8.5 anyway.
+# "jsonk replaces json" is instead done by flipping the upstream ini default
+# for "jsonk.replace_json_functions" from "0" to "1" for this build.
+# simdjson.cpp's own runtime CPU-feature detection is gated by a raw
+# `#elif defined(__x86_64__)` (not overridable via -D, unlike every other
+# SIMDJSON_* knob jsonk's own config.m4 sets) and emits real x86 cpuid/
+# xgetbv inline asm with no wasm equivalent — patched to also require
+# `!defined(__EMSCRIPTEN__)`, falling through to simdjson's own existing
+# portable instruction_set::DEFAULT branch instead.
+COPY ./patches/simdjson/*.patch /root/patches-simdjson/
+RUN mkdir -p /root/php-src/ext/jsonk && \
+	wget -O /root/jsonk-ext.tar.gz https://github.com/php-kirigami/php-jsonk/archive/refs/tags/${JSONK_EXT_VERSION}.tar.gz && \
+	tar -xzf /root/jsonk-ext.tar.gz -C /root/php-src/ext/jsonk --strip-components=1 && \
+	rm /root/jsonk-ext.tar.gz && \
+	mkdir -p /root/php-src/ext/jsonk/vendor/simdjson /root/php-src/ext/jsonk/vendor/yyjson && \
+	wget -O /root/php-src/ext/jsonk/vendor/simdjson/simdjson.h "https://github.com/simdjson/simdjson/releases/download/v${SIMDJSON_VERSION}/simdjson.h" && \
+	wget -O /root/php-src/ext/jsonk/vendor/simdjson/simdjson.cpp "https://github.com/simdjson/simdjson/releases/download/v${SIMDJSON_VERSION}/simdjson.cpp" && \
+	wget -O /root/php-src/ext/jsonk/vendor/yyjson/yyjson.h "https://raw.githubusercontent.com/ibireme/yyjson/${YYJSON_VERSION}/src/yyjson.h" && \
+	wget -O /root/php-src/ext/jsonk/vendor/yyjson/yyjson.c "https://raw.githubusercontent.com/ibireme/yyjson/${YYJSON_VERSION}/src/yyjson.c" && \
+	cd /root/php-src/ext/jsonk/vendor/simdjson && \
+	git apply --no-index -v /root/patches-simdjson/*.patch && \
+	cd /root && \
+	# config.m4's own "vendor/simdjson/simdjson.h" existence check (and its
+	# PHP_NEW_EXTENSION source list) is a plain relative path, correct for
+	# jsonk's own documented standalone build (phpize from ext/jsonk itself,
+	# so cwd == ext/jsonk when configure runs) but NOT for this static,
+	# whole-php-src-tree build: the generated top-level ./configure script
+	# runs config.m4's shell body with cwd == /root/php-src, so the bare
+	# relative path resolves there, not under ext/jsonk/. Mirroring the
+	# vendored files at the php-src root too (real build confirmed this is
+	# needed: configure failed with "simdjson not found" otherwise) resolves
+	# both that guard check and any other relative reference the same way.
+	mkdir -p /root/php-src/vendor && \
+	cp -r /root/php-src/ext/jsonk/vendor/simdjson /root/php-src/vendor/simdjson && \
+	cp -r /root/php-src/ext/jsonk/vendor/yyjson /root/php-src/vendor/yyjson && \
+	# Default "jsonk.replace_json_functions" to on for this build (upstream
+	# default is off) so the native json_encode()/json_decode() are
+	# jsonk-backed without any consumer-side ini configuration.
+	/root/replace.sh 's/"jsonk\.replace_json_functions", "0",/"jsonk.replace_json_functions", "1",/g' /root/php-src/ext/jsonk/jsonk.c
+
+# krakjoe/apcu — shared user/opcode cache. Pure php-src-bundled-style
+# sources like exif/mbstring/sockets above: no external lib, no vendoring.
+# Added as an open experiment (not yet build-tested): does its cache
+# actually persist across separate PHP.run() calls within the same
+# php-wasm runtime instance? See matrix.json's own "apcu" note.
+RUN mkdir -p /root/php-src/ext/apcu && \
+	wget -O /root/apcu-ext.tar.gz https://github.com/krakjoe/apcu/archive/refs/tags/${APCU_EXT_VERSION}.tar.gz && \
+	tar -xzf /root/apcu-ext.tar.gz -C /root/php-src/ext/apcu --strip-components=1 && \
+	rm /root/apcu-ext.tar.gz
+
+# php-kirigami/php-navicat (the user's own project) -- native client for
+# Navicat Premium's own HTTP-tunnel protocol (ntunnel_mysql.php). Reuses the
+# libcurl already linked in via the WITH_CURL block below for the HTTP
+# transport; no separate library to vendor here.
+RUN mkdir -p /root/php-src/ext/navicat && \
+	wget -O /root/navicat-ext.tar.gz https://github.com/php-kirigami/php-navicat/archive/refs/tags/${NAVICAT_EXT_VERSION}.tar.gz && \
+	tar -xzf /root/navicat-ext.tar.gz -C /root/php-src/ext/navicat --strip-components=1 && \
+	rm /root/navicat-ext.tar.gz
 
 # Bring in the libraries
 RUN mkdir -p /root/lib/include /root/lib/lib /libs
@@ -136,8 +207,25 @@ RUN if [ "$WITH_OPCACHE" = "yes" ]; \
 		# Enable OPcache.
 		echo -n ' --enable-opcache --disable-opcache-jit --disable-huge-code-pages ' >> /root/.php-configure-flags; \
 	else \
-		# Be sure to disable OPcache if not needed.
-		echo -n ' --disable-opcache ' >> /root/.php-configure-flags; \
+		# Be sure to disable OPcache if not needed. --disable-opcache-jit is
+		# also required here, not just in the "yes" branch above: PHP 8.5
+		# made OPcache "non-optional" (https://wiki.php.net/rfc/make_opcache_required)
+		# -- opcache/config.m4's own PHP_ARG_ENABLE([opcache-jit]) block runs
+		# unconditionally, independent of --enable/--disable-opcache, and
+		# defaults PHP_OPCACHE_JIT to "yes". Its $host_cpu-based arch check
+		# (real x86_64 vs. supported) incorrectly concludes "yes, x86_64" for
+		# this build, because the main PHP ./configure invocation is never
+		# given an explicit --host wasm32-unknown-emscripten (unlike every
+		# third-party lib Dockerfile), so autoconf's config.guess reports the
+		# real Docker host's actual x86_64 CPU. That flips on HAVE_JIT and
+		# real ext/opcache/jit/*.c sources, whose zend_jit.h then requires
+		# the *compiler* to also define __x86_64__ (only true via this
+		# project's own EMCC_FLAGS injection at `make` time, not during
+		# `./configure`) -- found as a real "error validating input"/
+		# "JIT not supported on this platform" build failure. Passing
+		# --disable-opcache-jit skips that whole detection path outright,
+		# matching what the "yes" branch already does.
+		echo -n ' --disable-opcache --disable-opcache-jit --disable-huge-code-pages ' >> /root/.php-configure-flags; \
 	fi
 
 RUN cd php-src && ./buildconf --force
@@ -154,6 +242,7 @@ ARG WITH_EXIF
 ARG WITH_GD
 ARG WITH_MBSTRING
 ARG WITH_MBREGEX
+ARG WITH_SOCKETS
 ARG WITH_CLI_SAPI
 ARG WITH_SQLITE
 ARG WITH_MYSQL
@@ -167,6 +256,9 @@ ARG WITH_WS_NETWORKING_PROXY
 ARG WITH_IMAGICK
 ARG WITH_YAML
 ARG WITH_MDHTML
+ARG WITH_JSONK
+ARG WITH_APCU
+ARG WITH_NAVICAT
 
 # The platform to build for: web or node
 ARG EMSCRIPTEN_ENVIRONMENT=web
@@ -322,6 +414,15 @@ RUN if [ "$WITH_MBREGEX" = "yes" ] && [ "${PHP_VERSION:0:3}" != "7.0" ]; \
 		echo -n ' --disable-mbregex ' >> /root/.php-configure-flags; \
 	fi;
 
+# Add sockets if needed (no external lib — pure php-src bundled code, like
+# exif/mbstring above; CLAUDE.md decision 41)
+RUN if [ "$WITH_SOCKETS" = "yes" ]; \
+	then \
+		echo -n ' --enable-sockets ' >> /root/.php-configure-flags; \
+	else \
+		echo -n ' --disable-sockets ' >> /root/.php-configure-flags; \
+	fi;
+
 # Add yaml if needed (PECL, vendored from GitHub — CLAUDE.md decision 34)
 RUN if [ "$WITH_YAML" = "yes" ]; \
 	then \
@@ -342,9 +443,58 @@ RUN if [ "$WITH_MDHTML" = "yes" ]; \
 		echo -n ' --without-mdhtml ' >> /root/.php-configure-flags; \
 	fi;
 
+# Add jsonk if needed (php-kirigami/php-jsonk — see the "Get and patch PHP"
+# comment above for why ext/json itself can't be disabled). No external .a
+# to append to .emcc-php-wasm-sources: simdjson/yyjson are vendored as
+# sources compiled straight into ext/jsonk's own object files, not a
+# separately-built static library.
+RUN if [ "$WITH_JSONK" = "yes" ]; \
+	then \
+		echo -n ' --enable-jsonk ' >> /root/.php-configure-flags; \
+	else \
+		echo -n ' --disable-jsonk ' >> /root/.php-configure-flags; \
+	fi;
+
+# Add apcu if needed (krakjoe/apcu — experiment, see matrix.json's "apcu"
+# note: does its shared cache persist across PHP.run() calls in the same
+# php-wasm runtime instance?)
+RUN if [ "$WITH_APCU" = "yes" ]; \
+	then \
+		echo -n ' --enable-apcu ' >> /root/.php-configure-flags; \
+	else \
+		echo -n ' --disable-apcu ' >> /root/.php-configure-flags; \
+	fi;
+
+# Add navicat if needed (php-kirigami/php-navicat). No separate
+# .emcc-php-wasm-sources entry: it reuses libcurl.a, already appended there
+# by the WITH_CURL block above.
+RUN if [ "$WITH_NAVICAT" = "yes" ]; \
+	then \
+		echo -n ' --with-navicat=/root/lib ' >> /root/.php-configure-flags; \
+	else \
+		echo -n ' --without-navicat ' >> /root/.php-configure-flags; \
+	fi;
+
 # Get and patch PHP
 COPY ./compile/php/php*.patch /root/
 COPY ./compile/php/apply-mysqlnd-patch.sh /root/
+# ext/sockets (CLAUDE.md decision 42): php-src assumes that if AF_PACKET /
+# SO_ATTACH_REUSEPORT_CBPF are defined, the associated Linux kernel raw-
+# socket/BPF-filter structs and macros (struct sockaddr_ll, SKF_AD_OFF,
+# BPF_RET, ...) are too — true on real Linux, not true under Emscripten's
+# partial POSIX emulation, which defines the constants but not the rest.
+# Disables those two feature blocks entirely under __EMSCRIPTEN__ rather
+# than chasing individual missing macros one at a time.
+COPY ./patches/sockets/*.patch /root/patches-sockets/
+# ext/apcu (experiment, see the "Add apcu if needed" block above): apc_shm.c
+# unconditionally compiles real SysV shm syscalls (shmget/shmat/shmctl/
+# shmdt) that Emscripten declares (musl-derived headers) but never
+# implements — a real "undefined symbol" link failure at the final
+# php.wasm link step, found on the first real build attempt. The default
+# build (--enable-apcu-mmap, on by default) never actually calls this
+# backend at runtime; the patch stubs it with a fatal error instead of
+# leaving it silently reachable.
+COPY ./patches/apcu/*.patch /root/patches-apcu/
 RUN cd /root && \
 	PHP_PATCH_VERSION="${PHP_VERSION:0:3}" && \
 	if ! compgen -G "/root/php${PHP_PATCH_VERSION}*.patch" > /dev/null; then \
@@ -356,6 +506,10 @@ RUN cd /root && \
 	if [[ "$PHP_PATCH_VERSION" == '8.5' ]]; then \
 		git apply --no-index /root/php-chunk-alloc-zend-assert-8.5.patch -v; \
 	fi && \
+	cd php-src && \
+	git apply --no-index -v /root/patches-sockets/*.patch && \
+	git apply --no-index -v /root/patches-apcu/*.patch && \
+	cd /root && \
 	touch php-src/patched
 
 # Install Mysql support if needed
@@ -365,17 +519,35 @@ RUN if [ "$WITH_MYSQL" = "yes" ]; then \
 	fi
 
 # Download and prepare imagick extension if needed (PHP 7.4+)
-# Use version 3.7.0 for PHP 7.x, development branch for PHP 8.x
+# Use version 3.7.0 for PHP 7.x, a pinned real tag (IMAGICK_EXT_VERSION) for
+# PHP 8.x -- was tracking the unpinned "master" branch directly, which is
+# both non-reproducible (decision 11's same oniguruma gap) and how a real,
+# user-noticed bug went unfixed: php_imagick.h ships
+# `#define PHP_IMAGICK_VERSION "@PACKAGE_VERSION@"` literally (its own
+# comment says this is deliberate -- meant to be substituted by PECL's own
+# `pecl package` tool at release time, which this pipeline's plain git
+# clone never runs), so phpinfo() displayed the raw placeholder string
+# instead of a real version. Substituted below with the same pinned
+# version actually being built, now that there is one.
+ARG IMAGICK_EXT_VERSION
 RUN if [ "$WITH_IMAGICK" = "yes" ]; then \
 		if [ "${PHP_VERSION:0:1}" -eq "7" ]; then \
 			IMAGICK_BRANCH="3.7.0"; \
 		else \
-			IMAGICK_BRANCH="master"; \
+			IMAGICK_BRANCH="$IMAGICK_EXT_VERSION"; \
 		fi && \
 		git clone https://github.com/Imagick/imagick.git /root/imagick \
 			--branch "$IMAGICK_BRANCH" \
 			--single-branch \
 			--depth 1 && \
+		# replace.sh shells out to `perl -pi.bak -e`, and Perl treats a bare
+		# "@" inside an -e pattern string as array interpolation (silently
+		# expanding to empty), not a literal character -- confirmed by a
+		# real test: the unescaped version left "PACKAGE_VERSION3.8.1...
+		# 3.8.1PACKAGE_VERSION..."-style garbage (each lone "@" replaced
+		# independently, the word between them untouched). Escaping both
+		# "@" as "\@" fixes it.
+		/root/replace.sh "s/\@PACKAGE_VERSION\@/$IMAGICK_BRANCH/g" /root/imagick/php_imagick.h && \
 		cp -r /root/imagick /root/php-src/ext/imagick && \
 		cd /root/php-src && \
 		if [ "${PHP_VERSION:0:1}" -eq "7" ]; then \
@@ -781,6 +953,54 @@ RUN if [ "$WITH_JSPI" = "yes" ]; then \
 		echo '___c_longjmp' >> /root/.JS_ABI_EXPORTS; \
 	fi;
 
+# A non-trivial MAIN_MODULE=2 side module (e.g. sodium/mysqlnd, CLAUDE.md
+# decision 32) imports the wasm-ld-synthesized dylink globals __stack_pointer
+# and __table_base, which this main module must export as real
+# WebAssembly.Global objects. A raw `-Wl,--export=__stack_pointer` link flag
+# does NOT survive Binaryen's post-link wasm-metadce/wasm-opt DCE pass at
+# -O3 -- confirmed by Emscripten's own maintainers (emscripten-core/
+# emscripten#25952, filed against our exact pinned 4.0.19): -sMAIN_MODULE=2
+# only keeps alive what -s EXPORTED_FUNCTIONS asks for, not arbitrary -Wl,
+# flags. The fix is the same one used for JSPI's own longjmp symbols above:
+# feed it through .JS_ABI_EXPORTS -> EXPORTED_FUNCTIONS, with the mandatory
+# extra "_" prefix EXPORTED_FUNCTIONS requires for C symbols.
+RUN echo '___stack_pointer' >> /root/.JS_ABI_EXPORTS; \
+	echo '___table_base' >> /root/.JS_ABI_EXPORTS;
+
+# Two more real, concretely-observed side-module symbol gaps, same shape as
+# __stack_pointer/__table_base above but for different reasons -- found by
+# actually loading sodium.so/mysqlnd.so against this main module and reading
+# the exact "could not resolve symbol" failure:
+# - atoll: mysqlnd.c calls it, but this main module's own code never does,
+#   so wasm-ld's DCE drops it entirely (a real, ordinary libc function --
+#   forcing it into EXPORTED_FUNCTIONS is enough, same mechanism as above;
+#   mergeLibSymbols() in the generated JS then copies it into wasmImports
+#   automatically since it becomes a real wasm export).
+RUN echo '_atoll' >> /root/.JS_ABI_EXPORTS;
+
+# - emscripten_asm_const_int: libsodium's own randombytes_js.c uses EM_ASM_INT
+#   to reach real JS-side randomness in the browser/Node. This is NOT a real C
+#   symbol -- it's a pure JS runtime helper Emscripten only generates into the
+#   output when SOME compiled code in this exact link uses EM_ASM, which this
+#   main module's own code never does. Forcing it into EXPORTED_FUNCTIONS (like
+#   atoll above) makes Emscripten generate the `_emscripten_asm_const_int` JS
+#   function, but -- unlike atoll -- it produces no real wasm export for
+#   mergeLibSymbols() to pick up automatically (it has no wasm code at all), so
+#   it never reaches the JS-side wasmImports object side modules resolve
+#   against. Verified directly (throwaway emcc test against this same base
+#   image, MAIN_MODULE=2, before touching this Dockerfile): the JS function is
+#   generated correctly, but wasmImports stays untouched. Fixed with the
+#   companion JS patch below ("Make emscripten_asm_const_int resolvable...").
+RUN echo '_emscripten_asm_const_int' >> /root/.JS_ABI_EXPORTS;
+
+# - free/strlen: same shape as atoll -- real libc functions this main module
+#   only ever calls internally (direct wasm calls, no export needed for that),
+#   so wasm-ld's DCE drops the export even though the function itself is
+#   still compiled in. sodium.so calls free(), mysqlnd.so calls strlen();
+#   found the same way as atoll, one real runtime failure at a time.
+RUN echo '_free' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strlen' >> /root/.JS_ABI_EXPORTS;
+
 RUN if [ "$(echo "$PHP_VERSION" | cut -d. -f1)" -ge 8 ] && [ "$WITH_JSPI" = "yes" ]; then \
 		{ \
 			echo '_clock_gettime'; \
@@ -965,7 +1185,6 @@ RUN set -euxo pipefail; \
 	-o /build/output/php.js \
 	-s EXIT_RUNTIME=1 \
 	-Wl,@/root/.wasm-exports \
-	-Wl,--export=__stack_pointer \
 	-Wl,--wrap=usleep \
 	-Wl,--wrap=select \
 	-Wl,--wrap=popen \
@@ -1031,6 +1250,15 @@ RUN set -euxo pipefail; \
 		export WASM_FILENAME="${FILENAME_PREFIX}${EXT_PREFIX}.wasm"; \
 	# Make the php.wasm URL configurable via the dependencyFilename loader argument:
 		/root/replace.sh $'s/["\']php\.wasm[\'"]/dependencyFilename/g' /root/output/php.js; \
+	# Make emscripten_asm_const_int resolvable by side modules (e.g. sodium.so,
+	# see the ".JS_ABI_EXPORTS" comment above for the full "why"). Forcing it
+	# into EXPORTED_FUNCTIONS only generates the JS function; it never reaches
+	# the wasmImports object side modules resolve symbols against (it has no
+	# real wasm export for mergeLibSymbols() to copy automatically), so it must
+	# be seeded manually. Inserted right before Emscripten's own stable
+	# "// include: postamble.js" marker, which always immediately follows the
+	# generated `wasmImports = {...}` object literal.
+		/root/replace.sh 's/^\/\/ include: postamble\.js/if (typeof _emscripten_asm_const_int === "function") { wasmImports["emscripten_asm_const_int"] = _emscripten_asm_const_int; }\n\/\/ include: postamble.js/' /root/output/php.js; \
 	# Patch a "property undefined" error
 		# Emscripten produces an if that checks a stream.stream_ops.poll property. However,
 		# stream.stream_ops is sometimes undefined and the check fails. Let's adjust it to
