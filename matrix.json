@@ -181,17 +181,8 @@
 				"0.2.5"
 			]
 		},
-		"cmark": {
-			"$comment": "The C library (commonmark/cmark), for ext/cmark (CLAUDE.md decision 34, static build) — not to be confused with the PHP extension itself, tracked under extensions.cmark. Moved here from plannedLibraries 2026-09-12 once compile/libcmark/Dockerfile was written.",
-			"sourceType": "github-tag",
-			"repo": "commonmark/cmark",
-			"sourceTemplate": "https://github.com/commonmark/cmark/archive/refs/tags/{version}.tar.gz",
-			"versions": [
-				"0.31.2"
-			]
-		},
 		"libcmark-gfm": {
-			"$comment": "GitHub's own CommonMark+GFM C library (github/cmark-gfm), for the new ext/mdhtml (CLAUDE.md decision 37, static build) -- the Kirigami markdown extension that replaces ext/cmark (see extensions.cmark's own 'ABANDONED' note). Not the same library as 'cmark' above (plain commonmark/cmark, no GFM extensions) -- both are vendored independently, neither replaces the other. Builds two static archives from one source tree, libcmark-gfm.a (core) and libcmark-gfm-extensions.a (table/strikethrough/autolink/tagfilter/tasklist), see compile/libcmark-gfm/Dockerfile.",
+			"$comment": "GitHub's own CommonMark+GFM C library (github/cmark-gfm), for the new ext/mdhtml (CLAUDE.md decision 37, static build) -- the Kirigami markdown extension that replaces ext/cmark, which was tried both statically (decision 35) and as a mode:shared package (decision 38) before being dropped entirely (decision 40). Builds two static archives from one source tree, libcmark-gfm.a (core) and libcmark-gfm-extensions.a (table/strikethrough/autolink/tagfilter/tasklist), see compile/libcmark-gfm/Dockerfile.",
 			"sourceType": "github-release",
 			"repo": "github/cmark-gfm",
 			"sourceTemplate": "https://github.com/github/cmark-gfm/archive/refs/tags/{version}.tar.gz",
@@ -776,21 +767,6 @@
 			"libraries": [
 				"libyaml"
 			]
-		},
-		"cmark": {
-			"$comment": "Sourced from krakjoe/cmark (the real PECL cmark extension's GitHub repo, verified via gh api against pecl.php.net's own package listing), not pecl.php.net's archive — same reasoning as yaml above (CLAUDE.md decision 34).",
-			"builtin": false,
-			"mandatory": false,
-			"switch": "--with-cmark",
-			"repo": "krakjoe/cmark",
-			"sourceTemplate": "https://github.com/krakjoe/cmark/archive/refs/tags/{version}.tar.gz",
-			"versions": [
-				"v1.2.0"
-			],
-			"libraries": [
-				"cmark"
-			],
-			"note": "ABANDONED 2026-09-12, despite being fully fixed and verified working end-to-end (see CLAUDE.md decision 35) — the user decided to build a custom Kirigami markdown extension instead of shipping this one. Keeping this note so the fix isn't lost/re-discovered from scratch if cmark is ever reconsidered. Five real, independently-diagnosed PHP 7-vs-8(.5) incompatibilities were found and patched in unmodified upstream krakjoe/cmark v1.2.0 (all under patches/cmark/, applied via compile/php/Dockerfile's existing git-apply glob): (1) php8-node-traversable-abstract-order.patch — CommonMark\\Node declared Traversable in MINIT but only exempted itself via ZEND_ACC_EXPLICIT_ABSTRACT_CLASS in RINIT, one phase too late, so Zend's zend_implement_traversable() fataled immediately on load; (2) php8-object-handlers.patch — the original PHP7 zval*-based object handler ABI (read/write/isset/unset/debug/clone) migrated to PHP8's zend_object*/zend_string*-based one; (3) php8-subclass-traversable-abstract-order.patch — the exact same bug as (1), independently, on all 21 concrete Node subclass registrations (Text, Heading, Document, ...), since interface inheritance re-triggers Zend's check per class, not just once on the base; (4) php8-object-properties-init.patch — adds zend_object_properties_size()/object_properties_init() to every create_object function (harmless-but-redundant once (5) is applied, kept anyway); (5) php8-node-object-layout-extra-flags.patch — the actual root cause of a hard WASM memory-corruption crash on every object creation/destruction: src/node.h hand-rolls its own zend_object-mimicking struct (so subtypes can embed it by value) instead of using the real type, and it was missing the extra_flags field PHP added to the real struct after cmark's last commit in 2019 — every offsetof-based field access after that point (ce, handlers, properties, the whole properties-table) was silently reading/writing 4 bytes off. Verified with a real @php-wasm/universal smoke test: \\CommonMark\\Parse() building a tree, instanceof Traversable, foreach actually walking it, and full request-shutdown object destruction, all exit code 0, no crash."
 		},
 		"apcu": {
 			"builtin": false,

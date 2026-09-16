@@ -31,7 +31,7 @@ export function getMatrixVersion(libraryKey) {
 /**
  * Same "last entry of versions[] = latest" convention as getMatrixVersion(),
  * but for a matrix.json `extensions.<key>` entry (a PECL extension's own
- * source, e.g. yaml/cmark — CLAUDE.md decision 34) rather than a
+ * source, e.g. yaml — CLAUDE.md decision 34) rather than a
  * `libraries.<key>` C dependency.
  */
 export function getMatrixExtensionVersion(extensionKey) {

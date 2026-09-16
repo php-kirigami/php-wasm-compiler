@@ -233,16 +233,6 @@ libyaml/jspi/dist/root/lib/lib/libyaml.a: base-image
 	CID=$$(docker create kirigami-php-wasm:libyaml) && docker cp $$CID:/root/install/include ./libyaml/jspi/dist/root/lib && docker rm $$CID
 	$(call STRIP_SO,./libyaml/jspi/dist/root/lib)
 
-CMARK_VERSION := $(call MATRIX_VERSION,cmark)
-
-libcmark_jspi: libcmark/jspi/dist/root/lib/lib/libcmark.a
-libcmark/jspi/dist/root/lib/lib/libcmark.a: base-image
-	mkdir -p ./libcmark/jspi/dist/root/lib
-	docker build -f ./libcmark/Dockerfile -t kirigami-php-wasm:libcmark . --build-arg JSPI=1 --build-arg CMARK_VERSION=$(CMARK_VERSION) --progress=plain
-	CID=$$(docker create kirigami-php-wasm:libcmark) && docker cp $$CID:/root/install/lib ./libcmark/jspi/dist/root/lib && docker rm $$CID
-	CID=$$(docker create kirigami-php-wasm:libcmark) && docker cp $$CID:/root/install/include ./libcmark/jspi/dist/root/lib && docker rm $$CID
-	$(call STRIP_SO,./libcmark/jspi/dist/root/lib)
-
 libsodium_jspi: libsodium/jspi/dist/root/lib/lib/libsodium.a
 libsodium/jspi/dist/root/lib/lib/libsodium.a: base-image
 	mkdir -p ./libsodium/jspi/dist/root/lib
@@ -284,7 +274,7 @@ libImageMagick/jspi/dist/root/lib/lib/libMagickCore-7.Q16HDRI.a: base-image libz
 	CID=$$(docker create kirigami-php-wasm:libImageMagick) && docker cp $$CID:/root/install/bin ./libImageMagick/jspi/dist/root/lib && docker rm $$CID
 
 all: all_jspi
-all_jspi: libz_jspi libzip_jspi libpng16_jspi libjpeg_jspi libwebp_jspi libaom_jspi libavif_jspi libfreetype_jspi libgd_jspi libxml2_jspi libopenssl_jspi libsqlite3_jspi libiconv_jspi oniguruma_jspi libssh2_jspi nghttp2_jspi libcurl_jspi libImageMagick_jspi libsodium_jspi libyaml_jspi libcmark_jspi libcmark-gfm_jspi
+all_jspi: libz_jspi libzip_jspi libpng16_jspi libjpeg_jspi libwebp_jspi libaom_jspi libavif_jspi libfreetype_jspi libgd_jspi libxml2_jspi libopenssl_jspi libsqlite3_jspi libiconv_jspi oniguruma_jspi libssh2_jspi nghttp2_jspi libcurl_jspi libImageMagick_jspi libsodium_jspi libyaml_jspi libcmark-gfm_jspi
 
 clean:
 	rm -rf ./libz/jspi/dist
@@ -307,7 +297,6 @@ clean:
 	rm -rf ./libImageMagick/jspi/dist
 	rm -rf ./libsodium/jspi/dist
 	rm -rf ./libyaml/jspi/dist
-	rm -rf ./libcmark/jspi/dist
 	rm -rf ./libcmark-gfm/jspi/dist
 
 # Targeted cleanup of a single lib (e.g. `make clean-libzip && make libzip_jspi`),
@@ -352,7 +341,5 @@ clean-libsodium:
 	rm -rf ./libsodium/jspi/dist
 clean-libyaml:
 	rm -rf ./libyaml/jspi/dist
-clean-libcmark:
-	rm -rf ./libcmark/jspi/dist
 clean-libcmark-gfm:
 	rm -rf ./libcmark-gfm/jspi/dist

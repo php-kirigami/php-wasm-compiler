@@ -50,25 +50,12 @@ COPY ./compile/opcache/ /root/php-src/ext/opcache
 # (decision 28's pattern), passed in as build-args by cli.mjs. Must land in
 # ext/ before buildconf, same as the extensions above.
 ARG YAML_EXT_VERSION
-ARG CMARK_EXT_VERSION
 ARG MDHTML_EXT_VERSION
 
 RUN mkdir -p /root/php-src/ext/yaml && \
 	wget -O /root/yaml-ext.tar.gz https://github.com/php/pecl-file_formats-yaml/archive/refs/tags/${YAML_EXT_VERSION}.tar.gz && \
 	tar -xzf /root/yaml-ext.tar.gz -C /root/php-src/ext/yaml --strip-components=1 && \
 	rm /root/yaml-ext.tar.gz
-
-# krakjoe/cmark's last real commit predates PHP 8's zend_object*/zend_string*
-# object-handler ABI (2019) — patched here rather than upstream, see
-# patches/cmark/php8-object-handlers.patch for the full rationale. Intent is
-# to eventually upstream this as a PR (not done yet).
-COPY ./patches/cmark/*.patch /root/patches-cmark/
-RUN mkdir -p /root/php-src/ext/cmark && \
-	wget -O /root/cmark-ext.tar.gz https://github.com/krakjoe/cmark/archive/refs/tags/${CMARK_EXT_VERSION}.tar.gz && \
-	tar -xzf /root/cmark-ext.tar.gz -C /root/php-src/ext/cmark --strip-components=1 && \
-	rm /root/cmark-ext.tar.gz && \
-	cd /root/php-src/ext/cmark && \
-	git apply --no-index -v /root/patches-cmark/*.patch
 
 # php-kirigami/php-mdhtml (CLAUDE.md decision 37) — our own CommonMark+GFM
 # extension, replacing ext/cmark as the core, static-mode markdown
@@ -98,7 +85,6 @@ COPY ./compile/libImageMagick/ /root/builds/libImageMagick
 COPY ./compile/libfreetype/ /root/builds/libfreetype
 COPY ./compile/libgd/ /root/builds/libgd
 COPY ./compile/libyaml/ /root/builds/libyaml
-COPY ./compile/libcmark/ /root/builds/libcmark
 COPY ./compile/libcmark-gfm/ /root/builds/libcmark-gfm
 
 RUN if [ "$WITH_JSPI" = "yes" ]; then \
@@ -180,7 +166,6 @@ ARG DEBUG_DWARF_COMPILATION_DIR
 ARG WITH_WS_NETWORKING_PROXY
 ARG WITH_IMAGICK
 ARG WITH_YAML
-ARG WITH_CMARK
 ARG WITH_MDHTML
 
 # The platform to build for: web or node
@@ -344,15 +329,6 @@ RUN if [ "$WITH_YAML" = "yes" ]; \
 		echo -n ' /root/lib/lib/libyaml.a ' >> /root/.emcc-php-wasm-sources; \
 	else \
 		echo -n ' --without-yaml ' >> /root/.php-configure-flags; \
-	fi;
-
-# Add cmark if needed (PECL, vendored from GitHub — CLAUDE.md decision 34)
-RUN if [ "$WITH_CMARK" = "yes" ]; \
-	then \
-		echo -n ' --with-cmark=/root/lib ' >> /root/.php-configure-flags; \
-		echo -n ' /root/lib/lib/libcmark.a ' >> /root/.emcc-php-wasm-sources; \
-	else \
-		echo -n ' --without-cmark ' >> /root/.php-configure-flags; \
 	fi;
 
 # Add mdhtml if needed (php-kirigami/php-mdhtml, our own CommonMark+GFM

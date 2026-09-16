@@ -49,12 +49,11 @@ extensions:
   # --- PECL, vendored from their own GitHub repos rather than pecl.php.net's
   # package archive (often stale there), see CLAUDE.md decision 34. ---
   yaml: { mode: static }
-  # cmark moved to mode: shared below (CLAUDE.md decision 36) — the core
-  # build ships its own Kirigami markdown extension instead; cmark (now
-  # fully fixed and verified, decision 35) stays available as an optional
-  # @kirigami/phpext-cmark install for anyone who wants full CommonMark.
-  # mdhtml (php-kirigami/php-mdhtml) is that core extension — CommonMark+GFM
-  # via cmark-gfm (CLAUDE.md decision 37).
+  # mdhtml (php-kirigami/php-mdhtml) — CommonMark+GFM via cmark-gfm (CLAUDE.md
+  # decision 37). Replaces ext/cmark, which was tried both as mode: static
+  # (decision 35) and mode: shared (decision 38) but dropped entirely
+  # (decision 40) — not worth the maintenance cost for a markdown parser
+  # the core already covers.
   mdhtml: { mode: static }
 
   # --- OFF to match the reference build's Configure Command, which shows
@@ -137,25 +136,6 @@ extensions:
     source: compile/extensions/sodium
     vendorLib: libsodium
     pkgConfigVar: LIBSODIUM
-
-  # krakjoe/cmark v1.2.0, fully fixed and verified working (CLAUDE.md
-  # decision 35 — five real PHP 7/8 Zend-API + object-layout bugs found and
-  # patched in unmodified upstream), moved here from mode: static (decision
-  # 36) once the team decided the core build ships its own Kirigami
-  # markdown extension instead. `compile/extensions/cmark/` vendors the
-  # already-patched source (see its PROVENANCE.md — a deliberate exception
-  # to "never vendor patched third-party source", since
-  # @php-wasm/compile-extension needs a real local source directory and has
-  # no download/patch step of its own, unlike the main php.wasm Docker
-  # build). Unlike sodium, ext/cmark's config.m4 does plain
-  # `--with-cmark[=DIR]` directory-based detection, not PKG_CHECK_MODULES —
-  # no pkgConfigVar, just an explicit configArgs pointing at the same
-  # vendored path vendorLib stages the build to.
-  cmark:
-    mode: shared
-    source: compile/extensions/cmark
-    vendorLib: libcmark
-    configArgs: '--with-cmark=/build/vendor/libcmark'
 
 # Version of each third-party library to use (see matrix.json for known
 # versions + their source). "latest" = the newest entry known to

@@ -230,7 +230,6 @@ const IMPLEMENTED_EXTENSIONS = {
 	mysql: 'WITH_MYSQL',
 	nodefs: 'WITH_NODEFS',
 	yaml: 'WITH_YAML',
-	cmark: 'WITH_CMARK',
 	mdhtml: 'WITH_MDHTML',
 };
 
@@ -275,7 +274,6 @@ const LIB_TARGETS_BY_EXTENSION = {
 	openssl: ['libopenssl_jspi'],
 	imagick: ['libImageMagick_jspi'],
 	yaml: ['libyaml_jspi'],
-	cmark: ['libcmark_jspi'],
 	mdhtml: ['libcmark-gfm_jspi'],
 };
 
@@ -895,8 +893,8 @@ async function interactiveReview(config) {
 		if (extAnswer.enabled.includes(name)) {
 			config.extensions[name] = { mode: 'static' };
 		} else if ((config.extensions[name]?.mode ?? 'off') !== 'shared') {
-			// Extensions that also have a static Dockerfile flag (e.g. cmark)
-			// but are currently configured as mode: shared were never a
+			// Extensions that also have a static Dockerfile flag but are
+			// currently configured as mode: shared were never a
 			// selectable choice here (see the `selected` check above, which
 			// only lights up on mode: static) — leave their shared config
 			// (source/vendorLib/configArgs) untouched instead of clobbering
@@ -932,7 +930,6 @@ function buildArgsForVersion(config, phpVersion) {
 	// Sourced from their own GitHub repos, not pecl.php.net's package
 	// archive (CLAUDE.md decision 34).
 	args.push(`--YAML_EXT_VERSION=${getMatrixExtensionVersion('yaml')}`);
-	args.push(`--CMARK_EXT_VERSION=${getMatrixExtensionVersion('cmark')}`);
 	// php-kirigami/php-mdhtml — our own extension, replacing cmark as the
 	// core static-mode markdown renderer (CLAUDE.md decision 37).
 	args.push(`--MDHTML_EXT_VERSION=${getMatrixExtensionVersion('mdhtml')}`);

@@ -1783,6 +1783,76 @@ unless explicitly revisited:
     implementing the scan-and-load logic itself is `@kirigami/php-wasm`'s
     own follow-up work in the `kirigami` repo, not tracked further here.
 
+40. **`cmark` (both the abandoned `mode: static` build and the `mode: shared`
+    pilot from decision 38) removed entirely from the build and from
+    `matrix.json` — the user decided it's not worth the maintenance cost
+    (2026-09-15).** Triggered by actually trying to build the `mode: shared`
+    pilot for real (this session's background `compile-extension` run,
+    right after decision 38 landed): it failed with `make: *** No rule to
+    make target '/build/cmark.c', needed by 'cmark.lo'`. Diagnosed via
+    `gh api repos/krakjoe/cmark/git/trees/v1.2.0` against the actual
+    committed `compile/extensions/cmark/` tree: the vendored source was
+    genuinely **incomplete** — missing the root `cmark.c`/`php_cmark.h`
+    and roughly a dozen `src/*.c`/`.h` files (`visitor.c`, `render.c`,
+    `parse.c`, `iterator.c`, `cql*.c`, every header but a handful) — never
+    actually exercised via `compile-extension` before now, since decision
+    35's own end-to-end verification was for the `mode: static` path
+    (fresh `wget` + patches in `compile/php/Dockerfile`), a completely
+    different code path from `mode: shared`'s pre-vendored
+    `compile/extensions/cmark/` directory. Started re-vendoring it
+    correctly per the directory's own `PROVENANCE.md` recipe (fresh v1.2.0
+    download, apply all 5 patches, copy the complete tree) — but the user
+    interrupted mid-fix with "on s'en fou pas mal de CMARK en fait" (we
+    don't really care about cmark), then "on va carrément l'enlever du
+    build" + "et même de la matrice" (remove it from the build entirely,
+    and from matrix.json too).
+    - Removed: `compile/extensions/cmark/` (the incomplete vendor
+      directory), `patches/cmark/` (all 5 patches — their write-up already
+      lives in decision 35's text, not lost), `compile/libcmark/` (the
+      plain `commonmark/cmark` C library Dockerfile — only ever consumed
+      by `ext/cmark`, nothing else references it), `packages/phpext-cmark/`
+      (its README).
+    - `config.yaml`: the `cmark: { mode: shared, ... }` entry deleted.
+    - `matrix.json`: `libraries.cmark` and `extensions.cmark` entries
+      deleted (the latter carried decision 35's five-patch write-up as a
+      `note` field — redundant with CLAUDE.md, not lost).
+    - `compile/php/Dockerfile`: `ARG CMARK_EXT_VERSION`, the
+      `wget`+`git apply` block downloading/patching `ext/cmark`,
+      `COPY ./compile/libcmark/`, `ARG WITH_CMARK`, and the
+      `--with-cmark`/`--without-cmark` configure-flag block all removed.
+      `mdhtml`/`libcmark-gfm` (decision 37) — a completely independent
+      library and extension, despite the similar name — is untouched, per
+      the user's explicit confirmation ("mdhtml devra faire parti du build
+      static comme présentement").
+    - `compile/build.js`: the `WITH_CMARK`/`CMARK_EXT_VERSION` build-arg
+      forwarding removed (both flags cli.mjs no longer generates).
+    - `compile/Makefile`: `CMARK_VERSION` variable, the `libcmark_jspi`
+      target, and its `all_jspi`/`clean`/`clean-libcmark` references all
+      removed.
+    - `compile/cli.mjs`: `cmark` removed from `IMPLEMENTED_EXTENSIONS` and
+      `LIB_TARGETS_BY_EXTENSION`; the `--CMARK_EXT_VERSION=...` arg push
+      removed.
+    - Verified with `--dry-run` (no Docker): the static `build` command's
+      resolved `--build-arg` list no longer mentions `WITH_CMARK`/
+      `CMARK_EXT_VERSION` and still correctly includes
+      `WITH_MDHTML`/`MDHTML_EXT_VERSION`; `compile-extension --dry-run`
+      now only lists `kirigami_abi_probe` (internal fixture) and `sodium`
+      — no `cmark`. `node --check` on every edited `.mjs`/`.js` file passed.
+    - **`sodium`'s real build succeeded in the same background run** (ran
+      before `cmark` failed, alphabetically first in `config.yaml`):
+      `packages/phpext-sodium/` now has a real `package.json`
+      (`version: "0.1.0"`, `kirigami: { type: "extension", phpVersions:
+      ["8.5"], minVersion: "8.5.10", vendorLib: { name: "libsodium",
+      version: "1.0.22" }, buildHash: "ed838c36..." }`), `manifest.json`,
+      `.buildhash`, and `sodium-php8.5-jspi.so` — the first real,
+      non-scratchpad confirmation that decision 38's whole mechanism
+      (hash-driven versioning, `kirigami` metadata) works end-to-end, not
+      just in a no-Docker simulation.
+    - **Not committed yet** as of this writing — the user immediately
+      pivoted to "on va faire les shared des autres extensions built-in"
+      (make shared-mode versions of the other already-static extensions),
+      a separate, bigger follow-up not yet scoped.
+
 ## Current status
 
 **Extraction done (2026-09-11).** Copied from `php-wasm-builder` into this
@@ -1910,15 +1980,16 @@ entry points).
 - No final scoping of which PHP versions/extensions to support beyond
   what's already in `config.yaml`.
 - `mode: shared` (separately loadable extension) — **implemented and
-  end-to-end verified as of decisions 30-31** (`cli.mjs compile-extension`,
-  `@kirigami/phpext-<name>` package assembly, decision 38's npm-workspaces
-  monorepo + hash-driven version bumps). `sodium` and `cmark` are both real,
-  working pilots (decisions 32, 35). Still missing: actually running a
-  build to populate `packages/phpext-sodium/`/`packages/phpext-cmark/`
-  with real `package.json`/`manifest.json`/`*.so` (deferred this session,
-  no Docker build run — see decision 38), and the `@kirigami/php-wasm`-side
-  auto-detection/auto-load scan itself (decision 39 resolved *who* owns it
-  — `@kirigami/php-wasm`, not the `kirigami` framework — but the scan code
+  end-to-end verified for real as of decision 40** (`cli.mjs
+  compile-extension`, `@kirigami/phpext-<name>` package assembly, decision
+  38's npm-workspaces monorepo + hash-driven version bumps): `sodium`'s real
+  build succeeded, `packages/phpext-sodium/` has a genuine `package.json`
+  (with the `kirigami` metadata section), `manifest.json`, `.buildhash`,
+  and `.so`. `cmark` was tried as a pilot (decisions 32, 35) but removed
+  entirely (decision 40) — not worth the maintenance cost. Still missing:
+  the `@kirigami/php-wasm`-side auto-detection/auto-load scan itself
+  (decision 39 resolved *who* owns it — `@kirigami/php-wasm`, not the
+  `kirigami` framework — but the scan code
   lives in the `kirigami` repo, not started).
 - `libssh2` — **done** (decision 24): vendored, cross-compiled, wired into
   `libcurl` for SFTP/SCP.
@@ -2006,3 +2077,14 @@ entry points).
 - Wire the `patches/` convention into the lib Dockerfiles.
 - Write the first GitHub Actions workflow (Docker build + matrix + npm
   publish + release asset attachment).
+- **Queued (2026-09-15), not started**: use PIE (php/pie, PHP's official
+  PECL successor) via Packagist's public API
+  (`https://repo.packagist.org/p2/<vendor>/<package>.json`) as a version
+  source for extensions that have migrated to it — e.g. `yaml`'s real
+  upstream is `pecl/yaml` on Packagist — instead of scraping pecl.php.net
+  or hand-running `gh api` like decision 34 did. Verified this isn't
+  universal: `krakjoe/cmark` (last real commit 2019, predates PIE
+  entirely) almost certainly has no Packagist/PIE listing, so this needs a
+  new `sourceType: "packagist"` in `matrix.json` alongside the existing
+  `github-release`/`github-tag`, with GitHub direct as the fallback for
+  extensions PIE doesn't cover — not a wholesale replacement.
