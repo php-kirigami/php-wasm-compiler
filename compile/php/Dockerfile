@@ -55,8 +55,10 @@ ARG JSONK_EXT_VERSION
 ARG APCU_EXT_VERSION
 ARG NAVICAT_EXT_VERSION
 ARG IGBINARY_EXT_VERSION
+ARG NORM_EXT_VERSION
 ARG SIMDJSON_VERSION
 ARG YYJSON_VERSION
+ARG UTF8PROC_VERSION
 
 RUN mkdir -p /root/php-src/ext/yaml && \
 	wget -O /root/yaml-ext.tar.gz https://github.com/php/pecl-file_formats-yaml/archive/refs/tags/${YAML_EXT_VERSION}.tar.gz && \
@@ -159,6 +161,29 @@ RUN mkdir -p /root/php-src/ext/navicat && \
 	wget -O /root/navicat-ext.tar.gz https://github.com/php-kirigami/php-navicat/archive/refs/tags/${NAVICAT_EXT_VERSION}.tar.gz && \
 	tar -xzf /root/navicat-ext.tar.gz -C /root/php-src/ext/navicat --strip-components=1 && \
 	rm /root/navicat-ext.tar.gz
+
+# php-kirigami/php-norm (the user's own project) -- native Normalizer class +
+# normalizer_normalize()/normalizer_is_normalized() functions, wrapping
+# vendored utf8proc as flat source files compiled directly into ext/norm's
+# own object files (same shape as ext/jsonk's simdjson/yyjson above -- no
+# separate compile/lib*/Dockerfile, no .a, no .emcc-php-wasm-sources entry).
+# Only registers its class/functions if intl (or anything else) hasn't
+# already provided them.
+RUN mkdir -p /root/php-src/ext/norm && \
+	wget -O /root/norm-ext.tar.gz https://github.com/php-kirigami/php-norm/archive/refs/tags/${NORM_EXT_VERSION}.tar.gz && \
+	tar -xzf /root/norm-ext.tar.gz -C /root/php-src/ext/norm --strip-components=1 && \
+	rm /root/norm-ext.tar.gz && \
+	mkdir -p /root/php-src/ext/norm/vendor/utf8proc && \
+	wget -O /root/php-src/ext/norm/vendor/utf8proc/utf8proc.h "https://raw.githubusercontent.com/JuliaStrings/utf8proc/v${UTF8PROC_VERSION}/utf8proc.h" && \
+	wget -O /root/php-src/ext/norm/vendor/utf8proc/utf8proc.c "https://raw.githubusercontent.com/JuliaStrings/utf8proc/v${UTF8PROC_VERSION}/utf8proc.c" && \
+	wget -O /root/php-src/ext/norm/vendor/utf8proc/utf8proc_data.c "https://raw.githubusercontent.com/JuliaStrings/utf8proc/v${UTF8PROC_VERSION}/utf8proc_data.c" && \
+	# config.m4's own "vendor/utf8proc/utf8proc.h" existence check (and its
+	# PHP_NEW_EXTENSION source list) is a plain relative path -- same
+	# "correct for a standalone phpize build, not for this whole-php-src-tree
+	# build" gap as ext/jsonk's own vendor/simdjson check above. Mirroring
+	# the vendored files at the php-src root too resolves it the same way.
+	mkdir -p /root/php-src/vendor && \
+	cp -r /root/php-src/ext/norm/vendor/utf8proc /root/php-src/vendor/utf8proc
 
 # Bring in the libraries
 RUN mkdir -p /root/lib/include /root/lib/lib /libs
@@ -284,6 +309,7 @@ ARG WITH_JSONK
 ARG WITH_APCU
 ARG WITH_NAVICAT
 ARG WITH_IGBINARY
+ARG WITH_NORM
 
 # The platform to build for: web or node
 ARG EMSCRIPTEN_ENVIRONMENT=web
@@ -510,6 +536,16 @@ RUN if [ "$WITH_IGBINARY" = "yes" ]; \
 		/root/replace.sh 's/STD_PHP_INI_ENTRY\("apc\.serializer", "php",/STD_PHP_INI_ENTRY("apc.serializer", "igbinary",/g' /root/php-src/ext/apcu/php_apc.c; \
 	else \
 		echo -n ' --disable-igbinary ' >> /root/.php-configure-flags; \
+	fi;
+
+# Add norm if needed (php-kirigami/php-norm). No separate
+# .emcc-php-wasm-sources entry: utf8proc.c is compiled straight into
+# ext/norm's own object files, not a separately-built static library.
+RUN if [ "$WITH_NORM" = "yes" ]; \
+	then \
+		echo -n ' --enable-norm ' >> /root/.php-configure-flags; \
+	else \
+		echo -n ' --disable-norm ' >> /root/.php-configure-flags; \
 	fi;
 
 # Get and patch PHP

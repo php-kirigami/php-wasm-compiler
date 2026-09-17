@@ -88,6 +88,15 @@ extensions:
   # only when this is on) — queued in CLAUDE.md decision 43, picked up now
   # that apcu's own persistence question resolved "yes".
   igbinary: { mode: static }
+  # php-kirigami/php-norm (the user's own project) -- native Normalizer class
+  # + normalizer_normalize()/normalizer_is_normalized() functions, wrapping
+  # vendored utf8proc (no external compile/lib* target, same "vendored flat
+  # source files" shape as jsonk's simdjson/yyjson). Only registers its
+  # class/functions if intl (or anything else) hasn't already provided them,
+  # so it's always safe to build in as static regardless of intl's own
+  # mode/state. Cheap, no dependency to justify mode: shared (decision 41's
+  # own reasoning) — this is the "always-useful fallback" case it describes.
+  norm: { mode: static }
 
   # --- OFF to match the reference build's Configure Command, which shows
   # --disable-opcache / --disable-soap / --disable-fileinfo /

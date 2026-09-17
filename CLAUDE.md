@@ -3094,6 +3094,109 @@ unless explicitly revisited:
       zero missing exports) and the static-core regression test (15/15,
       unchanged) pass cleanly.
 
+50. **`matrix.json` refreshed for three of our own extensions with new tags
+    since they were last pinned, and `norm` (`php-kirigami/php-norm`, the
+    user's own project) added as a fourth `mode: static` core extension
+    (2026-09-16). Not build-tested yet — no Docker build run this
+    session.**
+    - **Version bumps, verified via `gh api .../tags` (not guessed) and a
+      `compare` diff against each repo's own commit log to confirm nothing
+      structurally risky (no new external dependency, no `config.m4`
+      change) rode along**:
+      - `navicat`: `v0.1.0` → `v0.1.3` (`matrix.json`'s `extensions.navicat`
+        now lists all four). Real fixes picked up: a Kirigami-logo
+        `phpinfo()` header (0.1.1), new `pgsql`/`sqlite` tunnel backends
+        alongside the existing `mysql` one (0.1.2), and a real PHP 8+ bug
+        fix — `navicat_connect()`'s own `encodeBase64=1` default made every
+        connect request trip a fatal `count(null)` TypeError in every
+        current `ntunnel_*.php` script on PHP 8+, fixed by always sending
+        `encodeBase64=0` when a request carries no queries (0.1.3, tested
+        end-to-end against real MySQL/Postgres containers and the real
+        proprietary `ntunnel_*.php` scripts, 37 assertions passing).
+      - `jsonk`: `v0.1.2` → `v0.1.3` (the same Kirigami-logo `phpinfo()`
+        header commit as navicat's 0.1.1, no functional change).
+      - `mdhtml`: `v0.1.0` → `v0.1.1` (Kirigami-logo `phpinfo()` header +
+        a `config.w32` addition for a future native Windows build,
+        irrelevant to this Linux/Emscripten pipeline).
+      - None of the three needed any `compile/php/Dockerfile` change beyond
+        the version bump itself — `cli.mjs`'s `getMatrixExtensionVersion()`
+        already resolves the last `versions[]` entry automatically, so
+        bumping `matrix.json` alone is sufficient (decision 28's "matrix.json
+        as single source of truth" design working as intended).
+    - **`norm` added** — wraps vendored `utf8proc` (Unicode NFC/NFD/NFKC/NFKD
+      via `utf8proc_map()`) to provide a native `Normalizer` class +
+      `normalizer_normalize()`/`normalizer_is_normalized()` functions,
+      built (per `php-norm`'s own `CLAUDE.md`) to defer safely to `intl`'s
+      own `Normalizer` if `intl` is ever added later (`zend_hash_str_exists`
+      guards in its `PHP_MINIT_FUNCTION`, `ZEND_MOD_OPTIONAL("intl")` purely
+      for MINIT ordering) — confirmed by reading that repo's own design
+      notes and native-build test results (24 functional assertions +
+      a real `intl`-coexistence test, both passing) rather than assumed.
+      No external lib to vendor via `compile/lib*/Dockerfile`: `utf8proc.h`/
+      `utf8proc.c`/`utf8proc_data.c` are flat source files fetched directly
+      from the tagged GitHub ref and compiled straight into `ext/norm`'s own
+      object files — the exact same "vendored flat files, no separate
+      Makefile target" shape decision 43 already established for `ext/jsonk`'s
+      `simdjson`/`yyjson` (down to needing the same "mirror the vendored
+      directory at the `php-src` tree root too, since `config.m4`'s own
+      existence-check path is relative to a standalone `phpize` build's cwd,
+      not this whole-tree static build's cwd" fix jsonk needed — applied
+      proactively here since the bug is fully understood from that case,
+      not rediscovered). `mode: static` (not `shared`): no external
+      dependency to justify making it opt-in, and `Normalizer` is exactly
+      the kind of always-useful fallback decision 41 already argues belongs
+      in the core.
+      - `matrix.json`: new `libraries.utf8proc` entry (pinned `2.11.3`,
+        `sourceType: github-tag`, matching `simdjson`/`yyjson`'s own shape)
+        and new `extensions.norm` entry (pinned `v0.1.0`, `switch:
+        --enable-norm`, `libraries: ["utf8proc"]`).
+      - `config.yaml`: `norm: { mode: static }` added next to `igbinary`.
+      - `compile/php/Dockerfile`: `ARG NORM_EXT_VERSION`/`ARG UTF8PROC_VERSION`,
+        a fetch block (ext source + vendor `utf8proc` + mirror to
+        `/root/php-src/vendor/utf8proc`) right after the `navicat` block,
+        `ARG WITH_NORM`, and a `--enable-norm`/`--disable-norm` block
+        mirroring `jsonk`'s (no `.emcc-php-wasm-sources` entry needed, same
+        reasoning as jsonk's vendored sources).
+      - `compile/build.js`: `WITH_NORM`/`NORM_EXT_VERSION`/`UTF8PROC_VERSION`
+        forwarded as `--build-arg`s (decision 34's lesson: both `build.js`
+        and `cli.mjs` need updating, or a flag `cli.mjs` generates gets
+        silently dropped).
+      - `compile/cli.mjs`: `norm: 'WITH_NORM'` added to
+        `IMPLEMENTED_EXTENSIONS`; `NORM_EXT_VERSION`/`UTF8PROC_VERSION`
+        pushed in `buildArgsForVersion()`.
+      - Verified with `--dry-run` only (no Docker): the resolved `build.js`
+        invocation correctly includes `--WITH_NORM=yes
+        --NORM_EXT_VERSION=v0.1.0 --UTF8PROC_VERSION=2.11.3`, alongside the
+        bumped `--MDHTML_EXT_VERSION=v0.1.1 --JSONK_EXT_VERSION=v0.1.3
+        --NAVICAT_EXT_VERSION=v0.1.3`; `compile-extension --dry-run`
+        correctly does *not* list `norm` (it's `mode: static`, not
+        `shared`). `node --check` passed on every edited `.mjs`/`.js` file.
+      - **✅ Real build run and runtime-verified the same day, right after
+        this decision landed.** `node compile/cli.mjs --quiet` completed
+        with exit code 0 — `norm`'s pure-C `utf8proc` cross-compile under
+        Emscripten needed no fixes at all (unlike jsonk's simdjson, which
+        needed real SIMD/cpuid patches — decision 43's bugs 6/7). Smoke-
+        tested the actual rebuilt `node-builds/8-5/php_8_5.js` via a
+        throwaway `@php-wasm/universal` script (same technique as decision
+        30): `get_loaded_extensions()` lists `norm` (plus `jsonk`, `apcu`,
+        `navicat`, `mdhtml`, `yaml`, `sockets`, `imagick`, `igbinary` — no
+        regressions), `class_exists('Normalizer', false)` is true,
+        `Normalizer::normalize("e" . "\u{0301}", Normalizer::FORM_C)`
+        correctly composes to `"é"`, and
+        `Normalizer::isNormalized("e" . "\u{0301}", Normalizer::FORM_C)`
+        correctly returns `false` (the decomposed input genuinely isn't
+        NFC-normalized) — real Unicode composition, not just a loaded
+        symbol. `jsonk`'s `json_encode()` is still jsonk-backed
+        (`ini_get('jsonk.replace_json_functions')` reads `1`), `apcu_store`/
+        `fetch` round-trip, `navicat_connect()` exists, `mdhtml`'s
+        `MDHtml\*` functions are registered. The `intl`-deferral guard
+        itself is still unexercised in this build specifically (`intl` is
+        still `mode: off`/unimplemented here — decision 4 in `php-norm`'s
+        own `CLAUDE.md`), so only the "no `intl` present" half of that
+        guard has been exercised in this pipeline; the "`intl` present,
+        `norm` defers" half stays proven only in `php-norm`'s own native
+        test suite until `intl` is ever added here too.
+
 ## Current status
 
 **Extraction done (2026-09-11).** Copied from `php-wasm-builder` into this
@@ -3348,9 +3451,11 @@ entry points).
   near-identical hand-written block). Needs its own scoping pass — see
   decision 43's note on the mechanical-vs-bespoke block split before
   attempting it.
-- **Requested (2026-09-16), for the next full build**: add `php-navicat`
-  (wired into `config.yaml`/`matrix.json`/`compile/php/Dockerfile` as
-  `mode: static` this session, but never actually build-tested in this
-  pipeline — only native-build-tested in its own repo) and `igbinary`
-  (not wired in at all yet — see decision 43's queued note on making it
-  APCu's default serializer) to the static core build.
+- **For the next full build (2026-09-16, decision 50)**: `navicat`/`jsonk`/
+  `mdhtml` were bumped to their latest tags and `norm` (Normalizer via
+  vendored utf8proc) was newly wired in as `mode: static` — none of this
+  has been build-tested in this pipeline yet (`--dry-run` only), only
+  native-build-tested in their own repos. Also still pending from earlier
+  sessions: `igbinary` becoming APCu's default serializer (decision 45's
+  follow-up) is wired in `config.yaml`/`compile/php/Dockerfile` already,
+  but likewise needs a real rebuild to confirm end-to-end.

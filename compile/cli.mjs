@@ -238,6 +238,7 @@ const IMPLEMENTED_EXTENSIONS = {
 	apcu: 'WITH_APCU',
 	navicat: 'WITH_NAVICAT',
 	igbinary: 'WITH_IGBINARY',
+	norm: 'WITH_NORM',
 };
 
 // These have no independent Dockerfile flag of their own: compile/php/Dockerfile
@@ -1175,6 +1176,10 @@ function buildArgsForVersion(config, phpVersion) {
 	// build (CLAUDE.md decision 43's queued follow-up, picked up in
 	// decision 45).
 	args.push(`--IGBINARY_EXT_VERSION=${getMatrixExtensionVersion('igbinary')}`);
+	// php-kirigami/php-norm — our own extension, wraps vendored utf8proc as
+	// flat source files (same shape as jsonk's simdjson/yyjson).
+	args.push(`--NORM_EXT_VERSION=${getMatrixExtensionVersion('norm')}`);
+	args.push(`--UTF8PROC_VERSION=${getMatrixVersion('utf8proc')}`);
 	// Imagick/imagick — pinned to a real tag instead of the "master" branch
 	// (matrix.json's own "imagick" note: needed to fix phpinfo() showing
 	// the raw "@PACKAGE_VERSION@" placeholder, PECL-packaging-only

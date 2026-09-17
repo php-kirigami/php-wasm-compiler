@@ -210,6 +210,15 @@
 			"versions": [
 				"0.13.0"
 			]
+		},
+		"utf8proc": {
+			"$comment": "For ext/norm (php-kirigami/php-norm) -- Unicode NFC/NFD/NFKC/NFKD normalization via utf8proc_map(). Same \"vendored flat files, no compile/lib*/Dockerfile+Makefile target\" shape as simdjson/yyjson above: utf8proc.h/utf8proc.c/utf8proc_data.c are already flat files at the JuliaStrings/utf8proc repo root (utf8proc_data.c is a pre-generated Unicode data table, committed by the maintainers, #include'd by utf8proc.c itself -- never compiled as its own translation unit), fetched directly from the tagged ref straight into ext/norm/vendor/utf8proc/ by compile/php/Dockerfile, same layout php-norm's own vendor/build/stage.sh uses for a native dev build.",
+			"sourceType": "github-tag",
+			"repo": "JuliaStrings/utf8proc",
+			"sourceTemplate": "https://raw.githubusercontent.com/JuliaStrings/utf8proc/v{version}/utf8proc.h",
+			"versions": [
+				"2.11.3"
+			]
 		}
 	},
 	"extensions": {
@@ -1029,7 +1038,8 @@
 			"repo": "php-kirigami/php-mdhtml",
 			"sourceTemplate": "https://github.com/php-kirigami/php-mdhtml/archive/refs/tags/{version}.tar.gz",
 			"versions": [
-				"v0.1.0"
+				"v0.1.0",
+				"v0.1.1"
 			],
 			"libraries": [
 				"libcmark-gfm"
@@ -1045,7 +1055,8 @@
 			"versions": [
 				"v0.1.0",
 				"v0.1.1",
-				"v0.1.2"
+				"v0.1.2",
+				"v0.1.3"
 			],
 			"libraries": []
 		},
@@ -1057,7 +1068,10 @@
 			"repo": "php-kirigami/php-navicat",
 			"sourceTemplate": "https://github.com/php-kirigami/php-navicat/archive/refs/tags/{version}.tar.gz",
 			"versions": [
-				"v0.1.0"
+				"v0.1.0",
+				"v0.1.1",
+				"v0.1.2",
+				"v0.1.3"
 			],
 			"libraries": []
 		},
@@ -1072,6 +1086,20 @@
 				"3.2.15"
 			],
 			"libraries": []
+		},
+		"norm": {
+			"$comment": "php-kirigami/php-norm (the user's own project) -- native Normalizer class + normalizer_normalize()/normalizer_is_normalized() functions, wrapping vendored utf8proc (see matrix.json's own \"utf8proc\" library entry above), same 'vendored flat source files, no compile/lib*/Dockerfile' shape as ext/jsonk's simdjson/yyjson (utf8proc.c is compiled directly into ext/norm's own object files -- no separate .a, no .emcc-php-wasm-sources entry needed). Only registers its Normalizer class/normalizer_*() functions if intl (or anything else) hasn't already provided them (zend_hash_str_exists guards in PHP_MINIT_FUNCTION(norm), ZEND_MOD_OPTIONAL(\"intl\") purely for MINIT ordering) -- safe to always build in as mode: static regardless of intl's own state.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-norm",
+			"repo": "php-kirigami/php-norm",
+			"sourceTemplate": "https://github.com/php-kirigami/php-norm/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v0.1.0"
+			],
+			"libraries": [
+				"utf8proc"
+			]
 		}
 	},
 	"plannedLibraries": {
