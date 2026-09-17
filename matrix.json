@@ -458,6 +458,19 @@
 				"libpq"
 			]
 		},
+		"posix": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-posix",
+			"note": "Added 2026-09-16 (CLAUDE.md decision 48's batch) -- missing from this matrix entirely before then, same reason as sysvmsg/sysvsem: php-static-autobuilder's own matrix.json is Windows-only and never lists this POSIX-only extension, so it never got ported. Wired as mode: shared; compile-extension build succeeded on the first try, no known runtime risk (most posix_* functions map to real, Emscripten-implemented libc calls)."
+		},
+		"pcntl": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-pcntl",
+			"disabled": true,
+			"note": "Tried 2026-09-16 (CLAUDE.md decision 48's batch), deliberately abandoned -- not just left mode: off, removed from config.yaml and compile/extensions/ entirely (same treatment as ext/cmark, decision 40). Hit a real cross-compile false positive first (HAVE_GETCPUID wrongly detected, pulling in Solaris's <sys/processor.h> -- fixed with a direct edit to the vendored pcntl.c, `&& !defined(__EMSCRIPTEN__)` on that one guard), then a second build failure not worth chasing. More fundamentally: its entire feature set (fork(), waitpid(), inter-process signals) has no real equivalent in a single-instance WASM VM with no real OS process model -- even a successful build would ship functions that silently do nothing useful or fail unpredictably, unlike shmop/sysvshm/sysvmsg/sysvsem which at least have a plausible path to real behavior. `disabled: true` marks this as \"tried and rejected\", not \"not yet attempted\" -- don't re-attempt without a real reason to revisit that conclusion."
+		},
 		"readline": {
 			"builtin": true,
 			"mandatory": false,
@@ -470,7 +483,9 @@
 		"shmop": {
 			"builtin": true,
 			"mandatory": false,
-			"switch": "--enable-shmop"
+			"switch": "--enable-shmop",
+			"disabled": true,
+			"note": "Tried 2026-09-16 (CLAUDE.md decision 48's batch), deliberately abandoned -- removed from config.yaml and compile/extensions/ entirely, same treatment as pcntl. compile-extension itself built the .so fine, but shmget/shmat/shmctl/shmdt (declared but not implemented by Emscripten's libc, decision 43) confirmed to not even exist as exportable symbols for the main php.wasm to expose -- every shmop_* function would be permanently broken. `disabled: true` marks this as \"tried and rejected\"; don't re-attempt without a real reason to revisit (e.g. a patched Emscripten libc)."
 		},
 		"sockets": {
 			"builtin": true,
@@ -505,7 +520,23 @@
 		"sysvshm": {
 			"builtin": true,
 			"mandatory": false,
-			"switch": "--enable-sysvshm"
+			"switch": "--enable-sysvshm",
+			"disabled": true,
+			"note": "Tried 2026-09-16 (CLAUDE.md decision 48's batch), deliberately abandoned -- same shmget/shmat/shmctl/shmdt gap and treatment as shmop's own note (removed from config.yaml/compile/extensions/ entirely). `disabled: true` marks this as \"tried and rejected\"."
+		},
+		"sysvmsg": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-sysvmsg",
+			"disabled": true,
+			"note": "Added and tried 2026-09-16 (CLAUDE.md decision 48's batch), deliberately abandoned -- missing from this matrix entirely before then (ported originally from php-static-autobuilder's own matrix.json, which is Windows-only and never lists this POSIX-only extension). msgget/msgsnd/msgrcv/msgctl confirmed to not exist as exportable symbols under Emscripten -- removed from config.yaml/compile/extensions/ entirely, same treatment as shmop. `disabled: true` marks this as \"tried and rejected\"."
+		},
+		"sysvsem": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--enable-sysvsem",
+			"disabled": true,
+			"note": "Added and tried 2026-09-16 (CLAUDE.md decision 48's batch), deliberately abandoned -- same gap as sysvmsg's own note (semget/semop/semctl here), removed from config.yaml/compile/extensions/ entirely. `disabled: true` marks this as \"tried and rejected\"."
 		},
 		"tidy": {
 			"builtin": true,

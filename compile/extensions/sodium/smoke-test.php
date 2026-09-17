@@ -10,6 +10,6 @@ $ciphertext = sodium_crypto_secretbox('secret message', $nonce, $key);
 $plaintext = sodium_crypto_secretbox_open($ciphertext, $nonce, $key);
 
 if ($plaintext !== 'secret message') {
-	fwrite(STDERR, "sodium_crypto_secretbox round-trip failed: " . var_export($plaintext, true) . "\n");
+	echo "sodium_crypto_secretbox round-trip failed: " . var_export($plaintext, true) . "\n";
 	exit(1);
 }

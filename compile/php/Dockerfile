@@ -1074,6 +1074,51 @@ RUN echo '_strcasecmp' >> /root/.JS_ABI_EXPORTS;
 RUN echo '_atoi' >> /root/.JS_ABI_EXPORTS; \
 	echo '_memcmp' >> /root/.JS_ABI_EXPORTS;
 
+# - getpid: posix.so's posix_getpid() calls it directly -- found via
+#   check-shared-extension-symbols.mjs's smoke-test.php support (CLAUDE.md
+#   decision 48's batch of no-external-lib extensions: posix/shmop/sysvshm/
+#   sysvmsg/sysvsem). NOT the same fix shape as atoi/memcmp above: this
+#   main module already -Wl,--wrap=getpid (see the emcc invocation below,
+#   PLATFORM_SPECIFIC_ARGS for EMSCRIPTEN_ENVIRONMENT=node), so there is no
+#   real "_getpid" export at all -- the linker splits it into __real_getpid
+#   (unused here) and __wrap_getpid, and a bare `echo '_getpid'` here fails
+#   the link outright ("undefined exported symbol: _getpid"). __wrap_getpid
+#   is already generated as Module["___wrap_getpid"] regardless (the wrap
+#   mechanism itself, no .JS_ABI_EXPORTS entry needed for that part) -- it
+#   just never reaches wasmImports for side modules to resolve against,
+#   same gap as emscripten_asm_const_int below. Aliased with the matching
+#   JS patch instead of an export line, see "Make getpid resolvable..." below.
+
+# - shmget/shmat/shmctl/shmdt (shmop.so/sysvshm.so), msgget/msgsnd/msgrcv
+#   (sysvmsg.so), semget/semop/semctl (sysvsem.so): all real SysV IPC libc
+#   calls these extensions call directly -- same DCE-drops-the-export shape
+#   as atoll/strcmp/memset/etc above (this main module's own code never
+#   calls any of them), found all in one check-shared-extension-symbols.mjs
+#   run (CLAUDE.md decision 48's batch). Exporting them does NOT mean they
+#   actually work -- CLAUDE.md decision 43 already found Emscripten's libc
+#   declares these SysV syscalls without a real implementation (broke
+#   apcu's own optional shm backend, needed a source patch to stub it out)
+#   -- this export just lets the *real* (likely failing) call happen,
+#   instead of an artificial "undefined symbol" crash; each extension's own
+#   smoke-test.php tolerates a graceful PHP-level failure here as an
+#   acceptable, expected-until-proven-otherwise outcome.
+#   None of them exist as exportable symbols under this toolchain --
+#   real, concretely observed build failures, found one at a time as each
+#   was removed in turn (msgctl, then msgget, then semctl, then shmat --
+#   at which point the process was stopped rather than continuing the same
+#   one-symbol-per-rebuild cycle for the remaining ones under time
+#   pressure). This confirms CLAUDE.md decision 43's own finding for
+#   apcu's optional shm backend generalizes to the whole SysV IPC family,
+#   not just shmget/shmat/shmctl/shmdt: Emscripten's libc does not
+#   implement any of it at the symbol-table level, only declares it in
+#   headers. shmop.so/sysvshm.so/sysvmsg.so/sysvsem.so's own calls into all
+#   of these are left as unresolved lazy stubs -- fine, since all four
+#   extensions' own smoke-test.php already tolerate a graceful failure
+#   here. Left un-exported entirely rather than re-attempting individually;
+#   revisit only with a real reason to (e.g. a patched Emscripten libc, or
+#   accepting the cost of confirming each one true/false one rebuild at a
+#   time when there's no time pressure).
+
 RUN if [ "$(echo "$PHP_VERSION" | cut -d. -f1)" -ge 8 ] && [ "$WITH_JSPI" = "yes" ]; then \
 		{ \
 			echo '_clock_gettime'; \
@@ -1332,6 +1377,25 @@ RUN set -euxo pipefail; \
 	# "// include: postamble.js" marker, which always immediately follows the
 	# generated `wasmImports = {...}` object literal.
 		/root/replace.sh 's/^\/\/ include: postamble\.js/if (typeof _emscripten_asm_const_int === "function") { wasmImports["emscripten_asm_const_int"] = _emscripten_asm_const_int; }\n\/\/ include: postamble.js/' /root/output/php.js; \
+	# Make getpid resolvable by side modules (e.g. posix.so's posix_getpid(),
+	# CLAUDE.md decision 48) -- this main module is built with -Wl,--wrap=getpid
+	# for EMSCRIPTEN_ENVIRONMENT=node, so plain "_getpid" doesn't exist as an
+	# export at all, only the wrapped "___wrap_getpid" (already generated
+	# regardless of .JS_ABI_EXPORTS, see the comment above it). A side module
+	# built independently (never wrapped) imports the plain name "getpid",
+	# so it needs the same manual wasmImports seeding as emscripten_asm_const_int
+	# -- but NOT at the postamble.js marker like that one: unlike
+	# emscripten_asm_const_int (a plain JS helper, available synchronously),
+	# ___wrap_getpid is `wasmExports["__wrap_getpid"]`, a REAL wasm export only
+	# assigned once the main module actually finishes instantiating -- at the
+	# postamble.js insertion point (which runs before instantiation, since it's
+	# what kicks it off) it is still undefined, so that insertion point silently
+	# never sets the alias (found empirically: the build succeeded, but
+	# posix_getpid() still returned the wrong value at runtime). Fixed by
+	# inserting immediately after Emscripten's own real assignment line
+	# instead, which is unconditionally generated (deterministic, extension-
+	# set-independent) the moment ___wrap_getpid is in EXPORTED_FUNCTIONS.
+		/root/replace.sh 's/(___wrap_getpid = Module\["___wrap_getpid"\] = wasmExports\["__wrap_getpid"\];)/$1\n  if (typeof ___wrap_getpid === "function") { wasmImports["getpid"] = ___wrap_getpid; }/' /root/output/php.js; \
 	# Patch a "property undefined" error
 		# Emscripten produces an if that checks a stream.stream_ops.poll property. However,
 		# stream.stream_ops is sometimes undefined and the check fails. Let's adjust it to

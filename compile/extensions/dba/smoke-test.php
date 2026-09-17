@@ -8,7 +8,7 @@
 $path = '/tmp/dba-smoke-test.db';
 $db = dba_open($path, 'n', 'flatfile');
 if ($db === false) {
-	fwrite(STDERR, "dba_open() failed.\n");
+	echo "dba_open() failed.\n";
 	exit(1);
 }
 
@@ -17,6 +17,6 @@ $value = dba_fetch('greeting', $db);
 dba_close($db);
 
 if ($value !== 'hello_dba') {
-	fwrite(STDERR, "dba_fetch() returned " . var_export($value, true) . ", expected 'hello_dba'.\n");
+	echo "dba_fetch() returned " . var_export($value, true) . ", expected 'hello_dba'.\n";
 	exit(1);
 }

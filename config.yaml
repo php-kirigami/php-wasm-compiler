@@ -131,8 +131,6 @@ extensions:
   # every extension in this list eventually being toggleable. ---
   pdo_pgsql: { mode: 'off' }
   pgsql: { mode: 'off' }
-  shmop: { mode: 'off' }
-  sysvshm: { mode: 'off' }
   gettext: { mode: 'off' }
   gmp: { mode: 'off' }
   ldap: { mode: 'off' }
@@ -247,6 +245,33 @@ extensions:
   dba:
     mode: shared
     source: compile/extensions/dba
+
+  # Batch of no-external-lib, php-src-bundled extensions (CLAUDE.md decision
+  # 48's follow-up, "batch extensions + batch debugging" per the user's own
+  # 2026-09-16 direction). Only posix survived: it's the one extension in
+  # this batch whose functions map to real, Emscripten-implemented libc
+  # calls (besides getpid, which needed its own JS-alias fix -- the main
+  # module wraps it via -Wl,--wrap=getpid).
+  #
+  # pcntl, shmop, sysvshm, sysvmsg, and sysvsem were all tried and
+  # deliberately dropped (not just "off" -- removed entirely, same as
+  # ext/cmark in decision 40; see matrix.json's own `disabled: true` entries
+  # for each, with the full reasoning). pcntl's entire feature set (fork(),
+  # waitpid(), inter-process signals) has no real equivalent in a
+  # single-instance WASM VM with no real process model. The other four all
+  # depend on real SysV IPC syscalls (shmget/msgget/semget and friends)
+  # that CLAUDE.md decision 43 already found Emscripten's libc declares but
+  # does not implement for its own shm backend -- confirmed the same
+  # afternoon to generalize to the *entire* SysV IPC family, not just
+  # shm: every single one of shmat/shmget/shmctl/shmdt/msgget/msgsnd/
+  # msgrcv/msgctl/semget/semop/semctl failed to even link as an exported
+  # symbol, found one at a time as each was removed from a failed build in
+  # turn. With none of the underlying syscalls available at all, these four
+  # extensions would ship with every function permanently broken -- not
+  # worth carrying as dead weight.
+  posix:
+    mode: shared
+    source: compile/extensions/posix
 
 # Version of each third-party library to use (see matrix.json for known
 # versions + their source). "latest" = the newest entry known to

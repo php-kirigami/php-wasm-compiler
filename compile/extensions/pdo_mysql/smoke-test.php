@@ -5,6 +5,6 @@
 // class (CLAUDE.md decision 47), which needs mysqlnd.so already loaded
 // (PHP_ADD_EXTENSION_DEP(pdo_mysql, mysqlnd)).
 if (!in_array('mysql', PDO::getAvailableDrivers(), true)) {
-	fwrite(STDERR, "PDO::getAvailableDrivers() does not list 'mysql'.\n");
+	echo "PDO::getAvailableDrivers() does not list 'mysql'.\n";
 	exit(1);
 }

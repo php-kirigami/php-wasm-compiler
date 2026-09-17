@@ -6,6 +6,6 @@
 // mysqlnd.so to be loaded first (CLAUDE.md decision 42).
 $mysqli = mysqli_init();
 if (!($mysqli instanceof mysqli)) {
-	fwrite(STDERR, "mysqli_init() did not return a mysqli instance.\n");
+	echo "mysqli_init() did not return a mysqli instance.\n";
 	exit(1);
 }

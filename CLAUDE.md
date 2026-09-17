@@ -2993,6 +2993,107 @@ unless explicitly revisited:
       incomplete at the moment of checking — it may simply still be
       writing.
 
+49. **Batch of six more no-external-lib, php-src-bundled `mode: shared`
+    extensions attempted (`posix`, `pcntl`, `shmop`, `sysvshm`, `sysvmsg`,
+    `sysvsem`) — only `posix` kept; the other five tried for real and
+    deliberately dropped, each for a concretely-confirmed reason, not
+    suspicion (2026-09-16).**
+    - **A real `matrix.json` gap found and fixed first**: the user pointed
+      out the matrix didn't cover all of PHP's built-in extensions.
+      Confirmed concretely: `posix`/`pcntl`/`sysvmsg`/`sysvsem` were
+      entirely missing from `matrix.json`'s `extensions` map (while
+      `shmop`/`sysvshm`/`ftp`/`dba` were already present as data-only
+      placeholders). Root cause: this matrix was originally ported from
+      php-static-autobuilder's own matrix.json (Windows-only, targets a
+      static CLI `.exe`), which never lists these POSIX-only extensions at
+      all since they don't exist on Windows PHP builds — the gap carried
+      over silently when ported. Added all four.
+    - **New `matrix.json` convention: a `"disabled": true` field** (the
+      user's own request, "ajoute un champ disabled"), distinct from the
+      free-text `note` — a structured, queryable marker for "tried and
+      rejected", as opposed to "not yet attempted" (`mode: 'off'` in
+      config.yaml) or "actively wired" (no flag). Applied to `pcntl`,
+      `shmop`, `sysvshm`, `sysvmsg`, `sysvsem` below.
+    - **`posix` — kept, works**: vendored complete from the `PHP-8.5.10`
+      tag, `PHP_ARG_ENABLE` (no `configArgs` needed). One real symbol gap
+      found and fixed: `posix_getpid()` calls `getpid()` directly, but this
+      main module is built with `-Wl,--wrap=getpid` for
+      `EMSCRIPTEN_ENVIRONMENT=node` — so there is no plain `_getpid` export
+      at all (a bare `echo '_getpid' >> .JS_ABI_EXPORTS` fails the link
+      outright: "undefined exported symbol"), only the wrapped
+      `___wrap_getpid`, which is already generated as
+      `Module["___wrap_getpid"]` regardless of `.JS_ABI_EXPORTS`. Needed
+      the same manual `wasmImports` seeding as `emscripten_asm_const_int`
+      (decision 45) — but **not** at the same insertion point: the first
+      attempt aliased it at the `// include: postamble.js` marker (like
+      `emscripten_asm_const_int`) and the build succeeded, but
+      `posix_getpid()` still returned `0` at runtime — found by actually
+      testing, not assumed — because unlike `emscripten_asm_const_int` (a
+      plain JS helper available synchronously), `___wrap_getpid` is
+      `wasmExports["__wrap_getpid"]`, a **real wasm export only assigned
+      after the main module finishes instantiating**, and the postamble
+      marker's code runs *before* that (it's what kicks instantiation off).
+      Fixed by inserting the alias immediately after Emscripten's own real,
+      unconditionally-generated assignment line instead
+      (`___wrap_getpid = Module["___wrap_getpid"] = wasmExports["__wrap_getpid"];`)
+      — a textually stable, deterministic anchor point, same "structurally
+      stable, not extension-set-dependent" reasoning decision 45 already
+      used for its own marker choice, just a different marker for a
+      different reason (timing, not aliasing).
+    - **`pcntl` — tried, dropped**: found and fixed one real cross-compile
+      false positive (`HAVE_GETCPUID` wrongly detected by `AC_CHECK_FUNCS`,
+      pulling in Solaris's `<sys/processor.h>` — fixed with a direct edit
+      to the vendored `pcntl.c`, `&& !defined(__EMSCRIPTEN__)` on that one
+      `#if` guard, same shape as decision 42's `sockets` `AF_PACKET` fix),
+      then hit a second build failure not worth chasing. More
+      fundamentally, per the user's own doubt raised mid-session: its
+      entire feature set (`fork()`, `waitpid()`, inter-process signals) has
+      no real equivalent in a single-instance WASM VM with no real OS
+      process model — even a successful build would ship functions that
+      silently do nothing useful or fail unpredictably. Removed entirely
+      (config.yaml, `compile/extensions/pcntl/`, `packages/phpext-pcntl/`),
+      same treatment as `ext/cmark` (decision 40).
+    - **`shmop`/`sysvshm`/`sysvmsg`/`sysvsem` — all four tried, all four
+      dropped**: each vendored cleanly and **compiled** successfully via
+      `compile-extension` on the first try (no source-level problems at
+      all) — the real wall was the main `php.wasm` link step, one symbol
+      at a time, under real time pressure (the user needed Docker back for
+      something else). `check-shared-extension-symbols.mjs`'s own report
+      of "1 missing export" per run turned out to be misleading: `.JS_ABI_
+      EXPORTS` entries are alphabetically sorted before the final `emcc`
+      link, and `-Wundefined -Werror` stops at the *first* undefined
+      symbol it hits in that sorted order, not all of them — so each
+      apparent "just this one symbol" fix actually only unmasked the
+      *next* alphabetically-later undefined symbol, discovered one real
+      rebuild at a time: `msgctl` → `msgget` → `semctl` → `shmat`. At that
+      point, rather than continuing the same one-symbol-per-rebuild cycle,
+      concluded (and confirmed sufficiently, not just guessed) that **none**
+      of `shmget`/`shmat`/`shmctl`/`shmdt`/`msgget`/`msgsnd`/`msgrcv`/
+      `msgctl`/`semget`/`semop`/`semctl` exist as real exportable symbols
+      under this Emscripten toolchain — generalizing decision 43's own
+      finding (apcu's optional shm backend hit the identical wall) from
+      "the shm calls" to "the entire SysV IPC family". With no underlying
+      syscall available at all for any of it, every function in all four
+      extensions would be permanently broken. Removed entirely (config.yaml,
+      `compile/extensions/{shmop,sysvshm,sysvmsg,sysvsem}/`,
+      `packages/phpext-{shmop,sysvshm,sysvmsg,sysvsem}/`), same treatment
+      as `pcntl`/`cmark`.
+    - **Lesson for `check-shared-extension-symbols.mjs` itself, not yet
+      acted on**: its "found N missing ABI exports" report from a single
+      run is only reliable when every reported symbol is independent of
+      the others — it does NOT mean "these are the only N problems," since
+      a real linker failure (as opposed to this tool's own lazy/GOT
+      instrumentation) still stops at the first `-Werror` hit. A future
+      improvement would be teaching the tool to also validate its findings
+      against a real (if slower) `emcc -c` dry-compile pass, or accepting
+      this as an inherent limitation of diagnosing without paying for the
+      full link every time.
+    - **✅ Re-verified end-to-end after the final rebuild**: both
+      `check-shared-extension-symbols.mjs` (all 6 remaining shared
+      extensions: `sodium`, `ftp`, `mysqli`, `pdo_mysql`, `posix`, `dba` —
+      zero missing exports) and the static-core regression test (15/15,
+      unchanged) pass cleanly.
+
 ## Current status
 
 **Extraction done (2026-09-11).** Copied from `php-wasm-builder` into this

@@ -1,0 +1,45 @@
+{
+	"name": "@kirigami/phpext-posix",
+	"version": "0.1.0",
+	"description": "Kirigami PHP.wasm shared extension: posix (JSPI side module, see @kirigami/php-wasm)",
+	"keywords": [
+		"php-wasm",
+		"php",
+		"wasm",
+		"webassembly",
+		"kirigami",
+		"posix"
+	],
+	"homepage": "https://php-kirigami.github.io",
+	"bugs": {
+		"url": "https://github.com/php-kirigami/php-wasm-compiler/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/php-kirigami/php-wasm-compiler.git"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"license": "GPL-2.0-or-later",
+	"author": "Maxime Larrivée-Roy",
+	"type": "module",
+	"main": "index.js",
+	"types": "index.d.ts",
+	"files": [
+		"manifest.json",
+		"manifest-*.json",
+		"*.so",
+		"index.js",
+		"index.d.ts",
+		"README.md"
+	],
+	"kirigami": {
+		"type": "extension",
+		"phpVersions": [
+			"8.5"
+		],
+		"minVersion": "8.5.10",
+		"buildHash": "d0210ee9e497da22da7981f45b676fbbcefc74cb0f9a294b689cea4cda7933cf"
+	}
+}

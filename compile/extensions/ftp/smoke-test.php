@@ -9,7 +9,7 @@
 // extension linked and its symbol table resolves.
 foreach (['ftp_connect', 'ftp_login', 'ftp_pwd', 'ftp_get', 'ftp_put', 'ftp_close'] as $fn) {
 	if (!function_exists($fn)) {
-		fwrite(STDERR, "$fn() is not available.\n");
+		echo "$fn() is not available.\n";
 		exit(1);
 	}
 }
