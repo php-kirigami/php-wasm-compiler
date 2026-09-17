@@ -172,3 +172,16 @@ refreshed `matrix.json` (`navicat` v0.1.5, `jsonk` v0.1.4, `mdhtml` v0.1.2,
 `8_5_10/php_8_5.wasm` (26,957,515 bytes). This also closes out decision 50's
 "not build-tested yet" caveat for `norm` and the earlier latest-tags bump.
 
+**`compile/update-lib-versions.mjs` now checks everything, not just
+GitHub-hosted `libraries` — see DECISIONS.md decision 52.** New resolvers
+for GitLab, Gitiles/googlesource, SourceForge, and a generic
+listing-page scan cover every remaining `sourceType`; `matrix.extensions`
+(mdhtml/jsonk/navicat/norm/igbinary/apcu/yaml) is now checked too;
+GitHub API calls authenticate via `gh auth token` when available (fixes
+the 60/req-hour unauthenticated cap); every candidate is verified with a
+live HEAD/GET before being written. This pass bumped `libiconv` (1.19),
+`libz` (1.3.2), `libaom` (3.15.0), `libsqlite3` (3.53.4 — also fixed a
+stale hardcoded release-year in its Dockerfile/sourceTemplate), and
+`mdhtml` (v0.1.3, the RINIT/RSHUTDOWN fix). Not build-tested yet — no
+Docker build run this session for the newly-bumped libraries.
+

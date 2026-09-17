@@ -18,8 +18,12 @@ RUN if [ "$JSPI" = "1" ]; then \
     fi
 
 
+# sqlite.org serves tarballs under a release-year path segment that isn't
+# derivable from the version number itself (not wired to a Makefile ARG) --
+# bump this by hand whenever SQLITE_VERSION_COMPACT moves to a release from
+# a different year, or the download 404s.
 RUN set -euxo pipefail &&\
-    wget --no-check-certificate https://sqlite.org/2025/sqlite-autoconf-$SQLITE_VERSION_COMPACT.tar.gz && \
+    wget --no-check-certificate https://sqlite.org/2026/sqlite-autoconf-$SQLITE_VERSION_COMPACT.tar.gz && \
     tar -xzvf sqlite-autoconf-$SQLITE_VERSION_COMPACT.tar.gz && \
     mv sqlite-autoconf-$SQLITE_VERSION_COMPACT sqlite-src && \
     cd sqlite-src && \

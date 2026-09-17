@@ -1,6 +1,6 @@
 {
 	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. GitHub-hosted libraries (sourceType github-release/github-tag) are auto-refreshed via `node compile/cli.mjs update-versions` (compile/update-lib-versions.mjs); everything else (tarball/sourceforge/googlesource sources) still has to be checked manually via its own checkUrl.",
-	"lastChecked": "2026-09-16T08:04:25.423Z",
+	"lastChecked": "2026-09-17T06:08:37.583Z",
 	"libraries": {
 		"libcurl": {
 			"sourceType": "github-release",
@@ -24,7 +24,8 @@
 			"sourceType": "tarball",
 			"sourceTemplate": "https://libzip.org/download/libzip-{version}.tar.gz",
 			"checkUrl": "https://libzip.org/download/",
-			"note": "Two versions are built in parallel by the Makefile (1.2.0 and 1.9.2), not a single 'latest'.",
+			"autoUpdate": false,
+			"note": "Two versions are built in parallel by the Makefile (1.2.0 and 1.9.2), not a single 'latest' — hardcoded directly in compile/Makefile's libzip_jspi/LIBZIP_VERSION build args, NOT read from this array at all, unlike every other library here. autoUpdate:false because update-lib-versions.mjs writing a new 'latest' here would be a no-op at best (the Makefile ignores it) and misleading at worst. Checked 2026-09-17: upstream's current release is 1.11.4 — not adopted, since bumping either pinned version means editing the Makefile by hand and re-testing both builds.",
 			"versions": [
 				"1.2.0",
 				"1.9.2"
@@ -34,7 +35,8 @@
 			"sourceType": "tarball",
 			"sourceTemplate": "https://www.openssl.org/source/openssl-{version}.tar.gz",
 			"checkUrl": "https://www.openssl.org/source/",
-			"note": "Upstream Playground pinned two versions built in parallel (1.1.0h/1.1.1t) for broader PHP-version support; we only target PHP 8.5 (see CLAUDE.md decision 16) so compile/Makefile now builds a single version. Verified 2026-09-12 that 3.6.4 (latest stable 3.x; 4.0.x exists but is very new) cross-compiles with the existing Dockerfile unmodified.",
+			"autoUpdate": false,
+			"note": "Upstream Playground pinned two versions built in parallel (1.1.0h/1.1.1t) for broader PHP-version support; we only target PHP 8.5 (see CLAUDE.md decision 16) so compile/Makefile now builds a single version. Verified 2026-09-12 that 3.6.4 (latest stable 3.x; 4.0.x exists but is very new) cross-compiles with the existing Dockerfile unmodified. autoUpdate:false because 'latest' here means 'latest patch on our chosen 3.x line', a judgment call update-lib-versions.mjs shouldn't make on its own (it would happily jump to 4.x once that's what openssl-library.org calls current). Re-checked 2026-09-17: still no newer 3.6.x patch than 3.6.4; 4.0 exists but isn't being adopted yet.",
 			"versions": [
 				"3.6.4"
 			]
@@ -53,8 +55,10 @@
 			"sourceType": "tarball",
 			"sourceTemplate": "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-{version}.tar.gz",
 			"checkUrl": "https://ftp.gnu.org/pub/gnu/libiconv/",
+			"note": "Checked 2026-09-17: 1.19 is latest (tarball URL confirmed resolving), added — not yet build-tested against this pipeline.",
 			"versions": [
-				"1.17"
+				"1.17",
+				"1.19"
 			]
 		},
 		"libjpeg": {
@@ -82,14 +86,17 @@
 			"sourceType": "googlesource-archive",
 			"repo": "aomedia.googlesource.com/aom",
 			"sourceTemplate": "https://aomedia.googlesource.com/aom/+archive/v{version}.tar.gz",
+			"note": "Checked 2026-09-17: v3.15.0 is latest stable tag (v3.15.0-rc1 and older rc tags excluded), archive URL confirmed resolving, added — not yet build-tested against this pipeline.",
 			"versions": [
-				"3.13.1"
+				"3.13.1",
+				"3.15.0"
 			]
 		},
 		"libpng16": {
 			"sourceType": "sourceforge",
 			"sourceTemplate": "http://prdownloads.sourceforge.net/libpng/libpng-{version}.tar.gz",
 			"checkUrl": "https://sourceforge.net/projects/libpng/files/",
+			"rssPath": "/libpng16",
 			"note": "Default policy (2026-09-12): always try the latest STABLE version first (github.com/pnggroup/libpng's newest tags are 1.7.0 betas — not stable; 1.6.58 is the latest stable 1.6.x). TESTED and ADOPTED 2026-09-12: 1.6.58 rebuilds cleanly.",
 			"versions": [
 				"1.6.39",
@@ -117,18 +124,22 @@
 		},
 		"libsqlite3": {
 			"sourceType": "tarball",
-			"sourceTemplate": "https://sqlite.org/2025/sqlite-autoconf-{versionCompact}.tar.gz",
+			"sourceTemplate": "https://sqlite.org/2026/sqlite-autoconf-{versionCompact}.tar.gz",
 			"checkUrl": "https://sqlite.org/download.html",
+			"note": "Checked 2026-09-17: 3.53.4 is latest (sqlite-autoconf-3530400.tar.gz), added — not yet build-tested against this pipeline. sqlite.org's download path is keyed by release YEAR, not derivable from the version number; 3.53.4 lives under /2026/, not /2025/ like the previously-pinned 3.51.0 — both this sourceTemplate and compile/libsqlite3/Dockerfile's hardcoded URL were updated to match. Re-check the year again on the next bump.",
 			"versions": [
-				"3.51.0"
+				"3.51.0",
+				"3.53.4"
 			]
 		},
 		"libz": {
 			"sourceType": "tarball",
 			"sourceTemplate": "https://www.zlib.net/fossils/zlib-{version}.tar.gz",
 			"checkUrl": "https://zlib.net/",
+			"note": "Checked 2026-09-17: 1.3.2 is latest stable (released 2026-02-17), tarball URL confirmed resolving under the existing /fossils/ path — added, not yet build-tested against this pipeline. A 1.2.13 → 1.3.2 minor bump; zlib's changelog describes it as compatible, but hasn't been verified against this specific cross-compile.",
 			"versions": [
-				"1.2.13"
+				"1.2.13",
+				"1.3.2"
 			]
 		},
 		"oniguruma": {
@@ -1040,7 +1051,8 @@
 			"versions": [
 				"v0.1.0",
 				"v0.1.1",
-				"v0.1.2"
+				"v0.1.2",
+				"v0.1.3"
 			],
 			"libraries": [
 				"libcmark-gfm"

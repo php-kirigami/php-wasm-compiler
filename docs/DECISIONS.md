@@ -3199,3 +3199,89 @@ unless explicitly revisited:
       decision 50's pending `norm`/latest-tags work, so that decision's
       "not build-tested yet" caveat no longer applies either.
 
+52. **`compile/update-lib-versions.mjs` extended to cover every
+    `sourceType` and `matrix.extensions`, not just GitHub-hosted
+    `libraries` (2026-09-17).** Trigger: `mdhtml` got a real bug fix
+    upstream (RINIT/RSHUTDOWN → MINIT/MSHUTDOWN, php-mdhtml's own repo,
+    tagged `v0.1.3`) and `matrix.json` didn't know about it yet — checking
+    that by hand, then noticing several third-party libraries hadn't been
+    refreshed since 2026-09-12/16 either, made clear this needed to stop
+    being a one-off manual pass per library.
+    - **New resolvers, one per upstream shape, verified against live data
+      before being wired in** (not guessed from memory): GitLab tags API
+      (`git-tag` entries on a `gitlab.*` host — `libxml2`), Gitiles
+      `+refs?format=JSON` (`googlesource-archive`/`-commit` —
+      `libaom`/`libwebp`; the JSON has a `)]}'` XSSI-prevention prefix line
+      that has to be stripped before parsing), SourceForge's RSS feed
+      (`sourceforge` — `libpng16`; no clean JSON API, but the RSS holds
+      real filenames to regex against), and a generic "scan a plain
+      listing/download page for the template's filename shape" resolver
+      for everything still typed `tarball` (GNU ftp directory indexes —
+      `libiconv`; a homepage with a direct download link — `libz`;
+      sqlite.org's download page, whose links use `{versionCompact}` —
+      decoded back to a dotted version via sqlite's own
+      `MAJOR*1000000+MINOR*10000+PATCH*100` encoding, same math
+      `compile/Makefile`'s `SQLITE_VERSION_COMPACT` already does the
+      reverse of).
+    - **`matrix.extensions` now covered too** — any entry with a `repo`
+      field is treated as GitHub-hosted (release, then tag fallback), same
+      as a `libraries` `"github-release"` entry. Real bug caught building
+      this: `normalizeVersion()` always strips a leading `v`, which is
+      correct for how most `libraries` entries store versions but wrong
+      for our own extensions (`mdhtml`/`jsonk`/`navicat`/`norm`/`apcu`),
+      whose arrays keep it (`"v0.1.3"`, not `"0.1.3"`) since their
+      `sourceTemplate` doesn't re-add it the way e.g. `libavif`'s does —
+      first run reported spurious no-op "`v0.1.4` → `0.1.4`" updates for
+      every one of them. Fixed by detecting the array's own existing
+      convention (does the last entry start with `v`?) and re-applying it
+      to the freshly resolved version before comparing/writing.
+    - **`autoUpdate: false` opt-out added**, set on `libzip` and
+      `libopenssl`: `libzip`'s two parallel pinned versions
+      (`1.2.0`/`1.9.2`) are hardcoded directly in `compile/Makefile`'s
+      `LIBZIP_VERSION` build args, not read from `matrix.json` at all, so
+      writing a new "latest" here would be a no-op at best; `libopenssl`'s
+      "newest patch on our chosen 3.x line, not whatever major series
+      openssl-library.org calls current" is a judgment call (see decision
+      re: avoiding 4.x) a generic resolver has no business making
+      unsupervised.
+    - **Every resolved candidate is verified live** before being written:
+      its rendered `sourceTemplate` URL gets a HEAD (GET-with-`Range`
+      fallback for hosts that reject HEAD) request, and a non-2xx skips it
+      with a warning instead of recording a version whose download 404s at
+      build time. Caught a real, pre-existing latent issue immediately:
+      `libsqlite3`'s `sourceTemplate` (and `compile/libsqlite3/Dockerfile`)
+      both hardcoded `sqlite.org/2025/...`, but the newly-found `3.53.4` is
+      served under `/2026/` — sqlite.org keys its download path by release
+      *year*, which isn't derivable from the version number itself. Fixed
+      both files' hardcoded year and left a comment on each to re-check it
+      on the next bump, since nothing here derives it automatically.
+    - **Unauthenticated GitHub API calls are capped at 60/hour** — trivial
+      to exhaust across ~15 GitHub-hosted entries (up to 2 calls each) plus
+      a few dry runs while testing this, which is exactly what happened
+      mid-session (`403 rate limit exceeded`, confirmed via response
+      headers, not assumed). Fixed generally rather than just waiting it
+      out: `fetchText()` now sends an `Authorization: Bearer` header for
+      any `api.github.com` call, sourced from `$GITHUB_TOKEN` or (falling
+      back) `gh auth token` — already logged in in this environment — which
+      raises the ceiling to 5000/hour. Silently stays unauthenticated if
+      neither is available (e.g. a CI box without `gh`), same
+      degrade-gracefully posture as every other resolver here.
+    - **Versions actually bumped this pass** (each checked live, not
+      copied from memory): `libiconv` `1.17` → `1.19`, `libz` `1.2.13` →
+      `1.3.2`, `libaom` `3.13.1` → `3.15.0`, `libsqlite3` `3.51.0` →
+      `3.53.4` (+ the year-path fix above), `mdhtml` `v0.1.2` → `v0.1.3`
+      (the RINIT/RSHUTDOWN fix). Re-checked and confirmed already current,
+      no change: `libpng16` (`1.6.58` — 1.7.x is still betas only),
+      `libwebp` (`v1.6.0`), `libxml2` (`v2.15.4`), `libopenssl` (`3.6.4` —
+      still the newest 3.6.x patch), every already-covered GitHub-hosted
+      library, and `jsonk`/`navicat`/`norm`/`igbinary`/`apcu`. `libzip`
+      left alone (see `autoUpdate: false` above); `oniguruma` still has no
+      pinned version at all by design (decision predates this one — clones
+      a branch, not a tag) and stays outside this script's scope.
+    - **Not build-tested yet** — no Docker build run this session for any
+      of the bumped libraries; each is new to this pipeline (only the
+      download URL was verified to resolve, not that the source actually
+      compiles under Emscripten/JSPI). Follow the same "adopt latest,
+      revert on a real build failure" policy already used for
+      libcurl/libjpeg/libpng16/etc. above once a real build is run.
+
