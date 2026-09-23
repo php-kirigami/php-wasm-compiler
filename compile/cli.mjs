@@ -530,6 +530,7 @@ function extensionPackageJson(name, version, kirigami, license = 'GPL-2.0-or-lat
 		main: 'index.js',
 		types: 'index.d.ts',
 		files: ['manifest.json', 'manifest-*.json', '*.so', 'index.js', 'index.d.ts', 'README.md'],
+		engines: { node: '>=24.0.0' },
 		kirigami,
 	};
 }
@@ -689,8 +690,17 @@ function buildKirigamiExtensionMetadata(ext, phpVersionList, buildHash) {
 		phpVersions: phpVersionList,
 		minVersion,
 	};
+	// matrix.json keeps git tags as-is (libxml2's "v2.15.4"); the metadata
+	// records plain versions. libcxx isn't a wrapped library but the C++
+	// runtime a C++ extension links in (rar, scanmeqr), versioned by the
+	// emsdk it comes from, so it goes under `cxxRuntime` instead.
 	if (ext.vendorLib) {
-		kirigami.vendorLib = { name: ext.vendorLib, version: getMatrixVersion(ext.vendorLib) };
+		const entry = { name: ext.vendorLib, version: getMatrixVersion(ext.vendorLib).replace(/^v(?=\d)/, '') };
+		if (ext.vendorLib === 'libcxx') {
+			kirigami.cxxRuntime = entry;
+		} else {
+			kirigami.vendorLib = entry;
+		}
 	}
 	if (ext.bundleExtensions?.length) {
 		// Load order: each bundled extension's manifest-<name>.json must be

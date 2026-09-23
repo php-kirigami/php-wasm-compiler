@@ -37,6 +37,21 @@ Part of the **Kirigami** project ecosystem.
 
 ---
 
+## Table of contents
+
+- [@kirigami/phpext-fastchart](#kirigamiphpext-fastchart)
+  - [Overview](#overview)
+  - [Table of contents](#table-of-contents)
+  - [Requirements](#requirements)
+  - [Installation](#installation)
+  - [Usage](#usage)
+  - [Extension details](#extension-details)
+  - [Contents](#contents)
+  - [License](#license)
+  - [Author](#author)
+
+---
+
 ## Requirements
 
 - Node.js `>= 24.0.0`

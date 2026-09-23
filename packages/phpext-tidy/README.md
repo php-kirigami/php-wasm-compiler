@@ -124,7 +124,7 @@ full build/versioning story.
 
 ## License
 
-`GPL-2.0-or-later` — inherited from PHP itself (php-src's own `ext/tidy`).
+`GPL-2.0-or-later`, the license of php-wasm-compiler's build pipeline, which comes from WordPress Playground (see its [NOTICE.md](https://github.com/php-kirigami/php-wasm-compiler/blob/main/NOTICE.md)). The extension's own source, php-src's `ext/tidy`, is under the PHP License 3.01.
 
 ---
 

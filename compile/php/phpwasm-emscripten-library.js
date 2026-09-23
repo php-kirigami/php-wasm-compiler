@@ -31,7 +31,18 @@ const LibraryExample = {
 		POLLHUP: Number('{{{cDefs.POLLHUP}}}'),
 		SETFL_MASK:
 			Number('{{{cDefs.O_APPEND}}}') | Number('{{{cDefs.O_NONBLOCK}}}'),
-		socketTimeouts: new Map(),
+		/**
+		 * SO_RCVTIMEO/SO_SNDTIMEO per socket, as { receive, send } in ms.
+		 * Keyed by the SOCKFS socket object, not the fd: close() doesn't
+		 * go through shutdownSocket(), and a reused fd number would
+		 * otherwise inherit the timeouts of the socket it last belonged
+		 * to.
+		 */
+		socketTimeouts: new WeakMap(),
+		getSocketTimeouts: function (fd) {
+			const sock = FS.getStream(fd)?.node?.sock;
+			return sock ? PHPWASM.socketTimeouts.get(sock) : undefined;
+		},
 		// These macros are not defined in Emscripten at the time of writing:
 		// emscripten_O_NDELAY |
 		// emscripten_O_DIRECT |
@@ -646,8 +657,6 @@ const LibraryExample = {
 		 * @returns 0 on success, -1 on failure
 		 */
 		shutdownSocket: function (socketd, how) {
-			PHPWASM.socketTimeouts.delete(socketd);
-
 			// This implementation only supports websockets at the moment
 			const sock = getSocketFromFD(socketd);
 			const peer = Object.values(sock.peers)[0];
@@ -1138,7 +1147,7 @@ const LibraryExample = {
 	wasm_recv: function (sockfd, buffer, size, flags) {
 		return Asyncify.handleSleep((wakeUp) => {
 			const receiveTimeout =
-				PHPWASM.socketTimeouts.get(sockfd)?.receive;
+				PHPWASM.getSocketTimeouts(sockfd)?.receive;
 			const startedAt = Date.now();
 			let resolved = false;
 
@@ -1222,13 +1231,17 @@ const LibraryExample = {
 				return -1;
 			}
 
-			const timeouts = PHPWASM.socketTimeouts.get(socketd) || {};
+			const sock = FS.getStream(socketd)?.node?.sock;
+			if (!sock) {
+				return -1;
+			}
+			const timeouts = PHPWASM.socketTimeouts.get(sock) || {};
 			if (optionName === SO_RCVTIMEO) {
 				timeouts.receive = timeoutMs;
 			} else {
 				timeouts.send = timeoutMs;
 			}
-			PHPWASM.socketTimeouts.set(socketd, timeouts);
+			PHPWASM.socketTimeouts.set(sock, timeouts);
 			return 0;
 		}
 
@@ -1378,7 +1391,7 @@ const LibraryExample = {
 
 			// Wait for the connection to be established. A zero timeval
 			// disables the timeout, matching SO_SNDTIMEO semantics.
-			const sendTimeout = PHPWASM.socketTimeouts.get(sockfd)?.send;
+			const sendTimeout = PHPWASM.getSocketTimeouts(sockfd)?.send;
 			const timeout = sendTimeout ?? 30000;
 			let resolved = false;
 			let timeoutId;
@@ -1495,7 +1508,7 @@ const LibraryExample = {
 			return result;
 		}
 		return Asyncify.handleSleep((wakeUp) => {
-			const receiveTimeout = PHPWASM.socketTimeouts.get(fd)?.receive;
+			const receiveTimeout = PHPWASM.getSocketTimeouts(fd)?.receive;
 			const startedAt = Date.now();
 			const poll = function () {
 				const n = PHPWASM.recvfromNow(fd, buf, len, flags, addr, addrlen);

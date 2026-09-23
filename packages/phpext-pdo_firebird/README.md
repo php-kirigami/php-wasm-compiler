@@ -126,7 +126,7 @@ full build/versioning story.
 
 ## License
 
-`GPL-2.0-or-later` — inherited from PHP itself (php-src's own `ext/pdo_firebird`).
+`GPL-2.0-or-later`, the license of php-wasm-compiler's build pipeline, which comes from WordPress Playground (see its [NOTICE.md](https://github.com/php-kirigami/php-wasm-compiler/blob/main/NOTICE.md)). The extension's own source, php-src's `ext/pdo_firebird`, is under the PHP License 3.01.
 The statically linked Firebird client library is covered by the Initial
 Developer's Public License (IDPL) and InterBase Public License (IPL).
 

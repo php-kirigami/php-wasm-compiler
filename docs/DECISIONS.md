@@ -3820,3 +3820,42 @@ unless explicitly revisited:
     except descriptors waits out its timeout. The TODO item "Test SNMP
     against a real agent" is done (the runtime tested it against a Node
     agent through its UDP relay).
+
+64. **Runtime audit fixes (2026-09-23): pdo_firebird's abort at shutdown,
+    socket_set_block(), package metadata.** Reported from the Kirigami
+    runtime.
+    - **pdo_firebird printed `Aborted()` on `php.exit()`.** Firebird's
+      `ICUModules` destructor (a static `GlobalPtr`) destroys an `RWLock`,
+      which calls `pthread_rwlock_destroy`. The core didn't export it, so
+      the dynamic linker's lazy stub threw a JS error; the destructor is
+      `noexcept`, its landing pad caught the foreign exception and called
+      `std::terminate()`. Decision 60's static export computation only
+      covered the last 8 modules; it now covers all 27: 115 more libc/
+      compiler-rt symbols in `side-module-abi-exports.txt` (the pthread
+      rwlock family, `pthread_key_delete`, `recv`/`send`, `printf`, ...).
+      `usleep`, `popen` and `pclose` are wrapped by the core like `getpid`
+      and `select`, so they get the same `wasmImports` aliases to their
+      `__wrap_*` versions instead (`__wrap_popen`/`__wrap_pclose` are now
+      `EMSCRIPTEN_KEEPALIVE`). What still resolves to nothing is listed in
+      docs/BUGS.md.
+    - **`socket_set_block()` didn't undo `socket_set_nonblock()`.**
+      Emscripten's `fcntl(F_SETFL)` ORs the new flags into the old ones,
+      so `O_NONBLOCK` could never be cleared. `__syscall_fcntl64` now
+      handles `F_SETFL` like Linux: it replaces the settable flags
+      (`O_APPEND`, `O_NONBLOCK`, `PHPWASM.SETFL_MASK`) and keeps the rest.
+    - **SO_RCVTIMEO/SO_SNDTIMEO outlived their socket.** They were kept in
+      a Map keyed by fd and only removed by `shutdownSocket()`, which a
+      plain `close()` never reaches: the next socket given the same fd
+      number inherited them (found while testing the fix above: a blocking
+      read gave EAGAIN after an earlier socket's 300 ms timeout). They're
+      now in a WeakMap keyed by the SOCKFS socket object.
+    - **Package metadata**: every `package.json` gets
+      `engines: { node: ">=24.0.0" }` (the READMEs already said so).
+      `kirigami.vendorLib` versions drop matrix.json's git-tag `v` prefix
+      (libxml2, anydoc), and libcxx moves to `kirigami.cxxRuntime` (rar,
+      scanmeqr): it's the C++ runtime, versioned by the emsdk, not the
+      library the extension wraps. The 8 newest READMEs get their Table of
+      contents, and the GPL READMEs no longer say the license is
+      "inherited from PHP itself": php-src is under the PHP License 3.01;
+      the GPL-2.0-or-later comes from this pipeline's WordPress Playground
+      origin.

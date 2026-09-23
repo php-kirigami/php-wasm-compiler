@@ -34,6 +34,9 @@
 		"index.d.ts",
 		"README.md"
 	],
+	"engines": {
+		"node": ">=24.0.0"
+	},
 	"kirigami": {
 		"type": "extension",
 		"phpVersions": [
@@ -42,7 +45,7 @@
 		"minVersion": "8.5.11",
 		"vendorLib": {
 			"name": "libxml2",
-			"version": "v2.15.4"
+			"version": "2.15.4"
 		},
 		"buildHash": "662dcd917948056fa52770c8f115d729b2895e7d6948b78b819eeb2b5d44b548"
 	}

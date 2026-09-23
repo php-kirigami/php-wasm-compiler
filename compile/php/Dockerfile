@@ -1721,6 +1721,12 @@ RUN set -euxo pipefail; \
 		# export (it can suspend); the dynamic linker already looks through the
 		# JSPI wrapper (`.orig`) when resolving a side module's import.
 		/root/replace.sh 's/(___wrap_select = Module\["___wrap_select"\] = wasmExports\["__wrap_select"\];)/$1\n  if (typeof ___wrap_select === "function") { wasmImports["select"] = ___wrap_select; }/' /root/output/php.js; \
+	# Same for usleep, popen and pclose (-Wl,--wrap too): pgsql's libpq
+		# imports all three, and must get the JSPI-aware sleep and the
+		# process-spawning popen, not musl's.
+		/root/replace.sh 's/(___wrap_usleep = Module\["___wrap_usleep"\] = wasmExports\["__wrap_usleep"\];)/$1\n  if (typeof ___wrap_usleep === "function") { wasmImports["usleep"] = ___wrap_usleep; }/' /root/output/php.js; \
+		/root/replace.sh 's/(___wrap_popen = Module\["___wrap_popen"\] = wasmExports\["__wrap_popen"\];)/$1\n  if (typeof ___wrap_popen === "function") { wasmImports["popen"] = ___wrap_popen; }/' /root/output/php.js; \
+		/root/replace.sh 's/(___wrap_pclose = Module\["___wrap_pclose"\] = wasmExports\["__wrap_pclose"\];)/$1\n  if (typeof ___wrap_pclose === "function") { wasmImports["pclose"] = ___wrap_pclose; }/' /root/output/php.js; \
 	# Patch a "property undefined" error
 		# Emscripten produces an if that checks a stream.stream_ops.poll property. However,
 		# stream.stream_ops is sometimes undefined and the check fails. Let's adjust it to

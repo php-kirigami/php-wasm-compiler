@@ -34,6 +34,9 @@
 		"index.d.ts",
 		"README.md"
 	],
+	"engines": {
+		"node": ">=24.0.0"
+	},
 	"kirigami": {
 		"type": "extension",
 		"phpVersions": [
@@ -42,7 +45,7 @@
 		"minVersion": "8.5.11",
 		"vendorLib": {
 			"name": "anydoc",
-			"version": "v0.2.4"
+			"version": "0.2.4"
 		},
 		"buildHash": "64e4dca513d9f4afe0de68279e9695c3b2bd8f815e4db5b313cefa13dd5bc03d"
 	}

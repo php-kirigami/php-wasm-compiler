@@ -54,9 +54,28 @@ const LibraryForFileLocking = {
 	__syscall_fcntl64__deps: [
 		...LibraryManager.library.__syscall_fcntl64__deps,
 		'builtin_fcntl64',
+		'$PHPWASM',
+		'$FS',
+		'$ERRNO_CODES',
 	],
 	__syscall_fcntl64__sig: LibraryManager.library.__syscall_fcntl64__sig,
 	__syscall_fcntl64: function __syscall_fcntl64(fd, cmd, varargs) {
+		// Emscripten's F_SETFL ORs the new flags into the old ones
+		// (`stream.flags |= arg`), so O_NONBLOCK could never be cleared:
+		// socket_set_block() after socket_set_nonblock() left the socket
+		// non-blocking. Like Linux, F_SETFL replaces the settable flags
+		// (O_APPEND, O_NONBLOCK) and leaves the others alone.
+		if (cmd === Number('{{{cDefs.F_SETFL}}}')) {
+			const stream = FS.getStream(fd);
+			if (!stream) {
+				return -ERRNO_CODES.EBADF;
+			}
+			const arg = HEAP32[varargs >> 2];
+			stream.flags =
+				(stream.flags & ~PHPWASM.SETFL_MASK) |
+				(arg & PHPWASM.SETFL_MASK);
+			return 0;
+		}
 		if (typeof Module['userSpace'] === 'undefined') {
 			return _builtin_fcntl64(fd, cmd, varargs);
 		}

@@ -34,13 +34,16 @@
 		"index.d.ts",
 		"README.md"
 	],
+	"engines": {
+		"node": ">=24.0.0"
+	},
 	"kirigami": {
 		"type": "extension",
 		"phpVersions": [
 			"8.5"
 		],
 		"minVersion": "8.5.11",
-		"vendorLib": {
+		"cxxRuntime": {
 			"name": "libcxx",
 			"version": "4.0.19"
 		},

@@ -36,6 +36,21 @@ Part of the **Kirigami** project ecosystem.
 
 ---
 
+## Table of contents
+
+- [@kirigami/phpext-snmp](#kirigamiphpext-snmp)
+  - [Overview](#overview)
+  - [Table of contents](#table-of-contents)
+  - [Requirements](#requirements)
+  - [Installation](#installation)
+  - [Usage](#usage)
+  - [Extension details](#extension-details)
+  - [Contents](#contents)
+  - [License](#license)
+  - [Author](#author)
+
+---
+
 ## Requirements
 
 - Node.js `>= 24.0.0`
@@ -104,7 +119,7 @@ full build/versioning story.
 
 ## License
 
-`GPL-2.0-or-later`, inherited from PHP itself (php-src's own `ext/snmp`). The statically linked net-snmp is under its own BSD-style licenses, and OpenSSL under Apache-2.0.
+`GPL-2.0-or-later`, the license of php-wasm-compiler's build pipeline, which comes from WordPress Playground (see its [NOTICE.md](https://github.com/php-kirigami/php-wasm-compiler/blob/main/NOTICE.md)). The extension's own source, php-src's `ext/snmp`, is under the PHP License 3.01. The statically linked net-snmp is under its own BSD-style licenses, and OpenSSL under Apache-2.0.
 
 ---
 

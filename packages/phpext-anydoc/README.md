@@ -36,6 +36,21 @@ Part of the **Kirigami** project ecosystem.
 
 ---
 
+## Table of contents
+
+- [@kirigami/phpext-anydoc](#kirigamiphpext-anydoc)
+  - [Overview](#overview)
+  - [Table of contents](#table-of-contents)
+  - [Requirements](#requirements)
+  - [Installation](#installation)
+  - [Usage](#usage)
+  - [Extension details](#extension-details)
+  - [Contents](#contents)
+  - [License](#license)
+  - [Author](#author)
+
+---
+
 ## Requirements
 
 - Node.js `>= 24.0.0`

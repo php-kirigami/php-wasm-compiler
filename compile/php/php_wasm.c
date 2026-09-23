@@ -616,15 +616,17 @@ EMSCRIPTEN_KEEPALIVE int wasm_pclose(FILE *fp)
 
 /**
  * Linker-level wrappers so every compiled C call to popen()/pclose()
- * is redirected here via -Wl,--wrap=popen/pclose.
+ * is redirected here via -Wl,--wrap=popen/pclose. Kept as exports so
+ * side modules (pgsql's libpq) get them too: see the wasmImports
+ * aliases in the Dockerfile's php.js patches.
  */
-FILE *__wrap_popen(const char *cmd, const char *mode)
+EMSCRIPTEN_KEEPALIVE FILE *__wrap_popen(const char *cmd, const char *mode)
 {
 	return wasm_popen(cmd, mode);
 }
 
 extern int __real_pclose(FILE *fp);
-int __wrap_pclose(FILE *fp)
+EMSCRIPTEN_KEEPALIVE int __wrap_pclose(FILE *fp)
 {
 	if (js_popen_get_pid_for_fd(fileno(fp)) >= 0) {
 		return wasm_pclose(fp);

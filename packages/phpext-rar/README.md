@@ -36,6 +36,21 @@ Part of the **Kirigami** project ecosystem.
 
 ---
 
+## Table of contents
+
+- [@kirigami/phpext-rar](#kirigamiphpext-rar)
+  - [Overview](#overview)
+  - [Table of contents](#table-of-contents)
+  - [Requirements](#requirements)
+  - [Installation](#installation)
+  - [Usage](#usage)
+  - [Extension details](#extension-details)
+  - [Contents](#contents)
+  - [License](#license)
+  - [Author](#author)
+
+---
+
 ## Requirements
 
 - Node.js `>= 24.0.0`
@@ -92,7 +107,8 @@ foreach ($rar->getEntries() as $entry) {
   `withResolvedPHPExtensions()`. This is what `@kirigami/php-wasm`'s
   auto-loader calls — install the package and it's picked up automatically.
 - `package.json`'s `kirigami` field — `{ type: "extension", phpVersions,
-  minVersion, vendorLib: { name, version }, buildHash }`, mirroring the same
+  minVersion, cxxRuntime: { name, version }, buildHash }` (`cxxRuntime`: the
+  C++ runtime linked in, versioned by its emsdk), mirroring the same
   `kirigami` metadata convention every `@kirigami/plugin-<name>` package
   carries. `minVersion` is the exact PHP patch version this build was
   compiled/tested against (not a `@kirigami/php-wasm` semver).
