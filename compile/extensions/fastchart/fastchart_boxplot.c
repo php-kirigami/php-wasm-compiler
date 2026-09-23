@@ -1,0 +1,160 @@
+/*
+  +----------------------------------------------------------------------+
+  | Copyright (c) 2025-2026, Ilia Alshanetsky                            |
+  | Copyright (c) 2025-2026, Advanced Internet Designs Inc.              |
+  +----------------------------------------------------------------------+
+  | This source file is subject to the BSD 3-Clause license that is      |
+  | bundled with this package in the file LICENSE.                       |
+  +----------------------------------------------------------------------+
+  | Author: Ilia Alshanetsky <ilia@ilia.ws>                              |
+  +----------------------------------------------------------------------+
+*/
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include "php.h"
+#include "Zend/zend_exceptions.h"
+
+#include "php_fastchart.h"
+#include "fastchart_palette.h"
+#include "fastchart_target.h"
+#include "fastchart_axis.h"
+#include "fastchart_text.h"
+
+int fastchart_boxplot_render_to_target(fastchart_boxplot_obj *self, fastchart_target_t *t)
+{
+    if (self->entry_count == 0) {
+        zend_throw_error(NULL,
+            "FastChart\\BoxPlot::draw() requires setBoxes() with non-empty data");
+        return -1;
+    }
+    fastchart_boxplot_entry *boxes = self->entries;
+    int n = self->entry_count;
+
+    double dmin = boxes[0].min, dmax = boxes[0].max;
+    for (int i = 0; i < n; i++) {
+        if (boxes[i].min < dmin) dmin = boxes[i].min;
+        if (boxes[i].max > dmax) dmax = boxes[i].max;
+        for (int k = 0; k < boxes[i].outlier_count; k++) {
+            if (boxes[i].outliers[k] < dmin) dmin = boxes[i].outliers[k];
+            if (boxes[i].outliers[k] > dmax) dmax = boxes[i].outliers[k];
+        }
+    }
+    fastchart_obj *base = (fastchart_obj *)self;
+    for (int o = 0; o < base->n_combo_overlays; o++) {
+        const fastchart_combo_overlay *ov = &base->combo_overlays[o];
+        int lim = ov->n < n ? ov->n : n;
+        for (int i = 0; i < lim; i++) {
+            double d = ov->values[i];
+            if (!isfinite(d)) continue;
+            if (d < dmin) dmin = d;
+            if (d > dmax) dmax = d;
+        }
+    }
+
+    fastchart_value_range range;
+    if (((fastchart_obj *)self)->y_axis_scale == FASTCHART_SCALE_LOG) {
+        if (dmin <= 0.0 ||
+            fastchart_value_range_compute_log(dmin, dmax, &range) != 0) {
+            zend_value_error("FastChart\\BoxPlot::draw(): log Y-axis requires strictly-positive data");
+            return -1;
+        }
+    } else {
+        fastchart_value_range_compute(dmin, dmax, 6, &range);
+    }
+	if (fastchart_value_range_apply_override((fastchart_obj *)self,
+			&range) != 0) {
+		return -1;
+	}
+
+    fastchart_rect plot;
+    fastchart_palette pal;
+    fastchart_render_cartesian_setup((fastchart_obj *)self, t, 1, 1, NULL, 0,
+                                     &plot, &pal);
+    fastchart_draw_y_axis(t, (fastchart_obj *)self, &plot, &pal, &range);
+    fastchart_draw_plot_bands(t, (fastchart_obj *)self, &plot, &range, &pal);
+    fastchart_draw_v_plot_bands_categorical(t, (fastchart_obj *)self, &plot,
+                                            n, &pal);
+
+    /* Use category labels if supplied, else fall back to per-box label
+     * fields, else integer indices. */
+    const char **labels = ecalloc(n, sizeof(const char *));
+    for (int i = 0; i < n; i++) {
+        if (base->category_labels && i < base->n_category_labels) {
+            labels[i] = base->category_labels[i];
+        }
+        if (!labels[i] && boxes[i].label) labels[i] = boxes[i].label;
+    }
+    fastchart_draw_x_axis_categorical(t, (fastchart_obj *)self, &plot, &pal, n, labels);
+    fastchart_draw_axis_titles(t, (fastchart_obj *)self, &plot, &pal);
+    efree((void *)labels);
+
+    int slot_w = (plot.x1 - plot.x0) / n;
+    int box_pct = (int)self->box_width_pct;
+    if (box_pct <= 0) box_pct = 60;
+    int box_w = slot_w * box_pct / 100;
+    if (box_w < 4) box_w = 4;
+
+    int edge_handle = self->edge_color >= 0
+        ? fastchart_target_color_rgb(t, (int)self->edge_color)
+        : pal.axis;
+
+    for (int i = 0; i < n; i++) {
+        int cx = fastchart_x_categorical_center(&plot, i, n);
+        int x0 = cx - box_w / 2;
+        int x1 = cx + box_w / 2;
+
+        int y_min = fastchart_y_to_pixel(boxes[i].min,    &range, &plot);
+        int y_q1  = fastchart_y_to_pixel(boxes[i].q1,     &range, &plot);
+        int y_med = fastchart_y_to_pixel(boxes[i].median, &range, &plot);
+        int y_q3  = fastchart_y_to_pixel(boxes[i].q3,     &range, &plot);
+        int y_max = fastchart_y_to_pixel(boxes[i].max,    &range, &plot);
+
+        int color = pal.series[i % FASTCHART_PALETTE_SERIES_N];
+        uint32_t rgba = fastchart_target_color_to_rgba(t, color);
+        int r = (rgba >> 16) & 0xFF;
+        int g = (rgba >>  8) & 0xFF;
+        int b =  rgba        & 0xFF;
+        /* gd_alpha 64 (~50%) → byte 255 - 64*2 = 127. */
+        int alpha = fastchart_target_color(t, r, g, b, 127);
+
+        fastchart_target_line(t, cx, y_min, cx, y_q1, pal.axis, 1, FASTCHART_DASH_SOLID);
+        fastchart_target_line(t, cx, y_q3, cx, y_max, pal.axis, 1, FASTCHART_DASH_SOLID);
+        fastchart_target_line(t, cx - box_w / 4, y_min, cx + box_w / 4, y_min,
+                              pal.axis, 1, FASTCHART_DASH_SOLID);
+        fastchart_target_line(t, cx - box_w / 4, y_max, cx + box_w / 4, y_max,
+                              pal.axis, 1, FASTCHART_DASH_SOLID);
+
+        fastchart_target_rect(t, x0, y_q3, x1 - x0 + 1, y_q1 - y_q3 + 1,
+                              alpha, 1, 0);
+        fastchart_target_rect(t, x0, y_q3, x1 - x0 + 1, y_q1 - y_q3 + 1,
+                              edge_handle, 0, 1);
+
+        fastchart_target_line(t, x0, y_med, x1, y_med,
+                              edge_handle, 2, FASTCHART_DASH_SOLID);
+
+        for (int k = 0; k < boxes[i].outlier_count; k++) {
+            int oy = fastchart_y_to_pixel(boxes[i].outliers[k], &range, &plot);
+            fastchart_target_ellipse(t, cx, oy, 2, 2, color, 0, 1);
+        }
+    }
+
+    fastchart_draw_h_annotations(t, (fastchart_obj *)self, &plot, &pal, &range);
+    fastchart_draw_v_annotations_categorical(t, (fastchart_obj *)self, &plot, &pal, n);
+    fastchart_draw_overlays_categorical(t, (fastchart_obj *)self, &plot, &pal,
+                                         &range, NULL, n);
+    fastchart_draw_text_annotations(t, (fastchart_obj *)self, &pal);
+
+    if (self->icons && self->n_icons > 0 && n > 0) {
+        for (int i = 0; i < self->n_icons; i++) {
+            const fastchart_icon *ic = &self->icons[i];
+            double frac_x = n > 1 ? (ic->x + 0.5) / (double)n : 0.5;
+            int px = fastchart_frac_to_px(frac_x, plot.x0, plot.x1);
+            int py = fastchart_y_to_pixel(ic->y, &range, &plot);
+            fastchart_blit_icon(t, ic, px, py);
+        }
+    }
+    return 0;
+}

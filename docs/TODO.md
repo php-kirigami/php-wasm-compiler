@@ -4,6 +4,22 @@ Concrete next actions. For larger, not-yet-scheduled initiatives, see
 [ROADMAP.md](ROADMAP.md); for what's already done, see
 [STATUS.md](STATUS.md).
 
+## Next (2026-09-23)
+
+- [ ] Build fastchart (`node compile/cli.mjs compile-extension fastchart`)
+      and run its smoke test; first use of `vendorLibs[].archives`, of
+      the `wasm-pkgconfig/` shims and of `#embed` for the default font.
+- [ ] anydoc (`hosmelq/ext-anydoc`, Rust via ext-php-rs): a Rust build path
+      for compile-extension (toolchain with `wasm32-unknown-emscripten`,
+      PIC std via `-Zbuild-std`, `panic=abort` or wasm EH to match the
+      core, cargo target/output wired into its `pie/Makefile.frag`).
+      Watch `rayon` (thread pool, no pthreads here) in `pdf-inspector`.
+- [ ] Fix the snmp hang (docs/BUGS.md), then restore a real request in
+      its smoke test; test SNMP against a real agent through the runtime's
+      UDP relay.
+- [ ] Remove the stale gettext/... entries from docs/BUGS.md (fixed: all
+      shared extensions pass their smoke tests now).
+
 - [ ] Wire `config.yaml`'s `libraries:` versions into the actual build
       (`cli.mjs`/`build.js` currently ignore them — the libs are built at
       whatever version their own Dockerfile pins). Decide whether to

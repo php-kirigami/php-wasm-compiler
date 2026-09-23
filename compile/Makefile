@@ -346,6 +346,43 @@ firebird/jspi/dist/root/lib/lib/libfbclient.a: base-image
 	CID=$$(docker create kirigami-php-wasm:firebird) && docker cp $$CID:/root/install/include ./firebird/jspi/dist/root/lib && docker rm $$CID
 	$(call STRIP_SO,./firebird/jspi/dist/root/lib)
 
+LIBXSLT_VERSION := $(call MATRIX_VERSION,libxslt)
+
+libxslt_jspi: libxslt/jspi/dist/root/lib/lib/libxslt.a
+libxslt/jspi/dist/root/lib/lib/libxslt.a: base-image libxml2_jspi
+	mkdir -p ./libxslt/jspi/dist/root/lib
+	docker build -f ./libxslt/Dockerfile -t kirigami-php-wasm:libxslt . --build-arg JSPI=1 --build-arg LIBXSLT_VERSION=$(LIBXSLT_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libxslt) && docker cp $$CID:/root/install/lib ./libxslt/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libxslt) && docker cp $$CID:/root/install/include ./libxslt/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libxslt/jspi/dist/root/lib)
+
+NETSNMP_VERSION := $(call MATRIX_VERSION,netsnmp)
+
+netsnmp_jspi: netsnmp/jspi/dist/root/lib/lib/libnetsnmp.a
+netsnmp/jspi/dist/root/lib/lib/libnetsnmp.a: base-image libopenssl_jspi
+	mkdir -p ./netsnmp/jspi/dist/root/lib
+	docker build -f ./netsnmp/Dockerfile -t kirigami-php-wasm:netsnmp . --build-arg JSPI=1 --build-arg NETSNMP_VERSION=$(NETSNMP_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:netsnmp) && docker cp $$CID:/root/install/lib ./netsnmp/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:netsnmp) && docker cp $$CID:/root/install/include ./netsnmp/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./netsnmp/jspi/dist/root/lib)
+
+ICU_VERSION := $(call MATRIX_VERSION,icu)
+
+icu_jspi: icu/jspi/dist/root/lib/lib/libicuuc.a
+icu/jspi/dist/root/lib/lib/libicuuc.a: base-image
+	mkdir -p ./icu/jspi/dist/root/lib
+	docker build -f ./icu/Dockerfile -t kirigami-php-wasm:icu . --build-arg JSPI=1 --build-arg ICU_VERSION=$(ICU_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:icu) && docker cp $$CID:/root/install/lib ./icu/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:icu) && docker cp $$CID:/root/install/include ./icu/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./icu/jspi/dist/root/lib)
+
+libcxx_jspi: libcxx/jspi/dist/root/lib/lib/libc++.a
+libcxx/jspi/dist/root/lib/lib/libc++.a: base-image
+	mkdir -p ./libcxx/jspi/dist/root/lib
+	docker build -f ./libcxx/Dockerfile -t kirigami-php-wasm:libcxx . --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libcxx) && docker cp $$CID:/root/install/lib ./libcxx/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libcxx) && docker cp $$CID:/root/install/include ./libcxx/jspi/dist/root/lib && docker rm $$CID
+
 LIBFFI_VERSION := $(call MATRIX_VERSION,libffi)
 
 libffi_jspi: libffi/jspi/dist/root/lib/lib/libffi.a

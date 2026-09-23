@@ -268,3 +268,11 @@ the core has no C++ runtime (and no `__cpp_exception` tag). A real
 exports over two layers. `check-shared-extension-symbols.mjs` re-runs
 clean for all 18 shared extensions. Not yet tested against a real Firebird
 server, and error messages lack their text (`firebird.msg` not shipped).
+
+**✅ Last batch of mode:shared extensions (2026-09-23), see DECISIONS.md
+decision 60.** ffi, fileinfo, xsl, snmp, intl (ICU 78.3, data inside the
+module), rar and scanmeqr, the last two vendored from outside php-src.
+`check-shared-extension-symbols.mjs` passes for all 25 shared extensions
+with no missing ABI export. Known gaps: snmp's smoke test stops at the
+session setup (a request to an unreachable agent hangs, docs/BUGS.md);
+fastchart prepared but not built yet; anydoc (Rust) not started.

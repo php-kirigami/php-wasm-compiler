@@ -912,6 +912,17 @@ RUN cat /root/exported-functions.list >> /root/.JS_ABI_EXPORTS
 # strip-unused-abi-export-aliases.mjs. Keeping .JS_ABI_EXPORTS free of the ABI
 # also lets that step derive the strip set cleanly as (ABI) minus (JS exports).
 #
+# zif_*/zim_* (PHP_FUNCTION/PHP_METHOD handlers) are left out. They aren't
+# an API: each extension registers its own through its function tables. But
+# exported, a static extension's handler takes precedence over a side
+# module's own definition of the same C name, since the dynamic linker
+# resolves a side module's GOT imports against the main module's exports
+# first. Found with php-norm (static) and intl (shared), which both define
+# zif_normalizer_normalize: intl's Normalizer::normalize() ran php-norm's
+# code, with php-norm's own normalization-form values ("must be a valid
+# normalization form" for Normalizer::FORM_C). No side module imports a
+# core zif_/zim_ symbol (checked over every packages/phpext-*).
+#
 # External extensions are JSPI-only (see compile-extension's ExtensionAsyncMode),
 # so skip this for asyncify builds, which can never load one and would otherwise
 # pay the binary-size cost of retaining the whole libphp ABI as dead weight.
@@ -926,6 +937,7 @@ RUN set -eux; \
 		/root/lib/libphp.a \
 		| grep -v '^[[:space:]]*$' \
 		| grep -v ':$' \
+		| grep -v -E '^zi[fm]_' \
 		| LC_ALL=C sort -u \
 		> /root/.PHP_EXTENSION_ABI_EXPORTS; \
 	cat /root/.PHP_EXTENSION_ABI_EXPORTS \
@@ -1362,6 +1374,25 @@ RUN echo '___ctype_get_mb_cur_max' >> /root/.JS_ABI_EXPORTS; \
 	echo '_sigaction' >> /root/.JS_ABI_EXPORTS; \
 	echo '_setenv' >> /root/.JS_ABI_EXPORTS;
 
+# - dlsym/dlclose: ffi.so. FFI::cdef() with no library resolves every C
+#   function it declares with dlsym(RTLD_DEFAULT, ...), and FFI::load()/
+#   FFI::cdef($code, $lib) pair dlopen() (already exported above, for odbc)
+#   with dlclose(). Found by check-shared-extension-symbols.mjs running
+#   ffi's smoke-test.php. qsort is exported too: that smoke test calls it
+#   through FFI (with a PHP callback, to exercise libffi's closures), and
+#   the core's own code never does, so without this FFI couldn't resolve it
+#   (a C function FFI is asked to call must be a real export of the core,
+#   or of a loaded side module).
+# The bulk list for the 2026-09-23 batch of side modules (ffi, fileinfo,
+# xsl, snmp, rar, intl, scanmeqr), computed statically instead of one smoke-test
+# layer at a time: see the header of compile/php/side-module-abi-exports.txt.
+COPY ./compile/php/side-module-abi-exports.txt /root/side-module-abi-exports.txt
+RUN grep -v '^#' /root/side-module-abi-exports.txt | grep -v '^[[:space:]]*$' | sed 's/^/_/' >> /root/.JS_ABI_EXPORTS
+
+RUN echo '_dlsym' >> /root/.JS_ABI_EXPORTS; \
+	echo '_dlclose' >> /root/.JS_ABI_EXPORTS; \
+	echo '_qsort' >> /root/.JS_ABI_EXPORTS;
+
 # - getpid: posix.so's posix_getpid() calls it directly -- found via
 #   check-shared-extension-symbols.mjs's smoke-test.php support (CLAUDE.md
 #   decision 48's batch of no-external-lib extensions: posix/shmop/sysvshm/
@@ -1540,7 +1571,7 @@ RUN set -euxo pipefail; \
 	# used to fall back to (ASYNCIFY=1, unreachable since WITH_JSPI is
 	# always "yes" in this pipeline) was removed along with the dead
 	# ASYNCIFY_IMPORTS/ASYNCIFY_ONLY block that fed it.
-	export ASYNCIFY_FLAGS=" -s ASYNCIFY=2 -sSUPPORT_LONGJMP=wasm -fwasm-exceptions -sJSPI_IMPORTS=js_open_process,js_fd_read,js_waitpid,js_process_status,js_create_input_device,wasm_setsockopt,wasm_shutdown,wasm_close,wasm_recv,wasm_connect,__syscall_fcntl64,js_flock,js_release_file_locks,js_waitpid -sJSPI_EXPORTS=php_wasm_init,wasm_sleep,wasm_read,emscripten_sleep,wasm_sapi_handle_request,wasm_sapi_request_shutdown,wasm_poll_socket,wrap_select,__wrap_select,select,php_pollfd_for,fflush,wasm_popen,wasm_pclose,__wrap_popen,__wrap_pclose,wasm_read,wasm_php_exec,run_cli,wasm_recv,wasm_connect,__wasm_call_ctors,__errno_location,__funcs_on_exit -s EXPORTED_RUNTIME_METHODS=HEAPU32,HEAPU8,ccall,PROXYFS,wasmExports "; \
+	export ASYNCIFY_FLAGS=" -s ASYNCIFY=2 -sSUPPORT_LONGJMP=wasm -fwasm-exceptions -sJSPI_IMPORTS=js_open_process,js_fd_read,js_waitpid,js_process_status,js_create_input_device,wasm_setsockopt,wasm_shutdown,wasm_close,wasm_recv,wasm_recvfrom,__syscall_recvfrom,wasm_connect,__syscall_connect,__syscall_fcntl64,js_flock,js_release_file_locks,js_waitpid -sJSPI_EXPORTS=php_wasm_init,wasm_sleep,wasm_read,emscripten_sleep,wasm_sapi_handle_request,wasm_sapi_request_shutdown,wasm_poll_socket,wrap_select,__wrap_select,select,php_pollfd_for,fflush,wasm_popen,wasm_pclose,__wrap_popen,__wrap_pclose,wasm_read,wasm_php_exec,run_cli,wasm_recv,wasm_connect,__wasm_call_ctors,__errno_location,__funcs_on_exit -s EXPORTED_RUNTIME_METHODS=HEAPU32,HEAPU8,ccall,PROXYFS,wasmExports "; \
 	echo '#define PLAYGROUND_JSPI 1' > /root/php_wasm_asyncify.h; \
 	ZEND_SIDE_MODULE_EXPORT_SOURCE="/root/zend-side-module-exports.c"; \
 	export OPTIMIZATION_FLAGS="-O3"; \
@@ -1684,6 +1715,12 @@ RUN set -euxo pipefail; \
 	# instead, which is unconditionally generated (deterministic, extension-
 	# set-independent) the moment ___wrap_getpid is in EXPORTED_FUNCTIONS.
 		/root/replace.sh 's/(___wrap_getpid = Module\["___wrap_getpid"\] = wasmExports\["__wrap_getpid"\];)/$1\n  if (typeof ___wrap_getpid === "function") { wasmImports["getpid"] = ___wrap_getpid; }/' /root/output/php.js; \
+	# Same for select (-Wl,--wrap=select, php_wasm.c's __wrap_select): net-snmp
+		# in snmp.so waits for replies with select(), and must get the wrapped,
+		# socket-aware version, not the plain libc one. __wrap_select is a JSPI
+		# export (it can suspend); the dynamic linker already looks through the
+		# JSPI wrapper (`.orig`) when resolving a side module's import.
+		/root/replace.sh 's/(___wrap_select = Module\["___wrap_select"\] = wasmExports\["__wrap_select"\];)/$1\n  if (typeof ___wrap_select === "function") { wasmImports["select"] = ___wrap_select; }/' /root/output/php.js; \
 	# Patch a "property undefined" error
 		# Emscripten produces an if that checks a stream.stream_ops.poll property. However,
 		# stream.stream_ops is sometimes undefined and the check fails. Let's adjust it to

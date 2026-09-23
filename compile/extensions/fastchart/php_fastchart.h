@@ -1,0 +1,1728 @@
+/*
+  +----------------------------------------------------------------------+
+  | Copyright (c) 2025-2026, Ilia Alshanetsky                            |
+  | Copyright (c) 2025-2026, Advanced Internet Designs Inc.              |
+  +----------------------------------------------------------------------+
+  | This source file is subject to the BSD 3-Clause license that is      |
+  | bundled with this package in the file LICENSE.                       |
+  +----------------------------------------------------------------------+
+  | Author: Ilia Alshanetsky <ilia@ilia.ws>                              |
+  +----------------------------------------------------------------------+
+*/
+
+#ifndef PHP_FASTCHART_H
+#define PHP_FASTCHART_H
+
+#include "php.h"
+#include "zend_exceptions.h"
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
+#include "fastchart_graph.h"
+
+#define PHP_FASTCHART_VERSION "1.7.4"
+
+extern zend_module_entry fastchart_module_entry;
+#define phpext_fastchart_ptr &fastchart_module_entry
+
+/* FT_Face cache slot. Process-shared under NTS; per-thread under ZTS
+ * via TSRM module globals. fastchart_target.c owns the cache state
+ * transitions; this typedef lives here so the globals struct below
+ * can size the cache. */
+#define FC_FT_FACE_CACHE_N 4
+typedef struct {
+    char          *path;   /* malloc'd; NULL = empty slot */
+    unsigned char *data;   /* malloc'd backing for FT_New_Memory_Face */
+    size_t         data_len;
+    FT_Face        face;
+} fc_ft_face_slot;
+
+/* Glyph outline cache. Decomposed (face, pix_size, codepoint) ->
+ * advance + path command stream at pen_x=0. The path stream is replayed
+ * with the running pen offset at emit time, avoiding the second
+ * FT_Load_Glyph + FT_Outline_Decompose pass and the third measurement
+ * pass that fc_ft_measure does for layout. Per-thread under ZTS for
+ * the same isolation as the face cache. */
+#define FC_GLYPH_CACHE_N 64
+typedef struct fc_glyph_cache_entry {
+    void     *face;          /* FT_Face* used as opaque cache key; NULL = empty */
+    uint16_t  pix_size;      /* cache key */
+    uint32_t  codepoint;     /* cache key */
+    int32_t   advance_x_64;  /* glyph advance in FT 26.6 fixed-point */
+    /* Decomposed path stream at pen_x=0. ops[] holds 'M'/'L'/'Q'/'C'.
+     * pts[] holds 2 floats per M/L, 4 per Q, 6 per C, in SVG-oriented
+     * coordinates (y-down, already scaled to pixels). */
+    char     *ops;           /* malloc'd, n_ops bytes; NULL when n_ops == 0 */
+    float    *pts;           /* malloc'd, n_pts floats */
+    uint16_t  n_ops;
+    uint16_t  n_pts;
+} fc_glyph_cache_entry;
+
+/* Glyph advance cache for text MEASUREMENT (fc_ft_measure). The draw
+ * glyph cache is keyed on the integer FT_Set_Pixel_Sizes size; the
+ * measure path uses fractional FT_Set_Char_Size (point size + DPI) and
+ * needs only the advance, not the outline. A separate direct-mapped
+ * cache (slot = codepoint low bits) keyed on that size keeps measured
+ * widths byte-identical while eliminating the repeated FT_Load_Glyph
+ * that label-dense charts (heatmap show-values, many axis labels) pay
+ * per glyph. Per-thread under ZTS like the other FT caches. */
+#define FC_MEASURE_CACHE_N 128   /* power of two: slot = codepoint & (N-1) */
+typedef struct {
+    void     *face;          /* opaque FT_Face key; NULL = empty slot */
+    uint32_t  codepoint;     /* cache key */
+    int32_t   size_64;       /* cache key: point size in FT 26.6 fixed-point */
+    int32_t   dpi;           /* cache key */
+    int32_t   advance_x_64;  /* glyph advance in FT 26.6 fixed-point */
+} fc_measure_cache_entry;
+
+/* Per-thread FT state. Under NTS this is a single struct shared across
+ * the (only) thread; under ZTS each thread gets its own copy. The
+ * shared-library / shared-face cache that lives here means no
+ * cross-thread contention on FT operations, and each thread pays its
+ * own FT_Init_FreeType once per first text emit. */
+ZEND_BEGIN_MODULE_GLOBALS(fastchart)
+    FT_Library             ft_lib;
+    int                    ft_lib_init_failed;
+    fc_ft_face_slot        ft_face_cache[FC_FT_FACE_CACHE_N];
+    fc_glyph_cache_entry   glyph_cache[FC_GLYPH_CACHE_N];
+    fc_measure_cache_entry measure_cache[FC_MEASURE_CACHE_N];
+#if defined(__linux__)
+	uint64_t               renameat2_unsupported_devs[8];
+	int                    renameat2_unsupported_count;
+#endif
+    /* fastchart.max_render_pixels: operator ceiling on the physical
+     * raster pixel count. The RGBA frame uses four PHP-accounted bytes
+     * per pixel, plus native encoder workspace. Clamped to the built-in
+     * 64M cap. */
+    zend_long              max_render_pixels;
+    /* fastchart.max_image_cache_bytes: operator ceiling on the decoded
+     * source-image surfaces one render retains. plutosvg mallocs them,
+     * so memory_limit never sees them. Clamped to the built-in 64M cap. */
+    zend_long              max_image_cache_bytes;
+ZEND_END_MODULE_GLOBALS(fastchart)
+
+ZEND_EXTERN_MODULE_GLOBALS(fastchart)
+
+#define FASTCHART_G(v) ZEND_MODULE_GLOBALS_ACCESSOR(fastchart, v)
+
+#ifdef PHP_WIN32
+#define PHP_FASTCHART_API __declspec(dllexport)
+#else
+#define PHP_FASTCHART_API
+#endif
+
+/* PHP 8.3 compat shim for zend_register_internal_class_with_flags
+ * (added in 8.4). gen_stub.php emits the 8.4+ variant for any
+ * abstract/final class declaration, but we still target 8.3. */
+#if PHP_VERSION_ID < 80400
+static inline zend_class_entry *zend_register_internal_class_with_flags(
+    zend_class_entry *class_entry,
+    zend_class_entry *parent_ce,
+    uint32_t flags)
+{
+    zend_class_entry *registered = zend_register_internal_class_ex(class_entry, parent_ce);
+    registered->ce_flags |= flags;
+    return registered;
+}
+#endif
+
+/* PHP 8.2 compat shim for zend_declare_typed_class_constant (added in
+ * 8.3). gen_stub.php emits it for any typed class constant (the stub's
+ * `public const int FOO = N;` enums). 8.2 has no typed class constants,
+ * so register an untyped one with the same value and drop the type. */
+#if PHP_VERSION_ID < 80300
+static zend_always_inline zend_class_constant *zend_declare_typed_class_constant(
+    zend_class_entry *ce, zend_string *name, zval *value,
+    int flags, zend_string *doc_comment, zend_type type)
+{
+    (void) type;
+    return zend_declare_class_constant_ex(ce, name, value, flags, doc_comment);
+}
+#endif
+
+extern zend_class_entry *fastchart_chart_ce;
+extern zend_class_entry *fastchart_line_chart_ce;
+extern zend_class_entry *fastchart_area_chart_ce;
+extern zend_class_entry *fastchart_bar_chart_ce;
+extern zend_class_entry *fastchart_pie_chart_ce;
+extern zend_class_entry *fastchart_scatter_chart_ce;
+extern zend_class_entry *fastchart_stock_chart_ce;
+extern zend_class_entry *fastchart_radar_chart_ce;
+extern zend_class_entry *fastchart_bubble_chart_ce;
+extern zend_class_entry *fastchart_surface_chart_ce;
+extern zend_class_entry *fastchart_gauge_chart_ce;
+extern zend_class_entry *fastchart_gantt_chart_ce;
+extern zend_class_entry *fastchart_box_plot_ce;
+extern zend_class_entry *fastchart_polar_chart_ce;
+extern zend_class_entry *fastchart_contour_chart_ce;
+extern zend_class_entry *fastchart_treemap_ce;
+extern zend_class_entry *fastchart_funnel_ce;
+extern zend_class_entry *fastchart_waterfall_ce;
+extern zend_class_entry *fastchart_heatmap_ce;
+extern zend_class_entry *fastchart_linear_meter_ce;
+extern zend_class_entry *fastchart_bullet_chart_ce;
+extern zend_class_entry *fastchart_pareto_chart_ce;
+extern zend_class_entry *fastchart_calendar_heatmap_ce;
+extern zend_class_entry *fastchart_sunburst_chart_ce;
+extern zend_class_entry *fastchart_sankey_chart_ce;
+extern zend_class_entry *fastchart_marimekko_chart_ce;
+extern zend_class_entry *fastchart_vector_chart_ce;
+extern zend_class_entry *fastchart_arc_diagram_ce;
+extern zend_class_entry *fastchart_chord_diagram_ce;
+extern zend_class_entry *fastchart_network_chart_ce;
+extern zend_class_entry *fastchart_population_pyramid_ce;
+extern zend_class_entry *fastchart_violin_plot_ce;
+extern zend_class_entry *fastchart_circle_packing_ce;
+extern zend_class_entry *fastchart_pictogram_ce;
+extern zend_class_entry *fastchart_venn_diagram_ce;
+extern zend_class_entry *fastchart_word_cloud_ce;
+extern zend_class_entry *fastchart_serpentine_timeline_ce;
+extern zend_class_entry *fastchart_dendrogram_ce;
+extern zend_class_entry *fastchart_partition_ce;
+
+/* Symbol family (1D/2D codes). Parallel hierarchy to Chart: the slim
+ * fastchart_symbol_obj base shares none of FASTCHART_BASE_FIELDS, since
+ * axes / palettes / plot rect / font cache do not apply to symbologies.
+ * Symbol classes are render-only (renderSvg/Png/Jpeg/Webp/toFile);
+ * ext/gd is not a runtime dependency in v1.0+. */
+extern zend_class_entry *fastchart_symbol_ce;
+extern zend_class_entry *fastchart_barcode_ce;
+extern zend_class_entry *fastchart_code128_ce;
+extern zend_class_entry *fastchart_qrcode_ce;
+
+/* Per-class object layout. Every chart subclass owns its own struct
+ * laid out as { FASTCHART_BASE_FIELDS, <per-type fields>, zend_object std }
+ * so per-class create/free/clone handlers can size and initialize the
+ * exact memory their class needs. The shared FASTCHART_BASE_FIELDS
+ * macro ensures every per-type struct presents the same field layout
+ * at offset 0; that common-initial-sequence lets base setters and
+ * shared helpers cast any per-type pointer to fastchart_obj* and
+ * touch base fields by their natural names without the per-type-
+ * setters needing a base accessor. The std member sits at the end of
+ * each per-type struct, and each class registers its own
+ * zend_object_handlers with offset = offsetof(class_struct, std)
+ * so Z_FASTCHART_OBJ_P below lands on the start of the user struct
+ * (= the base layout) regardless of which subclass we're in. */
+#define FASTCHART_BASE_FIELDS \
+    zend_long width; \
+    zend_long height; \
+    zend_long theme; \
+    zend_string *title; \
+    zend_string *font_path; \
+    double font_size; \
+    zend_long bg_override; \
+    zend_long plot_bg_override; \
+    int series_colors_n; \
+    int series_colors[8]; \
+    bool strict; \
+    zend_long legend_position; \
+    zend_long y_axis_scale; \
+    zend_long marker_style; \
+    zend_long marker_size; \
+    zend_string *x_axis_title; \
+    zend_string *y_axis_title; \
+    zend_long x_axis_label_angle; \
+    bool has_y_min; \
+    bool has_y_max; \
+    bool has_y_interval; \
+    double y_min; \
+    double y_max; \
+    double y_interval; \
+    bool secondary_y; \
+    zend_long axis_color_override; \
+    zend_long grid_color_override; \
+    zend_long border_color_override; \
+    zend_long text_color_override; \
+    zend_string *title_font_path; \
+    zend_string *axis_font_path; \
+    zend_string *label_font_path; \
+    double title_font_size; \
+    double axis_font_size; \
+    double label_font_size; \
+    bool show_values; \
+    zend_string *value_format; \
+    bool transparent_bg; \
+    zend_string *bg_image_path; \
+    zend_long line_interpolation; \
+    bool has_plot_rect; \
+    int plot_x0; \
+    int plot_y0; \
+    int plot_x1; \
+    int plot_y1; \
+    zend_long border_sides; \
+    bool x_axis_visible; \
+    bool y_axis_visible; \
+    zend_string *y_axis_label_format; \
+    zend_string *x_axis_label_format; \
+    zend_long tick_mode; \
+    zend_long bar_width_pct; \
+    zend_long edge_color; \
+    bool zero_shelf; \
+    zend_long x_label_stride; \
+    zend_string *y_axis_title2; \
+    bool thumbnail_mode; \
+    zend_long title_color; \
+    zend_long axis_label_color; \
+    zend_long axis_title_color; \
+    zend_long line_style; \
+    zend_long gradient_from; \
+    zend_long gradient_to; \
+    zend_long gradient_dir; \
+    bool has_drop_shadow; \
+    zend_long shadow_dx; \
+    zend_long shadow_dy; \
+    zend_long shadow_color; \
+    zend_long shadow_alpha; \
+    zend_long color_ramp_low; \
+    zend_long color_ramp_high; \
+    zend_long date_axis_unit; \
+    zend_long date_axis_every; \
+    zend_long dpi; \
+    char **category_labels; \
+    int n_category_labels; \
+    struct fastchart_plot_band *plot_bands; \
+    int n_plot_bands; \
+    struct fastchart_icon *icons; \
+    int n_icons; \
+    /* Combo overlays added via addOverlaySeries(). Values parse into a \
+     * typed double array (NaN marks a gap) at setter time so the object \
+     * retains no user zval — keeping the raw array in config would form \
+     * an engine-invisible cycle (config is a C-struct zval with no \
+     * get_gc handler). */ \
+    struct fastchart_combo_overlay *combo_overlays; \
+    int n_combo_overlays; \
+    size_t text_annotation_bytes; \
+    uint32_t text_annotation_count; \
+    /* Per-render font cache: 4 slots (one per role) holding the \
+     * resolved path (NULL on basedir reject). Invalidated at the top \
+     * of every render via fastchart_compute_layout so an ini_set \
+     * narrowing between draws is caught. Avoids 2048+ \
+     * php_check_open_basedir_ex calls in show-values hot loops. */ \
+    const char *font_cache_path[4]; \
+    bool font_cache_valid; \
+    int shadow_color_handle; \
+    bool shadow_color_valid; \
+    /* SVG text-rendering mode: 0 = NATIVE (raw <text> elements, smaller \
+     * files, requires consumer SVG renderer with text support); 1 = \
+     * PATHS (every <text> flattened to <g><path/></g> via FreeType \
+     * outline decomposition, self-contained but ~30%+ larger). Default \
+     * is PATHS because the internal raster path (plutovg) cannot render \
+     * <text> at all — Phase 4's renderPng/Jpeg/Webp force PATHS \
+     * regardless of this setting. */ \
+    zend_long svg_text_mode; \
+    /* JPEG encode quality 1..100, default 88. Affects renderJpeg() and \
+     * renderToFile('*.jpg'). */ \
+    zend_long jpeg_quality; \
+    /* PNG zlib compression level 0..9; -1 = libpng default (6). \
+     * Affects renderPng() and renderToFile('*.png'). */ \
+    zend_long png_compression_level; \
+    /* WebP encode mode (FASTCHART_WEBP_*). Default DRAWING, tuned for \
+     * chart-shaped content. Affects renderWebp() and renderToFile('*.webp'). */ \
+    zend_long webp_mode; \
+    /* Optional per-data-point href/tooltip supplied via setImageMap(). \
+     * Each chart's renderer reads this in index order and emits hot- \
+     * spots into image_map_areas during draw. NULL when unset. */ \
+    struct fastchart_image_map_entry *image_map_entries; \
+    int n_image_map_entries; \
+    /* Hot-spot geometry produced by the most recent render. Shared \
+     * by every Chart subclass; ScatterChart and BubbleChart populate \
+     * circles, BarChart and StockChart rects, PieChart and SunburstChart \
+     * polys, LineChart and AreaChart rects centered on each data point. */ \
+	struct fastchart_image_map_area *image_map_areas; \
+	int n_image_map_areas; \
+	int image_map_areas_cap; \
+	zval config;
+
+/* Base view type. fastchart_obj* is what base setters and shared
+ * helpers receive. It deliberately omits zend_object std — concrete
+ * instances always belong to one of the per-type structs below, and
+ * the embedded std lives at the end of those. */
+typedef struct _fastchart_obj { FASTCHART_BASE_FIELDS } fastchart_obj;
+
+/* Shared series shape for the cartesian chart families (Line, Area,
+ * Bar). Each series carries a parsed double array (NaN marks a gap),
+ * an optional malloc'd label, optional per-point color overrides
+ * (resolved at render time to target color handles), and for the bar
+ * case an optional values_max array that turns the entries into
+ * floating [min, max] ranges. */
+typedef struct {
+    char *label;          /* emalloc'd, NUL-terminated; NULL = no label */
+    double *values;       /* malloc'd, len entries; NaN = data gap */
+    double *values_max;   /* malloc'd OR NULL; set on floating-bar series */
+    zend_long *point_colors; /* malloc'd OR NULL; -1 = use series default */
+    int len;
+    bool right_axis;
+} fastchart_series_t;
+
+#define FASTCHART_MAX_SERIES 8
+
+/* Hard cap on points-per-series for cartesian charts (Line / Area /
+ * Bar). The render-time stack arrays in fastchart_line.c / _area.c
+ * size to this; setSeries rejects longer input rather than silently
+ * truncating. */
+#define FASTCHART_MAX_POINTS_PER_SERIES 2048
+
+#define FASTCHART_MAX_COMBO_OVERLAYS 16
+
+/* IconPlot overlay: an external image blitted onto the chart at a
+ * data-coordinate position. Path is owned (loaded fresh at each
+ * draw); max_w / max_h cap the display size while preserving the
+ * source aspect ratio. -1 in either bound means "use the source
+ * dimension as-is". */
+struct fastchart_icon {
+    double x;
+    double y;
+    char  *path;          /* owned, NUL-free, non-empty */
+    int    max_w;         /* -1 = source width */
+    int    max_h;         /* -1 = source height */
+};
+typedef struct fastchart_icon fastchart_icon;
+
+#define FASTCHART_MAX_ICONS 32
+
+/* Plot band: shaded region drawn behind the chart data on Cartesian
+ * charts. `low`/`high` are in data coordinates of the relevant axis
+ * (Y for horizontal bands, X for vertical). The X-axis interpretation
+ * for vertical bands depends on the chart type: fractional category
+ * index for Line/Area/Bar/BoxPlot, data x for Scatter/Bubble, unix
+ * timestamp for Stock. `alpha` follows libgd's 0..127 convention
+ * (0 = opaque, 127 = fully transparent). */
+struct fastchart_plot_band {
+    double low;
+    double high;
+    int    color_rgb;     /* 0..0xFFFFFF */
+    int    alpha;         /* 0..127 */
+    char  *label;         /* owned, optional, NUL-free */
+    bool   is_vertical;   /* true = X-axis band, false = Y-axis band */
+};
+typedef struct fastchart_plot_band fastchart_plot_band;
+
+/* Combo overlay: a line/area series drawn on top of the primary plot,
+ * added via addOverlaySeries(). `values` is a positional double array
+ * (NaN marks a gap); `n` its length. Color / thickness / axis are
+ * resolved at setter time so the drawers read no user zval. */
+struct fastchart_combo_overlay {
+    double *values;       /* owned, positional; NaN = gap */
+    int     n;
+    bool    is_area;      /* true = filled area, false = line */
+    bool    has_color;    /* false = rotate from palette */
+    int     color;        /* 0..0xFFFFFF, valid when has_color */
+    int     thickness;    /* 1..16 */
+    bool    right_axis;   /* true = plot against the secondary y-axis */
+};
+typedef struct fastchart_combo_overlay fastchart_combo_overlay;
+
+#define FASTCHART_MAX_BANDS 16
+
+/* PieChart slice. label is owned (malloc'd, NUL-terminated) when the
+ * caller supplied one; NULL means "use idx_label as a numeric
+ * fallback". value is always > 0 (non-positive slices skip parsing).
+ * color_rgb < 0 means "use the next palette color". */
+typedef struct {
+    char *label;
+    char  idx_label[16];
+    double value;
+    int color_rgb;
+    /* Optional second metric for variable-radius (rose) pies: the
+     * slice angle still tracks `value`, while the outer radius scales
+     * with radius_value. 0 = unset (slice uses the full radius). */
+    double radius_value;
+} fastchart_pie_slice;
+
+#define FASTCHART_MAX_SLICES 32
+
+/* One concentric ring of a nested-donut pie. Each ring owns its own
+ * slice array (same ownership rules as the flat pie). */
+typedef struct {
+    fastchart_pie_slice *slices;       /* owned */
+    int count;
+    double total;
+} fastchart_pie_ring;
+
+#define FASTCHART_MAX_PIE_RINGS 8
+
+/* Pre-computed clickable area for getImageMap. The renderer fills
+ * this after pixel-mapping; getImageMap walks the array to emit
+ * <area> tags without re-running the coordinate math.
+ *
+ *   shape == FASTCHART_IMAGE_MAP_CIRCLE: coords[0..2] = x, y, r.
+ *   shape == FASTCHART_IMAGE_MAP_RECT:   coords[0..3] = x, y, w, h
+ *                                        (emitted as x,y,x+w,y+h).
+ *   shape == FASTCHART_IMAGE_MAP_POLY:   coords holds n_coords pairs
+ *                                        of (x, y); n_coords = 2 * verts.
+ *
+ * Each active area owns references to its immutable href/tooltip
+ * strings. Render artifacts therefore remain independent of the
+ * source image-map entries or ScatterChart points that produced them. */
+#define FASTCHART_IMAGE_MAP_CIRCLE 0
+#define FASTCHART_IMAGE_MAP_RECT   1
+#define FASTCHART_IMAGE_MAP_POLY   2
+/* Pie poly hot-spots use 14 ints (center + 6 arc samples); 32 leaves
+ * headroom for denser sampling or richer poly shapes without bumping
+ * the struct's fixed-size coord buffer at the call sites. */
+#define FASTCHART_IMAGE_MAP_MAX_COORDS 32
+#define FASTCHART_MAX_IMAGE_MAP_ENTRIES 4096
+#define FASTCHART_MAX_IMAGE_MAP_STRING_BYTES 4096
+typedef struct fastchart_image_map_area {
+    int shape;
+    int n_coords;
+    int coords[FASTCHART_IMAGE_MAP_MAX_COORDS];
+	zend_string *href;
+	zend_string *tooltip;
+    int orig_index;   /* position in the original setSeries/setSlices/setPoints */
+} fastchart_image_map_area;
+
+/* Per-data-point href/tooltip supplied via Chart::setImageMap(),
+ * stored on Chart base. Each entry is indexed by its position in
+ * setSeries() / setSlices() / setPoints(). Both pointers are owned. */
+typedef struct fastchart_image_map_entry {
+	zend_string *href;
+	zend_string *tooltip;
+} fastchart_image_map_entry;
+
+/* ScatterChart point. series_idx selects the per-series palette
+ * color when color_rgb is -1; href and tooltip are owned strings used
+ * by getImageMap to emit clickable areas. */
+typedef struct {
+    double x;
+    double y;
+    int series_idx;       /* 0..MAX_SCATTER_SERIES-1 */
+    int color_rgb;        /* -1 = use palette */
+	zend_string *href;    /* owned reference, may be NULL */
+	zend_string *tooltip; /* owned reference, may be NULL */
+} fastchart_scatter_point;
+
+#define FASTCHART_MAX_SCATTER_POINTS 4096
+#define FASTCHART_MAX_SCATTER_SERIES 8
+
+/* BubbleChart entry. */
+typedef struct {
+    double x;
+    double y;
+    double size;
+    int color_rgb;       /* -1 = use palette */
+} fastchart_bubble_point;
+
+#define FASTCHART_MAX_BUBBLE_POINTS 4096
+
+/* SurfaceChart / ContourChart grid cell count cap. 10K cells covers
+ * any realistic chart size (a 100x100 grid is already finer than the
+ * pixel resolution of typical chart canvases). Without this cap a
+ * 10000x10000 grid allocates 800MB of doubles per setGrid call. */
+#define FASTCHART_MAX_GRID_CELLS 10000
+
+/* BoxPlot entry. five-number summary plus optional outliers. */
+typedef struct {
+    char *label;          /* owned */
+    double min, q1, median, q3, max;
+    double *outliers;     /* malloc'd OR NULL */
+    int outlier_count;
+} fastchart_boxplot_entry;
+
+#define FASTCHART_MAX_BOXPLOT_ENTRIES 32
+
+/* PolarChart series: list of (angle_deg, radius) points plus optional
+ * label / color override. */
+typedef struct {
+    double *angles;       /* malloc'd, len entries */
+    double *radii;        /* malloc'd, len entries */
+    int len;
+    char *label;          /* owned */
+    int color_rgb;        /* -1 = use palette */
+} fastchart_polar_series;
+
+#define FASTCHART_MAX_POLAR_SERIES 8
+
+/* RadarChart series: parallel array of values per axis. */
+typedef struct {
+    double *values;       /* malloc'd, len entries */
+    int len;
+    char *label;          /* owned */
+    int color_rgb;        /* -1 = use palette */
+} fastchart_radar_series;
+
+#define FASTCHART_MAX_RADAR_SERIES 8
+
+/* GanttChart task / milestone. */
+typedef struct {
+    char *name;           /* owned */
+    zend_long start;
+    zend_long end;        /* same as start for milestones */
+    int color_rgb;        /* -1 = use palette */
+    bool is_milestone;
+    int *deps;            /* malloc'd OR NULL; indices into the task array */
+    int n_deps;
+} fastchart_gantt_task;
+
+#define FASTCHART_MAX_GANTT_TASKS 64
+
+/* SurfaceChart / ContourChart 2D grid. Stored row-major. */
+typedef struct {
+    double *cells;        /* malloc'd, rows*cols, NaN = missing */
+    int rows;
+    int cols;
+} fastchart_grid;
+
+/* Per-type structs. Each adds the class-specific fields (or none)
+ * plus the zend_object std at the end. */
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_series_t series[FASTCHART_MAX_SERIES];
+    int n_series;
+    int max_len;
+    /* Per-point error-bar magnitudes for the first (left-axis) series.
+     * Both arrays are owned, length err_n, parallel to series[0].values.
+     * NaN at a slot = no error bar. Both NULL when setErrorBars was
+     * never called. */
+    double *err_lo;
+    double *err_hi;
+    int     err_n;
+    zend_object std;
+} fastchart_line_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    zend_long area_alpha;
+    bool stacked;
+    bool band_mode;
+    bool stream_mode;
+    fastchart_series_t series[FASTCHART_MAX_SERIES];
+    int n_series;
+    int max_len;
+    zend_object std;
+} fastchart_area_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    zend_long stack_mode;
+    bool bar_floating;
+    bool stacked;
+    zend_long bar_orientation;   /* FASTCHART_BAR_VERTICAL | FASTCHART_BAR_HORIZONTAL */
+    zend_long bar_style;         /* FASTCHART_BAR_STYLE_BAR | _LOLLIPOP | _DUMBBELL */
+    fastchart_series_t series[FASTCHART_MAX_SERIES];
+    int n_series;
+    int max_len;
+    zend_object std;
+} fastchart_bar_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    zend_long slice_label_position;
+    zend_string *slice_label_format;
+    double pie_other_threshold;
+    zend_string *pie_other_label;
+    fastchart_pie_slice *slices;       /* owned */
+    int slice_count;
+    double total;
+    double donut_hole_ratio;
+    zend_long *explode;                /* owned, parallel to slices; 0 = no offset */
+    int explode_count;
+    double pie_start_deg;              /* sweep window start; 0 with end 360 = full pie */
+    double pie_end_deg;
+    /* Variable-radius (rose) pie: enabled when any flat slice carries a
+     * positive "radius" metric. The normalising max is recomputed at
+     * draw time over the slices actually drawn (post "Other" merge). */
+    bool pie_variable_radius;
+    fastchart_pie_ring rings[FASTCHART_MAX_PIE_RINGS]; /* nested-donut; ring_count 0 = flat */
+    int ring_count;
+    zend_object std;
+} fastchart_pie_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    bool trend_line;
+    zend_long trend_line_color;
+    zend_long trend_degree;
+    fastchart_scatter_point *points;        /* owned */
+    int point_count;
+    char *series_labels[FASTCHART_MAX_SCATTER_SERIES]; /* owned */
+    int n_series;
+    /* Per-point error-bar magnitudes parallel to setPoints index order.
+     * NaN at a slot = no error bar. Both NULL until setErrorBars runs. */
+    double *err_lo;
+    double *err_hi;
+    int     err_n;
+    zend_object std;
+} fastchart_scatter_obj;
+
+/* StockChart parsed-data shapes. setOhlcv() parses user rows into a
+ * fastchart_candle array, sorts by timestamp, and stores it on the
+ * stock obj. setMovingAverages / setVolumePane / setVolumeColors /
+ * addIndicatorPane similarly store typed C state instead of stuffing
+ * into the generic config zval. */
+typedef struct {
+    zend_long ts;
+    double open;
+    double high;
+    double low;
+    double close;
+    double volume;
+    int has_volume;
+} fastchart_candle;
+
+typedef struct {
+    char *name;            /* malloc'd, NUL-terminated; NULL = empty slot */
+    double *values;        /* malloc'd; non-numeric input becomes NaN */
+    int value_count;
+    bool has_color;
+    int color_rgb;
+    bool has_reference;
+    double reference;
+    bool has_min;
+    double min;
+    bool has_max;
+    double max;
+    /* Optional secondary / tertiary series for multi-line indicators
+     * (MACD = MACD line + signal line + histogram; Stochastic = %K +
+     * %D). NULL by default. value_count applies to all of them.
+     * histogram_third renders values3 as bars from baseline 0
+     * instead of as a connected line. */
+    double *values2;       /* nullable; second line series */
+    int color2_rgb;        /* -1 = palette pick */
+    double *values3;       /* nullable; third line OR histogram series */
+    int color3_rgb;        /* -1 = palette pick */
+    bool histogram_third;
+    /* Native indicators (RSI/MACD/ATR/...) compute their values from
+     * the candle buffer at add() time; addIndicatorPane() takes
+     * caller-supplied values. setOhlcv() must drop the former (they
+     * are stale against the new candles) but keep the latter. */
+    bool candle_derived;
+} fastchart_indicator_pane;
+
+/* Phase-2 price-pane overlays (Bollinger Bands, Parabolic SAR).
+ * Computed at addX() time from the typed candle array, drawn as
+ * an overlay on the price pane during stock render. Up to 4
+ * overlays per chart. */
+#define FASTCHART_OVERLAY_BOLL   0   /* Bollinger Bands: line + line + line */
+#define FASTCHART_OVERLAY_PSAR   1   /* Parabolic SAR: dot per bar */
+#define FASTCHART_OVERLAY_VWAP   2   /* VWAP: one connected line */
+#define FASTCHART_OVERLAY_ZIGZAG 3   /* ZigZag: line connecting pivots */
+
+typedef struct {
+    int kind;
+    int n;                 /* equals candle_count when computed */
+    double *a;             /* first series (Bollinger middle / PSAR dots) */
+    double *b;             /* second series (Bollinger upper)              */
+    double *c;             /* third series  (Bollinger lower)              */
+    int color_rgb;         /* user colour override; -1 = palette */
+} fastchart_price_overlay;
+
+#define FASTCHART_MAX_PRICE_OVERLAYS 6
+
+#define FASTCHART_MAX_CANDLES         4096
+#define FASTCHART_MAX_SMA             8
+#define FASTCHART_MAX_INDICATOR_PANES 6
+#define FASTCHART_MAX_INDICATOR_VALUES 4096
+
+/* Per-setter input caps for the remaining list-shaped setters that
+ * previously allocated against the user-supplied count. */
+#define FASTCHART_MAX_VOLUME_COLORS    FASTCHART_MAX_CANDLES
+#define FASTCHART_MAX_OUTLIERS         128       /* per box */
+#define FASTCHART_MAX_LEVELS           32        /* contour */
+#define FASTCHART_MAX_GANTT_DEPS       64        /* per task */
+#define FASTCHART_MAX_CATEGORY_LABELS  4096
+#define FASTCHART_MAX_RADAR_VALUES     128       /* per series */
+#define FASTCHART_MAX_POLAR_POINTS     1024      /* per series */
+#define FASTCHART_MAX_TREEMAP_ITEMS    256       /* total cells per chart */
+#define FASTCHART_MAX_FUNNEL_STAGES    32        /* per chart */
+#define FASTCHART_MAX_WATERFALL_BARS   128       /* per chart */
+#define FASTCHART_MAX_METER_ZONES      8         /* per chart */
+#define FASTCHART_MAX_PARETO_BARS      128       /* per chart */
+#define FASTCHART_MAX_CALENDAR_DAYS    16384     /* ~45 yrs of daily data */
+#define FASTCHART_MAX_CALENDAR_WEEKS   2400      /* render cost is keyed on
+                                                  * date span, not entry count;
+                                                  * cap the grid (~46 yrs) so two
+                                                  * far-apart dates can't force a
+                                                  * multi-million-cell render */
+#define FASTCHART_MAX_SUNBURST_NODES   2048      /* per chart, all rings */
+#define FASTCHART_MAX_SANKEY_NODES     256       /* per chart */
+#define FASTCHART_MAX_SANKEY_LINKS     1024      /* per chart */
+
+/* Magnitude cap for user-supplied data values. Finite but enormous
+ * inputs (e.g. 1e308) overflow squared sums and span subtractions to
+ * Inf/NaN, which then reach int casts at draw time as undefined
+ * behavior (garbage SVG coordinates). A trillion is already far beyond
+ * any real chart value; values exceeding it in magnitude are rejected
+ * at setter time so the layout math stays representable. */
+#define FASTCHART_MAX_DATA_MAG         1e12
+
+/* Byte cap for a single rendered-text string (title, axis title,
+ * annotation label, series/slice label, etc.). Glyph-path SVG output
+ * replays each glyph's outline inline, amplifying text ~200x, so an
+ * unbounded string balloons the document (a 100 KiB title produced a
+ * ~20 MB SVG). 8 KiB bounds one string's worst-case contribution to
+ * ~2 MB. Scalar setters throw on excess; array-element labels drop. */
+#define FASTCHART_MAX_TEXT_BYTES       8192
+
+/* Bound the combined text accepted by collection-style APIs. The
+ * per-string limit above is insufficient for glyph-path output because
+ * many individually valid labels can still amplify into a huge SVG. */
+#define FASTCHART_MAX_RENDER_TEXT_BYTES (64 * 1024)
+#define FASTCHART_MAX_TEXT_ANNOTATIONS  128
+
+#define FASTCHART_MAX_MARIMEKKO_COLS   128       /* per chart */
+#define FASTCHART_MAX_MARIMEKKO_SEGS   64        /* per column */
+#define FASTCHART_MAX_VECTORS          4096      /* per chart */
+
+typedef struct {
+    char *label;          /* emalloc'd, NUL-terminated; NULL = no label */
+    double value;         /* must be > 0 to take area; <= 0 dropped at setItems */
+    int color_rgb;        /* -1 = use palette[i % N] */
+} fastchart_treemap_item;
+
+typedef struct {
+    char *label;
+    double value;         /* must be > 0 */
+    int color_rgb;        /* -1 = use palette */
+} fastchart_funnel_stage;
+
+#define FASTCHART_WF_DELTA  0
+#define FASTCHART_WF_TOTAL  1
+
+typedef struct {
+    char *label;
+    double value;         /* signed delta or absolute cumulative total */
+    int kind;             /* FASTCHART_WF_DELTA or _TOTAL */
+} fastchart_waterfall_bar;
+
+typedef struct {
+    char *label;          /* emalloc'd, NUL-terminated; NULL = no label */
+    double value;         /* >= 0; negative entries dropped at setBars() */
+    int color_rgb;        /* -1 = palette default */
+} fastchart_pareto_bar;
+
+/* Calendar heatmap day: epoch-day index (days since 1970-01-01) +
+ * value. Storing the index instead of broken-down struct tm keeps
+ * the per-cell array compact and makes contiguous-range scans
+ * trivial. */
+typedef struct {
+    long  day;            /* days since 1970-01-01 (UTC) */
+    double value;
+} fastchart_calendar_day;
+
+/* Depth-first sunburst nodes; direct children are selected by parent index.
+ * child_first identifies the first child, not a contiguous sibling range. */
+typedef struct {
+    char *label;          /* emalloc'd, NUL-terminated; NULL = no label */
+    double value;         /* leaf value, or sum-of-children for interior */
+    int color_rgb;        /* -1 = palette default by leaf-position */
+    int depth;            /* 0 = root, 1 = first ring, ... */
+    int parent;           /* -1 for root */
+    int child_first;      /* index of first child in node array; -1 if leaf */
+    int child_count;
+} fastchart_sunburst_node;
+
+typedef struct {
+    char *label;          /* emalloc'd, NUL-terminated; NULL = no label */
+    int color_rgb;        /* -1 = palette default */
+} fastchart_sankey_node;
+
+typedef struct {
+    int from;             /* node index */
+    int to;               /* node index */
+    double value;         /* > 0; non-positive dropped at setLinks() */
+} fastchart_sankey_link;
+
+typedef struct {
+    char *label;
+    double value;         /* > 0 */
+    int color_rgb;        /* -1 = palette default */
+} fastchart_marimekko_segment;
+
+typedef struct {
+    char *label;
+    fastchart_marimekko_segment *segments;
+    int n_segments;
+    double total;         /* sum of segment values */
+} fastchart_marimekko_column;
+
+typedef struct {
+    double x, y;          /* anchor coordinates in data space */
+    double dx, dy;        /* vector components */
+    int color_rgb;        /* -1 = palette / ramp */
+} fastchart_vector_datum;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    zend_long candle_style;
+    fastchart_candle *candles;          /* malloc'd, owned */
+    int candle_count;
+	bool close_stats_scaled_windows;
+	double *close_stats_cache;          /* latest Bollinger sigma */
+	int close_stats_cache_period;
+    bool any_volume;
+    bool volume_pane;
+    int *volume_colors;                 /* malloc'd, parallel to candles up to volume_colors_count; -1 = use up/down default */
+    int volume_colors_count;
+    int sma_periods[FASTCHART_MAX_SMA];
+    int sma_types[FASTCHART_MAX_SMA];   /* 0 = SMA, 1 = EMA */
+    int sma_count;
+    fastchart_indicator_pane indicator_panes[FASTCHART_MAX_INDICATOR_PANES];
+    int indicator_pane_count;
+    fastchart_price_overlay overlays[FASTCHART_MAX_PRICE_OVERLAYS];
+    int overlay_count;
+    zend_object std;
+} fastchart_stock_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    double radar_max;
+    bool radar_filled;
+    fastchart_radar_series series[FASTCHART_MAX_RADAR_SERIES];
+    int n_series;
+    char **categories;                 /* malloc'd, n_categories entries; each owned */
+    int n_categories;
+    zend_object std;
+} fastchart_radar_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_bubble_point *points;    /* owned */
+    int point_count;
+    zend_object std;
+} fastchart_bubble_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    bool surface_show_values;
+    zend_string *surface_value_format;
+    fastchart_grid grid;
+    zend_object std;
+} fastchart_surface_obj;
+
+/* GaugeChart shaded zone: a colored arc spanning the gauge from
+ * `from` to `to` (in gauge value units). color_rgb < 0 means "use the
+ * default series color". */
+typedef struct {
+    double from;
+    double to;
+    int    color_rgb;     /* -1 = default */
+} fastchart_gauge_zone;
+
+#define FASTCHART_MAX_GAUGE_ZONES 16
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    double gauge_value;
+    double gauge_min;
+    double gauge_max;
+    zend_string *gauge_value_format;
+    fastchart_gauge_zone *zones;
+    int n_zones;
+    zend_long gauge_style;       /* FASTCHART_GAUGE_STYLE_NEEDLE | _SOLID */
+    zend_object std;
+} fastchart_gauge_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    bool gantt_show_labels;
+    /* Per-side flags: setTimeRange(null, $end) / ($start, null) force
+     * only one bound and auto-fit the other from task data. */
+    bool gantt_has_range_start;
+    bool gantt_has_range_end;
+    zend_long gantt_range_start;
+    zend_long gantt_range_end;
+    fastchart_gantt_task *tasks;       /* owned */
+    int task_count;
+    zend_object std;
+} fastchart_gantt_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    zend_long box_width_pct;
+    fastchart_boxplot_entry *entries;  /* owned */
+    int entry_count;
+    zend_object std;
+} fastchart_boxplot_obj;
+
+/* fastchart_polar_vector: optional overlay drawn on top of the
+ * polar plot. Each vector is anchored at (angle, radius) in data
+ * space and points to (angle_to, radius_to). The arrow is drawn
+ * tip-first with a chevron head; magnitude is the radial extent. */
+typedef struct {
+    double angle;        /* base angle, degrees CCW */
+    double radius;       /* base radius, data units */
+    double angle_to;     /* tip angle */
+    double radius_to;    /* tip radius */
+    int color_rgb;       /* -1 = use series palette colour */
+} fastchart_polar_vector;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    double polar_max_radius;
+    bool polar_filled;
+    int polar_style;     /* 0 = line/area (default), 1 = rose (angular bars) */
+    int polar_interp;    /* FASTCHART_INTERP_LINEAR | FASTCHART_INTERP_SMOOTH */
+    fastchart_polar_series series[FASTCHART_MAX_POLAR_SERIES];
+    int n_series;
+    fastchart_polar_vector *vectors;   /* owned, n_vectors entries */
+    int n_vectors;
+    int cap_vectors;
+    zend_object std;
+} fastchart_polar_obj;
+
+#define FASTCHART_POLAR_STYLE_LINE  0
+#define FASTCHART_POLAR_STYLE_ROSE  1
+
+#define FASTCHART_FUNNEL_STYLE_FUNNEL   0
+#define FASTCHART_FUNNEL_STYLE_PYRAMID  1
+#define FASTCHART_FUNNEL_STYLE_CONE     2
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    bool contour_filled;
+    fastchart_grid grid;
+    double *levels;                    /* owned, level_count entries */
+    int level_count;
+    zend_object std;
+} fastchart_contour_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_treemap_item *items;     /* malloc'd, item_count entries */
+    int item_count;
+    bool show_labels;
+    zend_object std;
+} fastchart_treemap_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_funnel_stage *stages;    /* malloc'd, stage_count entries */
+    int stage_count;
+    int funnel_style;                  /* 0 = funnel (default), 1 = pyramid */
+    /* show_values + value_format inherit from FASTCHART_BASE_FIELDS;
+     * the funnel default is to show values, set in init_extras after
+     * the base init defaults to false. */
+    zend_object std;
+} fastchart_funnel_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_waterfall_bar *bars;     /* malloc'd, bar_count entries */
+    int bar_count;
+    int rise_color;                    /* -1 = use default */
+    int fall_color;
+    int total_color;
+    zend_object std;
+} fastchart_waterfall_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_grid grid;               /* reuses contour's grid type */
+    int color_low_rgb;                 /* -1 = palette default low */
+    int color_high_rgb;                /* -1 = palette default high */
+    /* show_values + value_format inherit from FASTCHART_BASE_FIELDS. */
+    zend_object std;
+} fastchart_heatmap_obj;
+
+#define FASTCHART_METER_HORIZONTAL 0
+#define FASTCHART_METER_VERTICAL   1
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    double meter_value;
+    double meter_min;
+    double meter_max;
+    int meter_orientation;             /* FASTCHART_METER_* */
+    fastchart_gauge_zone zones[FASTCHART_MAX_METER_ZONES];
+    int n_zones;
+    zend_string *meter_value_format;   /* nullable */
+    zend_object std;
+} fastchart_linear_meter_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    double bullet_value;
+    double bullet_target;              /* NAN = no target tick */
+    double bullet_min;
+    double bullet_max;
+    fastchart_gauge_zone bands[FASTCHART_MAX_METER_ZONES];
+    int n_bands;
+    zend_string *bullet_value_format;  /* nullable */
+    zend_object std;
+} fastchart_bullet_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_pareto_bar *bars;        /* malloc'd, bar_count entries */
+    int bar_count;
+    int line_color;                    /* -1 = palette default */
+    zend_string *value_label_format;   /* nullable; printf for bar labels */
+    zend_object std;
+} fastchart_pareto_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_calendar_day *days;      /* malloc'd, sorted by .day asc */
+    int day_count;
+    int color_low_rgb;                 /* -1 = palette default */
+    int color_high_rgb;                /* -1 = palette default */
+    zend_object std;
+} fastchart_calendar_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_sunburst_node *nodes;    /* malloc'd; nodes[0] = root */
+    int node_count;
+    int max_depth;
+    double total_value;                /* root sum */
+    zend_object std;
+} fastchart_sunburst_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_sankey_node *nodes;
+    int node_count;
+    fastchart_sankey_link *links;
+    int link_count;
+    zend_object std;
+} fastchart_sankey_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_marimekko_column *columns;
+    int column_count;
+    double total_width;                /* sum of column totals */
+    zend_object std;
+} fastchart_marimekko_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_vector_datum *vectors;
+    int vector_count;
+    int color_low_rgb;                 /* -1 = no ramp; per-entry color used */
+    int color_high_rgb;                /* -1 = no ramp */
+    double mag_min;                    /* cached at setVectors() */
+    double mag_max;
+    zend_object std;
+} fastchart_vector_obj;
+
+/* ArcDiagram orientation: which side of the node baseline the link
+ * arcs bulge toward. SPLIT routes forward links (to > from) above and
+ * backward links below to cut visual crossings. */
+#define FASTCHART_ARC_ORIENT_UP     0
+#define FASTCHART_ARC_ORIENT_DOWN   1
+#define FASTCHART_ARC_ORIENT_SPLIT  2
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_graph_node *nodes;
+    int node_count;
+    fastchart_graph_link *links;
+    int link_count;
+    zend_long orientation;             /* FASTCHART_ARC_ORIENT_* */
+    zend_object std;
+} fastchart_arc_obj;
+
+/* ChordDiagram ribbon style. */
+#define FASTCHART_CHORD_STYLE_RIBBON   0
+#define FASTCHART_CHORD_STYLE_LINE     1
+#define FASTCHART_CHORD_STYLE_DIRECTED 2
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_graph_node *nodes;
+    int node_count;
+    fastchart_graph_link *links;
+    int link_count;
+    double pad_deg;                    /* gap between node arcs (degrees) */
+    zend_long style;                   /* FASTCHART_CHORD_STYLE_* */
+    zend_object std;
+} fastchart_chord_obj;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_graph_node *nodes;
+    int node_count;
+    fastchart_graph_link *links;
+    int link_count;
+    zend_long seed;                    /* PRNG seed for deterministic layout */
+    zend_long iterations;              /* Fruchterman-Reingold passes */
+	double *layout_x;                    /* cached final logical coordinates */
+	double *layout_y;
+	int layout_count;
+	int layout_x0, layout_y0;
+	int layout_x1, layout_y1;
+	bool layout_valid;
+    zend_object std;
+} fastchart_network_obj;
+
+typedef struct {
+    char  *label;          /* malloc'd; NULL = no legend entry */
+    int    color_rgb;      /* -1 = palette default */
+    double *data;          /* malloc'd per-category values */
+    int    n;
+} fastchart_pyramid_side;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    char **categories;     /* malloc'd array of malloc'd row labels */
+    int    cat_count;
+    fastchart_pyramid_side left;
+    fastchart_pyramid_side right;
+    zend_object std;
+} fastchart_pyramid_obj;
+
+typedef struct {
+    char  *label;          /* malloc'd; NULL = no label */
+    int    color_rgb;      /* -1 = palette default */
+    double *values;        /* malloc'd raw samples */
+    int    n;
+} fastchart_violin_group;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_violin_group *groups;
+    int group_count;
+    zend_object std;
+} fastchart_violin_obj;
+
+typedef struct fastchart_pack_node {
+    char  *label;          /* malloc'd; NULL = no label */
+    int    color_rgb;      /* -1 = palette default */
+    double value;          /* leaf magnitude; internal nodes sum children */
+    double r, x, y;        /* packed radius + centre (abstract units) */
+    struct fastchart_pack_node **children;  /* malloc'd child pointer array */
+    int    child_count;
+} fastchart_pack_node;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_pack_node *root;
+    int node_count;        /* total nodes, for the build cap */
+    zend_object std;
+} fastchart_circlepack_obj;
+
+/* Dendrogram: a node-link hierarchy tree. Reuses the same parsed
+ * fastchart_pack_node tree as CirclePacking; only the layout/draw pass
+ * differs (tidy-tree placement + parent-child edges). */
+#define FASTCHART_DENDRO_STYLE_TREE   0   /* straight diagonal edges */
+#define FASTCHART_DENDRO_STYLE_ELBOW  1   /* right-angle (dendrogram) edges */
+#define FASTCHART_DENDRO_ORIENT_TOP   0   /* root at top, depth grows down */
+#define FASTCHART_DENDRO_ORIENT_LEFT  1   /* root at left, depth grows right */
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_pack_node *root;
+    int node_count;
+    zend_long style;       /* FASTCHART_DENDRO_STYLE_* */
+    zend_long orientation; /* FASTCHART_DENDRO_ORIENT_* */
+    zend_object std;
+} fastchart_dendrogram_obj;
+
+/* Partition: a hierarchy drawn as nested rectangles, each level a band whose
+ * span is subdivided among children in proportion to their leaf-value sums.
+ * Reuses the same parsed fastchart_pack_node tree; only the layout/draw pass
+ * differs. ORIENT_VERTICAL is the icicle variant. */
+#define FASTCHART_PARTITION_ORIENT_HORIZONTAL 0  /* depth grows left->right */
+#define FASTCHART_PARTITION_ORIENT_VERTICAL   1  /* depth grows top->down (icicle) */
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_pack_node *root;
+    int node_count;
+    zend_long orientation; /* FASTCHART_PARTITION_ORIENT_* */
+    zend_object std;
+} fastchart_partition_obj;
+
+/* Pictogram icon shapes. */
+#define FASTCHART_PICTO_SHAPE_SQUARE  0
+#define FASTCHART_PICTO_SHAPE_CIRCLE  1
+#define FASTCHART_PICTO_SHAPE_PERSON  2
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    double value;
+    double total;
+    zend_long icon_count;  /* number of unit icons in the grid */
+    zend_long columns;     /* 0 = auto */
+    zend_long shape;       /* FASTCHART_PICTO_SHAPE_* */
+    int fill_color_rgb;    /* -1 = palette default */
+    int empty_color_rgb;   /* -1 = light grey default */
+    zend_object std;
+} fastchart_pictogram_obj;
+
+typedef struct {
+    char  *label;          /* malloc'd; NULL = no label */
+    int    color_rgb;      /* -1 = palette default */
+    double size;           /* set magnitude */
+} fastchart_venn_set;
+
+typedef struct {
+    int    a, b;           /* set indices */
+    double size;           /* intersection magnitude */
+} fastchart_venn_inter;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_venn_set sets[3];
+    int set_count;
+    fastchart_venn_inter inters[3];
+    int inter_count;
+    zend_object std;
+} fastchart_venn_obj;
+
+typedef struct {
+    char  *text;           /* malloc'd */
+    double weight;
+    int    color_rgb;      /* -1 = palette default */
+} fastchart_word;
+
+/* WordCloud orientation modes. */
+#define FASTCHART_WC_ORIENT_HORIZONTAL  0
+#define FASTCHART_WC_ORIENT_MIXED       1
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_word *words;
+    int word_count;
+    zend_long orientation;             /* FASTCHART_WC_ORIENT_* */
+    zend_object std;
+} fastchart_wordcloud_obj;
+
+typedef struct {
+    char *label;           /* malloc'd; NULL = no label */
+    char *date;            /* malloc'd; NULL = no date line */
+    int   color_rgb;       /* -1 = palette default */
+} fastchart_timeline_event;
+
+typedef struct {
+    FASTCHART_BASE_FIELDS
+    fastchart_timeline_event *events;
+    int event_count;
+    zend_long per_row;     /* 0 = auto */
+    zend_object std;
+} fastchart_serpentine_obj;
+
+/* Walk back from zend_object* to the start of the containing per-type
+ * struct using each class's handlers->offset. Cast to fastchart_obj*
+ * is the common-initial-sequence access — base fields land at the
+ * same offsets in every per-type struct. */
+static inline fastchart_obj *fastchart_obj_from_zend(zend_object *obj) {
+    return (fastchart_obj *)((char *)(obj) - obj->handlers->offset);
+}
+
+#define Z_FASTCHART_OBJ_P(zv)         fastchart_obj_from_zend(Z_OBJ_P(zv))
+#define Z_FASTCHART_LINE_OBJ_P(zv)    ((fastchart_line_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_AREA_OBJ_P(zv)    ((fastchart_area_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_BAR_OBJ_P(zv)     ((fastchart_bar_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_PIE_OBJ_P(zv)     ((fastchart_pie_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_SCATTER_OBJ_P(zv) ((fastchart_scatter_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_STOCK_OBJ_P(zv)   ((fastchart_stock_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_RADAR_OBJ_P(zv)   ((fastchart_radar_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_BUBBLE_OBJ_P(zv)  ((fastchart_bubble_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_SURFACE_OBJ_P(zv) ((fastchart_surface_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_GAUGE_OBJ_P(zv)   ((fastchart_gauge_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_GANTT_OBJ_P(zv)   ((fastchart_gantt_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_BOXPLOT_OBJ_P(zv) ((fastchart_boxplot_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_POLAR_OBJ_P(zv)   ((fastchart_polar_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_CONTOUR_OBJ_P(zv) ((fastchart_contour_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_TREEMAP_OBJ_P(zv) ((fastchart_treemap_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_FUNNEL_OBJ_P(zv)  ((fastchart_funnel_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_WATERFALL_OBJ_P(zv) ((fastchart_waterfall_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_HEATMAP_OBJ_P(zv) ((fastchart_heatmap_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_LINEAR_METER_OBJ_P(zv) ((fastchart_linear_meter_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_BULLET_OBJ_P(zv)    ((fastchart_bullet_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_PARETO_OBJ_P(zv)    ((fastchart_pareto_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_CALENDAR_OBJ_P(zv)  ((fastchart_calendar_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_SUNBURST_OBJ_P(zv)  ((fastchart_sunburst_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_SANKEY_OBJ_P(zv)    ((fastchart_sankey_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_MARIMEKKO_OBJ_P(zv) ((fastchart_marimekko_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_VECTOR_OBJ_P(zv)    ((fastchart_vector_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_ARC_OBJ_P(zv)       ((fastchart_arc_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_CHORD_OBJ_P(zv)     ((fastchart_chord_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_NETWORK_OBJ_P(zv)   ((fastchart_network_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_PYRAMID_OBJ_P(zv)   ((fastchart_pyramid_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_VIOLIN_OBJ_P(zv)    ((fastchart_violin_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_CIRCLEPACK_OBJ_P(zv) ((fastchart_circlepack_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_PICTOGRAM_OBJ_P(zv)  ((fastchart_pictogram_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_VENN_OBJ_P(zv)       ((fastchart_venn_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_WORDCLOUD_OBJ_P(zv)  ((fastchart_wordcloud_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_SERPENTINE_OBJ_P(zv) ((fastchart_serpentine_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_DENDROGRAM_OBJ_P(zv) ((fastchart_dendrogram_obj *)Z_FASTCHART_OBJ_P(zv))
+#define Z_FASTCHART_PARTITION_OBJ_P(zv)  ((fastchart_partition_obj *)Z_FASTCHART_OBJ_P(zv))
+
+#define FASTCHART_DEFAULT_WIDTH      800
+#define FASTCHART_DEFAULT_HEIGHT     600
+#define FASTCHART_DEFAULT_FONT_SIZE  10.0
+
+#define FASTCHART_THEME_LIGHT 0
+#define FASTCHART_THEME_DARK  1
+
+/* Marker styles. Match the const ints in fastchart.stub.php. */
+#define FASTCHART_MARKER_NONE    0
+#define FASTCHART_MARKER_CIRCLE  1
+#define FASTCHART_MARKER_SQUARE  2
+#define FASTCHART_MARKER_DIAMOND 3
+#define FASTCHART_MARKER_CROSS   4
+#define FASTCHART_MARKER_PLUS    5
+
+/* Legend placement. */
+#define FASTCHART_LEGEND_NONE         0
+#define FASTCHART_LEGEND_TOP_RIGHT    1
+#define FASTCHART_LEGEND_TOP_LEFT     2
+#define FASTCHART_LEGEND_BOTTOM_RIGHT 3
+#define FASTCHART_LEGEND_BOTTOM_LEFT  4
+
+/* Y-axis scale. */
+#define FASTCHART_SCALE_LINEAR 0
+#define FASTCHART_SCALE_LOG    1
+
+/* PieChart label position. */
+#define FASTCHART_LABEL_NONE    0
+#define FASTCHART_LABEL_INSIDE  1
+#define FASTCHART_LABEL_OUTSIDE 2
+
+/* StockChart OHLC presentation style. */
+#define FASTCHART_STYLE_CANDLE  0
+#define FASTCHART_STYLE_BAR     1
+#define FASTCHART_STYLE_DIAMOND 2
+#define FASTCHART_STYLE_I_CAP   3
+#define FASTCHART_STYLE_HOLLOW  4
+#define FASTCHART_STYLE_VOLUME  5
+#define FASTCHART_STYLE_VECTOR  6
+
+/* StockChart moving-average kind. */
+#define FASTCHART_MA_SMA 0
+#define FASTCHART_MA_EMA 1
+#define FASTCHART_MA_WMA 2
+
+/* Border side bitmask. */
+#define FASTCHART_BORDER_NONE   0
+#define FASTCHART_BORDER_LEFT   1
+#define FASTCHART_BORDER_RIGHT  2
+#define FASTCHART_BORDER_TOP    4
+#define FASTCHART_BORDER_BOTTOM 8
+#define FASTCHART_BORDER_ALL    15
+
+/* Line interpolation. */
+#define FASTCHART_INTERP_LINEAR       0
+#define FASTCHART_INTERP_SMOOTH       1
+#define FASTCHART_INTERP_STEP_AFTER   2
+#define FASTCHART_INTERP_STEP_BEFORE  3
+
+/* Tick mode bitmask: bit0 = labels, bit1 = points. */
+#define FASTCHART_TICK_NONE   0
+#define FASTCHART_TICK_LABELS 1
+#define FASTCHART_TICK_POINTS 2
+#define FASTCHART_TICK_BOTH   3
+
+/* BarChart stack mode. */
+#define FASTCHART_STACK_SUM    0
+#define FASTCHART_STACK_BESIDE 1
+#define FASTCHART_STACK_LAYER  2
+
+/* BarChart orientation. */
+#define FASTCHART_BAR_VERTICAL   0
+#define FASTCHART_BAR_HORIZONTAL 1
+#define FASTCHART_BAR_RADIAL     2
+
+/* BarChart glyph style. BAR = filled rect (default); LOLLIPOP = thin
+ * stem + circle at the value; DUMBBELL = connector between the
+ * floating [min,max] pair with a circle at each end. */
+#define FASTCHART_BAR_STYLE_BAR      0
+#define FASTCHART_BAR_STYLE_LOLLIPOP 1
+#define FASTCHART_BAR_STYLE_DUMBBELL 2
+
+/* GaugeChart dial style. NEEDLE = pointer + hub (default); SOLID =
+ * filled value arc in the zone color, no needle. */
+#define FASTCHART_GAUGE_STYLE_NEEDLE 0
+#define FASTCHART_GAUGE_STYLE_SOLID  1
+
+/* Pie label position extends LABEL_INSIDE/OUTSIDE/NONE. */
+#define FASTCHART_LABEL_LEFT  3
+#define FASTCHART_LABEL_RIGHT 4
+
+/* Line dash styles. */
+#define FASTCHART_LINE_SOLID  0
+#define FASTCHART_LINE_DASHED 1
+#define FASTCHART_LINE_DOTTED 2
+
+/* Gradient direction. */
+#define FASTCHART_GRADIENT_VERTICAL   0
+#define FASTCHART_GRADIENT_HORIZONTAL 1
+
+/* Calendar-aware date-axis stride units. */
+#define FASTCHART_DATE_DAY     0
+#define FASTCHART_DATE_WEEK    1
+#define FASTCHART_DATE_MONTH   2
+#define FASTCHART_DATE_QUARTER 3
+#define FASTCHART_DATE_YEAR    4
+
+/* Read a string label from an array-shaped setter, dropping the
+ * value if it carries an embedded NUL or exceeds FASTCHART_MAX_TEXT_BYTES.
+ * Public scalar setters reject both conditions with ValueError;
+ * per-element strings inside arrays (series labels, slice labels,
+ * gantt task names, category labels, overlay labels, etc.) take the
+ * silent-drop path because rejecting them with an exception would
+ * force every chart-type setter to walk the whole input array up
+ * front. The render-vs-stored divergence (text draw paths use
+ * C-string sentinels, PHP strings carry an explicit length) is what
+ * we're guarding against; the length cap keeps one oversized label
+ * from ballooning glyph-path SVG output. */
+static inline const char *fastchart_label_or_null(const zval *zv)
+{
+    if (zv && Z_TYPE_P(zv) == IS_REFERENCE) zv = Z_REFVAL_P(zv);
+    if (!zv || Z_TYPE_P(zv) != IS_STRING) return NULL;
+    if (Z_STRLEN_P(zv) > FASTCHART_MAX_TEXT_BYTES) return NULL;
+    if (memchr(Z_STRVAL_P(zv), 0, Z_STRLEN_P(zv)) != NULL) return NULL;
+    return Z_STRVAL_P(zv);
+}
+
+/* Map a libgd-convention alpha (0..127, 0 = opaque, 127 = fully
+ * transparent) to a 0..255 straight-alpha byte (255 = opaque).
+ * Proportional so 127 rounds to 0 cleanly; the naive `255 - a * 2`
+ * left a 1/255 floor that surfaced as rgba(...,0.004) for a band or
+ * fill the caller asked to be fully transparent. Shared so plot
+ * bands, area fills, and drop shadows can't drift apart again. */
+static inline int fastchart_gd_alpha_to_byte(int a)
+{
+    if (a < 0) a = 0; else if (a > 127) a = 127;
+    return 255 - (a * 255 + 63) / 127;
+}
+
+char *fastchart_format_double_label(const char *fmt, double value);
+
+/* Per-chart SVG rendering helpers. Each chart family implements
+ * fastchart_<name>_render_to_target(self, t), called by
+ * dispatch_svg_render. The legacy image-backend wrappers retired
+ * in v1.0. */
+struct fastchart_target;
+int fastchart_line_render_to_target(fastchart_line_obj *self,
+                                     struct fastchart_target *t);
+int fastchart_area_render_to_target(fastchart_area_obj *self,
+                                     struct fastchart_target *t);
+int fastchart_bar_render_to_target(fastchart_bar_obj *self,
+                                    struct fastchart_target *t);
+int fastchart_pie_render_to_target(fastchart_pie_obj *self,
+                                    struct fastchart_target *t);
+int fastchart_scatter_render_to_target(fastchart_scatter_obj *self,
+                                        struct fastchart_target *t);
+int fastchart_stock_render_to_target(fastchart_stock_obj *self,
+                                      struct fastchart_target *t);
+int fastchart_radar_render_to_target(fastchart_radar_obj *self,
+                                      struct fastchart_target *t);
+int fastchart_bubble_render_to_target(fastchart_bubble_obj *self,
+                                       struct fastchart_target *t);
+int fastchart_surface_render_to_target(fastchart_surface_obj *self,
+                                        struct fastchart_target *t);
+int fastchart_gauge_render_to_target(fastchart_gauge_obj *self,
+                                      struct fastchart_target *t);
+int fastchart_gantt_render_to_target(fastchart_gantt_obj *self,
+                                      struct fastchart_target *t);
+int fastchart_boxplot_render_to_target(fastchart_boxplot_obj *self,
+                                        struct fastchart_target *t);
+int fastchart_polar_render_to_target(fastchart_polar_obj *self,
+                                      struct fastchart_target *t);
+int fastchart_contour_render_to_target(fastchart_contour_obj *self,
+                                        struct fastchart_target *t);
+int fastchart_treemap_render_to_target(fastchart_treemap_obj *self,
+                                        struct fastchart_target *t);
+int fastchart_funnel_render_to_target(fastchart_funnel_obj *self,
+                                       struct fastchart_target *t);
+int fastchart_waterfall_render_to_target(fastchart_waterfall_obj *self,
+                                          struct fastchart_target *t);
+int fastchart_heatmap_render_to_target(fastchart_heatmap_obj *self,
+                                        struct fastchart_target *t);
+int fastchart_linear_meter_render_to_target(fastchart_linear_meter_obj *self,
+                                             struct fastchart_target *t);
+int fastchart_bullet_render_to_target(fastchart_bullet_obj *self,
+                                       struct fastchart_target *t);
+int fastchart_pareto_render_to_target(fastchart_pareto_obj *self,
+                                       struct fastchart_target *t);
+int fastchart_calendar_render_to_target(fastchart_calendar_obj *self,
+                                         struct fastchart_target *t);
+int fastchart_sunburst_render_to_target(fastchart_sunburst_obj *self,
+                                         struct fastchart_target *t);
+int fastchart_sankey_render_to_target(fastchart_sankey_obj *self,
+                                       struct fastchart_target *t);
+int fastchart_marimekko_render_to_target(fastchart_marimekko_obj *self,
+                                          struct fastchart_target *t);
+int fastchart_vector_render_to_target(fastchart_vector_obj *self,
+                                       struct fastchart_target *t);
+int fastchart_arc_render_to_target(fastchart_arc_obj *self,
+                                    struct fastchart_target *t);
+int fastchart_chord_render_to_target(fastchart_chord_obj *self,
+                                      struct fastchart_target *t);
+int fastchart_network_render_to_target(fastchart_network_obj *self,
+                                        struct fastchart_target *t);
+int fastchart_pyramid_render_to_target(fastchart_pyramid_obj *self,
+                                        struct fastchart_target *t);
+int fastchart_violin_render_to_target(fastchart_violin_obj *self,
+                                       struct fastchart_target *t);
+int fastchart_circlepack_render_to_target(fastchart_circlepack_obj *self,
+                                           struct fastchart_target *t);
+int fastchart_pictogram_render_to_target(fastchart_pictogram_obj *self,
+                                          struct fastchart_target *t);
+int fastchart_venn_render_to_target(fastchart_venn_obj *self,
+                                     struct fastchart_target *t);
+int fastchart_wordcloud_render_to_target(fastchart_wordcloud_obj *self,
+                                          struct fastchart_target *t);
+int fastchart_serpentine_render_to_target(fastchart_serpentine_obj *self,
+                                           struct fastchart_target *t);
+int fastchart_dendrogram_render_to_target(fastchart_dendrogram_obj *self,
+                                           struct fastchart_target *t);
+int fastchart_partition_render_to_target(fastchart_partition_obj *self,
+                                          struct fastchart_target *t);
+
+/* --- Symbol family (1D/2D codes) ----------------------------------
+ *
+ * Slim base independent of FASTCHART_BASE_FIELDS. Each concrete class
+ * (Code128, QrCode) gets its own struct + create_object handler. The
+ * abstract `Barcode` intermediate is PHP-side only and has no C struct.
+ * Lifecycle uses the parallel FASTCHART_DEFINE_SYMBOL_LIFECYCLE macro
+ * (see fastchart_symbol.c) which calls fastchart_symbol_base_init_*
+ * helpers instead of the chart-base equivalents.
+ *
+ * Layout matches the chart per-type pattern:
+ *   { FASTCHART_SYMBOL_BASE_FIELDS, <per-type fields>, zend_object std }
+ * so per-class handlers->offset = offsetof(class_struct, std) and the
+ * Z_FASTCHART_*_OBJ_P macros below land on the start of the struct
+ * (= the base layout) regardless of which concrete subclass we're in. */
+#define FASTCHART_SYMBOL_BASE_FIELDS \
+    zend_long width;            /* logical pixels; 0 = use class default */ \
+    zend_long height;           /* logical pixels; 0 = use class default */ \
+    zend_long dpi;              /* HiDPI scale, same semantics as Chart */ \
+    zend_string *data;          /* user payload, owned; NUL-free */ \
+    zend_long fg_rgb;           /* 0..0xFFFFFF; default 0x000000 */ \
+    zend_long bg_rgb;           /* 0..0xFFFFFF; default 0xFFFFFF */ \
+    bool transparent_bg;        /* honoured by PNG/WebP encoders */ \
+    zend_long quiet_zone;       /* per-class units; -1 = class default */ \
+    /* Per-class ceiling for quiet_zone, set by each create_object; \
+     * setQuietZone validates against it. QrCode counts modules (256, \
+     * matching the render-time cap); Code128 counts pixels (4096). */ \
+    zend_long quiet_zone_max; \
+    /* SVG text-rendering mode: 0 = NATIVE, 1 = PATHS (default). Same \
+     * semantics as the Chart side. Code128's human-readable text and \
+     * any future Symbol-with-text variants honor this. */ \
+    zend_long svg_text_mode; \
+    /* JPEG encode quality 1..100, default 88. */ \
+    zend_long jpeg_quality; \
+    /* WebP encode mode (FASTCHART_WEBP_*). Default DRAWING. \
+     * LOSSLESS is the natural pick for QR codes (bit-exact recovery \
+     * matters more than file size for machine-readable codes). */ \
+    zend_long webp_mode;
+
+typedef struct _fastchart_symbol_obj { FASTCHART_SYMBOL_BASE_FIELDS } fastchart_symbol_obj;
+
+/* Code 128: auto-switching A/B/C subset encoder. show_text toggles
+ * the human-readable payload below the bars; the font is whatever
+ * fastchart_default_font_path resolved to at MINIT (re-checked
+ * against open_basedir on every render). No per-instance font setter
+ * yet — add the field plus a setter when one is needed. */
+typedef struct {
+    FASTCHART_SYMBOL_BASE_FIELDS
+    bool show_text;
+    zend_object std;
+} fastchart_code128_obj;
+
+/* QR Code: thin wrapper over the vendored nayuki encoder. ecc maps
+ * 1:1 onto enum qrcodegen_Ecc (0..3). min_version / max_version
+ * default to 1 / 40 (encoder picks the smallest fitting version). */
+typedef struct {
+    FASTCHART_SYMBOL_BASE_FIELDS
+    zend_long ecc;
+    zend_long min_version;
+    zend_long max_version;
+    zend_object std;
+} fastchart_qrcode_obj;
+
+/* QrCode ECC-level constants. Match the qrcodegen_Ecc enum in
+ * vendor/qrcodegen/qrcodegen.h verbatim so the cast in
+ * fastchart_qrcode_render_to_image is straight-through. */
+#define FASTCHART_QR_ECC_L 0
+#define FASTCHART_QR_ECC_M 1
+#define FASTCHART_QR_ECC_Q 2
+#define FASTCHART_QR_ECC_H 3
+
+/* QR quiet zone is counted in modules, not pixels, and 256 modules
+ * already dwarfs any conceivable symbol. setQuietZone() rejects anything
+ * above this via the per-class quiet_zone_max; the renderer re-checks it
+ * so a future subclass that widens the setter cap cannot reach the
+ * module-size arithmetic with a value it never sized for. Both sites
+ * read this constant so they cannot drift apart. */
+#define FASTCHART_QR_MAX_QUIET_MODULES 256
+
+/* Class-default canvas dimensions when setSize() was not called.
+ * Code 128: 300x80 mirrors JpGraph's typical 1D output aspect.
+ * QrCode: 300x300 sits in the comfortable scan range for phone cameras
+ * across versions 1..10. */
+#define FASTCHART_CODE128_DEFAULT_W  300
+#define FASTCHART_CODE128_DEFAULT_H   80
+#define FASTCHART_QRCODE_DEFAULT_W   300
+#define FASTCHART_QRCODE_DEFAULT_H   300
+
+/* QR version 40-L can encode at most 7089 numeric characters. This
+ * bounds setter-time memory while preserving the format's largest
+ * text payload class; the encoder still enforces the tighter limits
+ * for alphanumeric / byte-mode payloads at render time. */
+#define FASTCHART_MAX_QRCODE_TEXT_BYTES 7089
+
+static inline fastchart_symbol_obj *fastchart_symbol_obj_from_zend(zend_object *obj) {
+    return (fastchart_symbol_obj *)((char *)(obj) - obj->handlers->offset);
+}
+
+#define Z_FASTCHART_SYMBOL_OBJ_P(zv)  fastchart_symbol_obj_from_zend(Z_OBJ_P(zv))
+#define Z_FASTCHART_CODE128_OBJ_P(zv) ((fastchart_code128_obj *)Z_FASTCHART_SYMBOL_OBJ_P(zv))
+#define Z_FASTCHART_QRCODE_OBJ_P(zv)  ((fastchart_qrcode_obj *)Z_FASTCHART_SYMBOL_OBJ_P(zv))
+
+/* Target-based render entries — the only entry point now that
+ * libgd has been dropped. SVG-backed targets emit vector elements;
+ * raster outputs go through dispatch_svg_render then plutovg. */
+int fastchart_code128_render_to_target(fastchart_code128_obj *self,
+                                        struct fastchart_target *t);
+int fastchart_qrcode_render_to_target(fastchart_qrcode_obj *self,
+                                       struct fastchart_target *t);
+
+/* Fill the canvas with the configured background, honouring
+ * `transparent_bg`. SVG emits a single bg rect (or nothing on
+ * transparent_bg); the raster pipeline rasterizes that SVG via
+ * plutovg + libpng / libwebp, and the empty (no-rect) case
+ * produces a fully-transparent PNG/WebP buffer. */
+void fastchart_symbol_fill_background(fastchart_symbol_obj *self,
+                                       struct fastchart_target *t);
+
+/* Symbol-family lifecycle handlers and storage. The lifecycle macro in
+ * fastchart_symbol.c emits external symbols so fastchart.c MINIT can
+ * wire them into the per-class handler struct (offset / dtor / clone)
+ * and the class entry's create_object slot. */
+extern zend_object_handlers fastchart_code128_handlers;
+extern zend_object_handlers fastchart_qrcode_handlers;
+extern zend_object *fastchart_code128_create_object(zend_class_entry *ce);
+extern zend_object *fastchart_qrcode_create_object(zend_class_entry *ce);
+extern void fastchart_code128_free_object(zend_object *object);
+extern void fastchart_qrcode_free_object(zend_object *object);
+extern zend_object *fastchart_code128_clone_object(zend_object *src_obj);
+extern zend_object *fastchart_qrcode_clone_object(zend_object *src_obj);
+
+/* Sentinel create_object handler attached to the abstract Symbol and
+ * Barcode class entries. ZEND_ACC_ABSTRACT only blocks `new Symbol()`
+ * at the engine level; userland subclasses (`class MySym extends
+ * FastChart\Symbol {}`) bypass that and would otherwise allocate a
+ * vanilla zend_object whose layout cannot back the typed C struct
+ * Z_FASTCHART_SYMBOL_OBJ_P expects — every inherited method would
+ * read out-of-bounds. This handler throws on any such instantiation. */
+extern zend_object *fastchart_symbol_abstract_create_object(zend_class_entry *ce);
+
+/* Same sentinel for the Chart family. FastChart\Chart is abstract;
+ * `class MyChart extends FastChart\Chart {}` would otherwise inherit
+ * no create_object and the engine would allocate a vanilla
+ * zend_object lacking the FASTCHART_BASE_FIELDS prefix our methods
+ * expect. Z_FASTCHART_OBJ_P then casts into memory we don't own and
+ * the next setter or destructor scribbles past the object. Wired in
+ * at MINIT for both the abstract class entry and any future abstract
+ * intermediates so userland subclassing is rejected at instantiation
+ * time rather than corrupting heap. */
+extern zend_object *fastchart_chart_abstract_create_object(zend_class_entry *ce);
+
+/* Auto-detected sans-serif TTF path probed at MINIT in fastchart.c.
+ * Stored as a plain const char* pointing into a static string-
+ * literal table (lifetime = program lifetime); each chart calls
+ * zend_string_init() at construction to own its own copy. NULL
+ * when no candidate existed on the system. Shared between the
+ * Chart family (fastchart_resolve_font) and the Symbol family
+ * (fastchart_code128.c, for show_text). */
+extern const char *fastchart_default_font_path;
+
+#endif /* PHP_FASTCHART_H */

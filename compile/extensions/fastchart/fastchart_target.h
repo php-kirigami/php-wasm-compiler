@@ -1,0 +1,328 @@
+/*
+  +----------------------------------------------------------------------+
+  | Copyright (c) 2025-2026, Ilia Alshanetsky                            |
+  | Copyright (c) 2025-2026, Advanced Internet Designs Inc.              |
+  +----------------------------------------------------------------------+
+  | This source file is subject to the BSD 3-Clause license that is      |
+  | bundled with this package in the file LICENSE.                       |
+  +----------------------------------------------------------------------+
+  | Author: Ilia Alshanetsky <ilia@ilia.ws>                              |
+  +----------------------------------------------------------------------+
+
+  Render target abstraction. v1.0 has one backend — SVG into a
+  smart_str. Raster outputs (PNG/JPG/WebP) are produced by handing the
+  finished SVG to plutovg via fastchart_rasterize_svg() and then to
+  libpng / libjpeg-turbo / libwebp via fastchart_encoder.c.
+
+  The 28 high-level helpers in fastchart_axis.c, the 3 text helpers in
+  fastchart_text.c, and the palette take a fastchart_target_t*. Color
+  allocation goes through fastchart_target_color(t, r, g, b, a) which
+  returns an opaque int handle (0..n_colors-1).
+*/
+
+#ifndef FASTCHART_TARGET_H
+#define FASTCHART_TARGET_H
+
+#include "php.h"
+#include "Zend/zend_smart_str.h"
+#include <stdint.h>
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
+/* Lazy FreeType library, per-thread under ZTS; GSHUTDOWN releases it. */
+FT_Library fastchart_ft_library(void);
+void fastchart_ft_library_shutdown(void);
+
+/* Four-slot face cache, per-thread under ZTS. Set the returned face's
+ * size before glyph operations; never call FT_Done_Face on it.
+ * Returns NULL on initialization, font-load, or allocation failure. */
+FT_Face fastchart_ft_face(const char *font_path);
+
+/* Advance-only glyph lookup for text measurement (fc_ft_measure),
+ * backed by a per-thread cache keyed on (face, size_64, dpi, codepoint).
+ * The caller must have positioned the face via FT_Set_Char_Size for the
+ * given size_64/dpi. Returns 0 with the advance (FT 26.6) in *out_adv,
+ * -1 on FT_Load_Glyph failure. */
+int fastchart_measured_advance(FT_Face face, int32_t size_64, int dpi,
+                               uint32_t codepoint, int32_t *out_adv);
+
+/* Glyph outline LRU, per-thread under ZTS, keyed by (face, pix_size,
+ * codepoint). Face eviction invalidates its glyphs. Entries store advance
+ * and a path at pen_x=0 for replay without reloading/decomposing outlines. */
+struct fc_glyph_cache_entry;
+const struct fc_glyph_cache_entry *fastchart_glyph_cache_get(
+    FT_Face face, uint16_t pix_size, uint32_t codepoint);
+
+/* Inserts a new cache entry. Takes ownership of `ops_buf` and `pts_buf`
+ * (they must be `malloc`'d or NULL). `n_ops == 0` is a valid entry —
+ * whitespace glyphs have no contours but still cache an advance. */
+void fastchart_glyph_cache_insert(FT_Face face, uint16_t pix_size,
+                                   uint32_t codepoint, int32_t advance_x_64,
+                                   char *ops_buf, uint16_t n_ops,
+                                   float *pts_buf, uint16_t n_pts);
+
+/* Resolve one codepoint via the glyph cache. On miss, runs the FT
+ * load + outline-decompose + cache-insert pipeline and returns the
+ * just-inserted entry. Returns NULL on FT failure. Caller MUST have
+ * already pinned the face to pix_size via FT_Set_Pixel_Sizes. */
+const struct fc_glyph_cache_entry *fastchart_resolve_glyph(
+    FT_Face face, uint16_t pix_size, uint32_t codepoint);
+
+/* Render target kinds. */
+#define FASTCHART_TARGET_SVG  1
+/* Vector PDF backend (configure --with-pdfio). Chart bodies emit the
+ * same primitives; target.c routes them to fastchart_pdf.c. */
+#define FASTCHART_TARGET_PDF  2
+
+#define FASTCHART_TARGET_CLIP_DEPTH  8
+#define FASTCHART_TARGET_FONT_CACHE  4
+#define FASTCHART_TARGET_GRADIENT_CACHE 32
+#define FASTCHART_TARGET_IMAGE_CACHE 33
+
+/* Dash patterns. The SVG backend translates to stroke-dasharray;
+ * the values are kept identical to v0.x for source compat. */
+#define FASTCHART_DASH_SOLID   0
+#define FASTCHART_DASH_DASHED  1
+#define FASTCHART_DASH_DOTTED  2
+
+#define FASTCHART_TARGET_ALIGN_LEFT    0
+#define FASTCHART_TARGET_ALIGN_CENTER  1
+#define FASTCHART_TARGET_ALIGN_RIGHT   2
+
+/* SVG text emission mode. */
+#define FASTCHART_SVG_TEXT_NATIVE  0
+#define FASTCHART_SVG_TEXT_PATHS   1
+
+/* Replacement for gd's gdPoint. Same layout (two ints) so existing
+ * point-array consumers don't need adjustment. */
+typedef struct fastchart_point {
+    int x;
+    int y;
+} fastchart_point_t;
+
+/* Split a fastchart_point_t array into parallel xs/ys int arrays.
+ * xs_in/ys_in should point to stack buffers; the macro overwrites
+ * them with heap-allocated arrays when n > 256. */
+#define FASTCHART_SPLIT_POINTS(pts_, n_, xs_in_, ys_in_) \
+    do { \
+        if ((n_) > 256) { \
+            (xs_in_) = emalloc(sizeof(int) * (size_t)(n_)); \
+            (ys_in_) = emalloc(sizeof(int) * (size_t)(n_)); \
+        } \
+        for (int _i = 0; _i < (n_); _i++) { \
+            (xs_in_)[_i] = (pts_)[_i].x; \
+            (ys_in_)[_i] = (pts_)[_i].y; \
+        } \
+    } while (0)
+
+typedef struct {
+    const char *path;
+    char family[64];
+} fastchart_target_font_cache_entry;
+
+typedef struct {
+	uint32_t from_rgb;
+	uint32_t to_rgb;
+	int dir;
+	int id;
+} fastchart_target_gradient_cache_entry;
+
+typedef struct {
+	char *path;
+	zend_string *bytes;
+	const char *mime;
+	int width;
+	int height;
+	int svg_id;
+	int svg_width;
+	int svg_height;
+	int loaded;
+} fastchart_target_image_cache_entry;
+
+typedef struct fastchart_target {
+    int kind;
+    /* SVG backend state. */
+    union {
+        struct {
+            smart_str *buf;
+            int width;
+            int height;
+            int dpi;
+            int next_clip_id;
+            int next_grad_id;
+            int next_image_id;
+            fastchart_target_gradient_cache_entry
+                gradient_cache[FASTCHART_TARGET_GRADIENT_CACHE];
+            int gradient_cache_n;
+            int text_mode;
+            /* Optional NCName prefix for clip/gradient ids. Fragments
+             * stitched into one host document otherwise all emit
+             * fcc1/fcg1... and chart 2's url(#fcg1) resolves to chart
+             * 1's gradient. Set from drawSvgFragment($idPrefix);
+             * empty = bare ids (full documents never collide). */
+            char id_ns[24];
+        } svg;
+        /* PDF backend (configure --with-pdfio). `state` is an opaque
+         * fc_pdf_state* owned by fastchart_pdf.c; kept void* so pdfio.h
+         * stays out of this widely-included header. */
+        struct {
+            void *state;
+            int width;
+            int height;
+            int dpi;
+        } pdf;
+    } u;
+
+	/* One background path plus the public 32-icon cap. Failed loads
+     * retain only their path so repeated placements do not repeat I/O. */
+	fastchart_target_image_cache_entry
+        image_cache[FASTCHART_TARGET_IMAGE_CACHE];
+	int image_cache_n;
+
+    /* Shared color table. handle = index. Grown on demand (ramp-heavy
+     * charts — heatmap / treemap / word cloud — can allocate many more
+     * than a small fixed cap) and freed in fastchart_target_release(). */
+    uint32_t *color_rgba;  /* 0xAARRGGBB */
+    int n_colors;
+    int color_cap;
+    /* Open-addressing index over color_rgba keyed on the packed rgba;
+     * registration is O(1) amortized instead of a linear scan that went
+     * quadratic on per-point-colored charts. Slots hold indices into
+     * color_rgba; -1 = empty. */
+    int *color_hash;
+    int color_hash_cap;    /* power of two, load factor <= 0.5 */
+
+    /* SVG clip stack (active clipPath ids, top = current). Sized for
+     * the deepest nesting any chart family uses (currently 2). */
+    int clip_stack[FASTCHART_TARGET_CLIP_DEPTH];
+    int clip_depth;
+
+    /* Per-target font-family cache. FT_New_Face is microseconds per
+     * call but adds up over a render with many text emits. */
+    fastchart_target_font_cache_entry font_cache[FASTCHART_TARGET_FONT_CACHE];
+    int font_cache_n;
+
+} fastchart_target_t;
+
+/* Initialise as an SVG-backed target writing into `buf`. width/height
+ * are the logical viewport dimensions. text_mode is one of
+ * FASTCHART_SVG_TEXT_NATIVE / FASTCHART_SVG_TEXT_PATHS. */
+void fastchart_target_from_svg(fastchart_target_t *t, smart_str *buf,
+                                int width, int height, int dpi,
+                                int text_mode);
+
+/* Initialise as a PDF-backed target (configure --with-pdfio). Streams a
+ * one-page PDF sized width x height into `out`. Like SVG, output is
+ * DPI-invariant — layout uses the 96-DPI baseline; the vector page
+ * scales freely. After this call the caller MUST check
+ * fastchart_target_pdf_ok(t): a NULL pdfio state means doc creation
+ * failed. Only declared/usable when built with PDF support. */
+void fastchart_target_from_pdf(fastchart_target_t *t, smart_str *out,
+                                int width, int height, int dpi);
+
+/* 1 if a PDF target initialised successfully, 0 otherwise. Always 0 for
+ * non-PDF targets. */
+int fastchart_target_pdf_ok(const fastchart_target_t *t);
+
+/* Finalise a PDF target: close the document (flushing the trailer to the
+ * `out` buffer) and release backend state. Returns 0 on success. No-op
+ * returning -1 for non-PDF targets. */
+int fastchart_target_pdf_finish(fastchart_target_t *t);
+
+/* Bailout-unwind variant of pdf_finish: releases the malloc'd pdfio
+ * document without appending its close-time flush to request memory.
+ * Only call from a zend_catch block. No-op for non-PDF targets. */
+void fastchart_target_pdf_abort(fastchart_target_t *t);
+
+/* Frees heap state attached to the target (source-image cache, color
+ * table, and hash). Safe to call on a target with no heap state. Resets
+ * the counters so the target is ready for reuse. */
+void fastchart_target_release(fastchart_target_t *t);
+
+/* Allocate a color handle for (r,g,b,a). 0..255 each; a=255 is opaque.
+ * Returns handle index, or -1 if the per-target color table is full. */
+int fastchart_target_color(fastchart_target_t *t, int r, int g, int b, int a);
+
+/* Packed 0xRRGGBB convenience (alpha implied 255). */
+int fastchart_target_color_rgb(fastchart_target_t *t, int rgb);
+
+/* Resolve a color handle to packed 0xAARRGGBB. */
+uint32_t fastchart_target_color_to_rgba(fastchart_target_t *t, int handle);
+
+void fastchart_target_get_dims(fastchart_target_t *t, int *w, int *h);
+int  fastchart_target_get_dpi(fastchart_target_t *t);
+
+/* Primitives. All take a color HANDLE (not an rgba). thickness >= 1;
+ * fill is 0/1. dash is FASTCHART_DASH_*. */
+
+void fastchart_target_line(fastchart_target_t *t,
+                            int x0, int y0, int x1, int y1,
+                            int color, int thickness, int dash);
+
+void fastchart_target_rect(fastchart_target_t *t,
+                            int x, int y, int w, int h,
+                            int color, int fill, int thickness);
+
+void fastchart_target_polygon(fastchart_target_t *t,
+                               const fastchart_point_t *pts, int n,
+                               int color, int fill, int thickness);
+
+/* Open stroked path through n points (no closing edge, no fill). For SVG
+ * this is one <polyline> element rather than n-1 <line> elements, which
+ * matters for curves sampled into many segments (e.g. chord links). */
+void fastchart_target_polyline(fastchart_target_t *t,
+                                const fastchart_point_t *pts, int n,
+                                int color, int thickness, int dash);
+
+void fastchart_target_arc(fastchart_target_t *t,
+                           int cx, int cy, int rx, int ry,
+                           double start_deg, double end_deg,
+                           int color, int fill, int thickness);
+
+void fastchart_target_ellipse(fastchart_target_t *t,
+                               int cx, int cy, int rx, int ry,
+                               int color, int fill, int thickness);
+
+void fastchart_target_clip_push(fastchart_target_t *t,
+                                 int x, int y, int w, int h);
+void fastchart_target_clip_pop(fastchart_target_t *t);
+
+/* Image blit. Each distinct path is opened and base64-encoded once per
+ * target, then emitted as one namespaced unit-image definition plus a
+ * transformed <use> placement. Failed loads are cached too. The PHP
+ * stream layer enforces open_basedir and the loader enforces source byte,
+ * dimension, format, and regular-file caps. PNG and JPEG only. */
+void fastchart_target_image(fastchart_target_t *t,
+                             int x, int y, int w, int h,
+                             const char *path);
+
+/* Return cached source dimensions for aspect-ratio placement. The first
+ * lookup performs the same load as fastchart_target_image; later calls
+ * reuse either its success or failure result. */
+int fastchart_target_image_dims(fastchart_target_t *t, const char *path,
+                                int *width, int *height);
+
+/* Gradient fills. `dir` is 0 (vertical) or 1 (horizontal); from/to
+ * are 0xRRGGBB, optionally with alpha in the high byte. The SVG
+ * backend reuses definitions with identical endpoints and direction
+ * within one target. */
+void fastchart_target_gradient_rect(fastchart_target_t *t,
+                                     int x, int y, int w, int h,
+                                     uint32_t from_rgb, uint32_t to_rgb,
+                                     int dir);
+
+void fastchart_target_gradient_polygon(fastchart_target_t *t,
+                                        const fastchart_point_t *pts,
+                                        int n,
+                                        uint32_t from_rgb, uint32_t to_rgb,
+                                        int dir);
+
+/* Resolve a font file path to a CSS-safe family name via FreeType.
+ * Result is written into out (null-terminated). out_n must be >= 64.
+ * On any failure falls back to "sans-serif". Cached per-target. */
+void fastchart_target_resolve_font_family(fastchart_target_t *t,
+                                           const char *font_path,
+                                           char *out, size_t out_n);
+
+#endif /* FASTCHART_TARGET_H */

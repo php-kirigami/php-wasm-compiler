@@ -9,5 +9,8 @@
 		"compile": "node compile/cli.mjs",
 		"release": "node scripts/publish.js",
 		"release:dry": "node scripts/publish.js --dry-run"
+	},
+	"devDependencies": {
+		"ws": "^8.21.3"
 	}
 }

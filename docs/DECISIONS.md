@@ -3679,3 +3679,72 @@ unless explicitly revisited:
       and breaking every extension after it. The fix belongs to the loader
       (use each package's `register()`, dedupe `mysqlnd`), in the
       `kirigami` repo.
+
+60. **The last batch of mode:shared extensions (2026-09-23): ffi, fileinfo,
+    xsl, snmp, intl, rar, scanmeqr, plus core changes they needed.**
+    Twenty-five mode:shared extensions now pass
+    `check-shared-extension-symbols.mjs` (smoke tests included).
+    - **New vendored libs:** `libxslt` (1.1.45 + libexslt, with a copy of
+      libxml2 2.15.4 in the vendorLib), `netsnmp` (5.9.5.2, libnetsnmp +
+      OpenSSL's libcrypto), `icu` (78.3, cross-compiled against a native
+      build of itself; full data compiled in via `genccode`), `libcxx`
+      (the PIC C++ runtime alone, for C++ extensions with no other
+      vendorLib). Build fixes worth knowing: libtool copies an archive
+      given by path *into* another static archive (libxslt: use `-L`/`-l`);
+      ICU's configure has no emscripten host fragment (copy `mh-linux`
+      over `mh-unknown`), its data Makefile writes into an `out/tmp` it
+      doesn't create, and per-directory builds need `lib/`/`bin/` made by
+      hand; net-snmp probes `EVP_md5` before `-lcrypto` is linked.
+    - **First extensions from outside php-src:** rar (`cataphract/php-rar`
+      v4.3.1, bundled UnRAR) and scanmeqr (`crazy-goat/qrcode-ext` v0.5.2),
+      both C++ with `vendorLib: libcxx`. Both need `-U__x86_64__`:
+      compile-extension defines `__x86_64__` for every extension, which
+      turns on x86 intrinsics code (unrar's SSE, scanmeqr's cpuid).
+    - **Pipeline:** manifest `iniEntries` (config.yaml -> manifest.json ->
+      `register()` -> the loader's `.ini`), first used by ffi
+      (`ffi.enable=1`: the SAPI is `wasm`, so `preload` would block the FFI
+      API); a per-extension `license` (SPDX) for `package.json` (rar is
+      `PHP-3.01 AND LicenseRef-UnRAR`, scanmeqr MIT); an `archives` filter
+      on `vendorLibs` entries (fastchart, below).
+    - **Core exports, computed statically:** instead of one smoke-test
+      layer per rebuild, every env/GOT import of the new modules that the
+      core doesn't satisfy (not a wasm export, not a JS library function,
+      not provided by the module itself or its EM_JS functions), checked
+      against Emscripten's PIC system libraries with `llvm-nm`, went into
+      `compile/php/side-module-abi-exports.txt` (228 symbols, one rebuild).
+      `select` is aliased to the core's `__wrap_select`, as `getpid` was.
+    - **zif_/zim_ handlers are no longer exported.** The core exported
+      every extern symbol of libphp.a, including static extensions'
+      PHP_FUNCTION/PHP_METHOD handlers. A side module's GOT import resolves
+      against the main module first, so intl's
+      `zif_normalizer_normalize` bound to php-norm's (static) handler:
+      `Normalizer::normalize($s, Normalizer::FORM_C)` ran php-norm's code
+      and rejected intl's form values. No side module imports a core
+      zif_/zim_ symbol.
+    - **libffi in side modules:** its wasm32 EM_JS trampolines call
+      `unbox_small_structs()` by its bare name, which only works in a main
+      module; `compile/libffi/Dockerfile` routes those calls through
+      `moduleExports`, which is in scope of the dynamic linker's per-
+      function eval.
+    - **Networking (with the Kirigami runtime's UDP relay):** `select()`
+      polls the read set for POLLIN only and clears non-ready descriptors
+      (it used to report every socket ready), SOCKFS's poll treats a
+      datagram socket as readable only with a queued datagram, blocking
+      datagram `recvfrom()` waits (up to SO_RCVTIMEO, `ECONNREFUSED` once
+      the peer is gone), `connect()` really waits (`__syscall_connect` was
+      missing from JSPI_IMPORTS, so it returned before the connection
+      existed) and returns `EINPROGRESS` for non-blocking sockets, and a
+      poll on an already-closed WebSocket returns at once instead of
+      waiting for an event that already fired. Open: SNMP requests to an
+      unreachable agent still hang (docs/BUGS.md).
+    - **Smaller findings:** ext/snmp can't use a `tcp:` transport (it
+      parses the host itself), so it's UDP only; the harness needs the
+      `ws` package (root devDependency) like the runtime; `make <lib>_jspi`
+      doesn't recopy an existing `dist/` (remove it to force); intl.so is
+      39.5 MB with ICU's data; php-norm now defers to intl's Normalizer
+      (checked by intl's smoke test).
+    - **Not done:** `iliaal/php-excel` (wraps LibXL, a closed-source
+      commercial library: can't be built for wasm). Prepared, not built:
+      `iliaal/fastchart` (C, codec libs from gd, DejaVu Sans embedded with
+      `#embed` and installed at load time). Planned: `hosmelq/ext-anydoc`
+      (Rust, a new build path).

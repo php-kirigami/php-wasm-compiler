@@ -202,6 +202,16 @@ EM_JS(int, wasm_poll_socket, (php_socket_t socketd, int events, int timeout), {
                 wakeUp(0);
                 return;
             }
+            // A peer WebSocket that is already closing or closed (e.g. the
+            // proxy refused the connection) won't fire another close/error
+            // event, so waiting for one below would never resolve (and
+            // select() without a timeout, as net-snmp calls it, would hang
+            // for good). The socket is ready: the read/write that follows
+            // reports EOF or the error.
+            if (webSockets.some((ws) => ws.readyState === ws.CLOSING || ws.readyState === ws.CLOSED)) {
+                wakeUp(1);
+                return;
+            }
             for (const ws of webSockets) {
 				if (events & POLLIN || events & POLLPRI) {
 					polls.push(PHPWASM.awaitData(ws));
@@ -853,6 +863,15 @@ ZEND_END_ARG_INFO()
 
 /**
  * select(2).
+ *
+ * Each set may be NULL (net-snmp passes NULL write/except sets). On
+ * return, a descriptor stays set only if it's ready, as select(2)
+ * requires: callers test FD_ISSET() afterwards. The read set is polled
+ * for POLLIN only: POLLOUT would report a socket readable as soon as its
+ * WebSocket is open, before any data has arrived (a UDP socket used by
+ * net-snmp was reported readable right after sending its request).
+ * Descriptors are still waited on one after another, each with the full
+ * timeout.
  */
 EMSCRIPTEN_KEEPALIVE int __wrap_select(int max_fd, fd_set *read_fds, fd_set *write_fds, fd_set *except_fds, struct timeval *timeouttv)
 {
@@ -861,15 +880,29 @@ EMSCRIPTEN_KEEPALIVE int __wrap_select(int max_fd, fd_set *read_fds, fd_set *wri
 	int n = 0;
 	for (int i = 0; i < max_fd; i++)
 	{
-		if (FD_ISSET(i, read_fds))
+		if (read_fds && FD_ISSET(i, read_fds))
 		{
-			n += wasm_poll_socket(i, POLLIN | POLLOUT, timeoutms);
+			if (wasm_poll_socket(i, POLLIN, timeoutms))
+			{
+				n++;
+			}
+			else
+			{
+				FD_CLR(i, read_fds);
+			}
 		}
-		if (FD_ISSET(i, write_fds))
+		if (write_fds && FD_ISSET(i, write_fds))
 		{
-			n += wasm_poll_socket(i, POLLOUT, timeoutms);
+			if (wasm_poll_socket(i, POLLOUT, timeoutms))
+			{
+				n++;
+			}
+			else
+			{
+				FD_CLR(i, write_fds);
+			}
 		}
-		if (FD_ISSET(i, except_fds))
+		if (except_fds && FD_ISSET(i, except_fds))
 		{
 			n += wasm_poll_socket(i, POLLERR, timeoutms);
 			FD_CLR(i, except_fds);

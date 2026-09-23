@@ -9,7 +9,14 @@
 
 const LibraryExample = {
 	// Emscripten dependencies:
-	$PHPWASM__deps: ['$allocateUTF8OnStack', '$addOnInit'],
+	$PHPWASM__deps: [
+		'$allocateUTF8OnStack',
+		'$addOnInit',
+		'$SOCKFS',
+		'$getSocketFromFD',
+		'$writeSockaddr',
+		'$DNS',
+	],
 	$PHPWASM__postset: 'PHPWASM.init();',
 
 	// Functions not exposed to C but available in the generated
@@ -30,6 +37,7 @@ const LibraryExample = {
 		// emscripten_O_DIRECT |
 		// emscripten_O_NOATIME
 		init: function () {
+			addOnInit(PHPWASM.patchDatagramPoll);
 			// TODO: Move this to a library function that is made an onInit callback by the `__postset` suffix.
 			if (PHPLoader.bindUserSpace) {
 				/**
@@ -353,6 +361,65 @@ const LibraryExample = {
 		 * @param {int} socketd Socket descriptor
 		 * @returns WebSocket[]
 		 */
+		/**
+		 * SOCKFS's websocket_sock_ops.poll() treats every connection-less
+		 * socket as "always ready to read", so a datagram (UDP) socket
+		 * looks readable before any data has arrived: poll() and select()
+		 * callers (net-snmp, ext/sockets) then read, get EAGAIN, and give
+		 * up or spin. A datagram socket is only readable when a datagram
+		 * is queued; it's always writable. Stream sockets keep Emscripten's
+		 * own logic.
+		 */
+		patchDatagramPoll: function () {
+			const sockOps = SOCKFS.websocket_sock_ops;
+			const originalPoll = sockOps.poll;
+			sockOps.poll = function (sock) {
+				if (sock.type === Number('{{{cDefs.SOCK_DGRAM}}}')) {
+					let mask = Number('{{{cDefs.POLLOUT}}}');
+					if (sock.recv_queue.length) {
+						mask |=
+							Number('{{{cDefs.POLLRDNORM}}}') |
+							Number('{{{cDefs.POLLIN}}}');
+					}
+					return mask;
+				}
+				return originalPoll.call(this, sock);
+			};
+		},
+
+		/**
+		 * Emscripten's own __syscall_recvfrom (libsyscall.js), which this
+		 * library overrides to add blocking datagram reads (see
+		 * wasm_recvfrom). Never waits: an empty queue gives -EAGAIN. The
+		 * try/catch stands in for the ErrnoError-to-errno wrapper
+		 * libsyscall.js adds to its own syscalls.
+		 */
+		recvfromNow: function (fd, buf, len, flags, addr, addrlen) {
+			try {
+				const sock = getSocketFromFD(fd);
+				const msg = sock.sock_ops.recvmsg(sock, len);
+				if (!msg) {
+					return 0; // socket is closed
+				}
+				if (addr) {
+					writeSockaddr(
+						addr,
+						sock.family,
+						DNS.lookup_name(msg.addr),
+						msg.port,
+						addrlen
+					);
+				}
+				HEAPU8.set(msg.buffer, buf);
+				return msg.buffer.byteLength;
+			} catch (e) {
+				if (typeof FS == 'undefined' || e.name !== 'ErrnoError') {
+					throw e;
+				}
+				return -e.errno;
+			}
+		},
+
 		getAllWebSockets: function (sock) {
 			const webSockets = /* @__PURE__ */ new Set();
 			if (sock.server) {
@@ -1057,7 +1124,7 @@ const LibraryExample = {
 				if (resolved) {
 					return;
 				}
-				let newl = ___syscall_recvfrom(
+				let newl = PHPWASM.recvfromNow(
 					sockfd,
 					buffer,
 					size,
@@ -1190,6 +1257,41 @@ const LibraryExample = {
 			sock.sock_ops.connect(sock, info.addr, info.port);
 			return 0;
 		}
+
+		/**
+		 * No waiting for a non-blocking socket (libcurl,
+		 * STREAM_CLIENT_ASYNC_CONNECT, ...) or a datagram one: start the
+		 * connection and answer right away. A non-blocking stream socket
+		 * gets EINPROGRESS, as connect(2) specifies; the caller then waits
+		 * with poll(POLLOUT) and reads the outcome with
+		 * getsockopt(SO_ERROR), both of which SOCKFS already handles
+		 * (sock.connecting, sock.error). A datagram socket has no
+		 * connection to wait for: connect() only sets its default peer.
+		 */
+		const connectingStream = FS.getStream(sockfd);
+		const connectingSock = connectingStream?.node?.sock;
+		const isDatagram =
+			connectingSock?.type === Number('{{{cDefs.SOCK_DGRAM}}}');
+		const isNonBlocking = Boolean(
+			connectingStream && connectingStream.flags & PHPWASM.O_NONBLOCK
+		);
+		if (connectingSock && (isDatagram || isNonBlocking)) {
+			try {
+				const info = getSocketAddress(addr, addrlen);
+				connectingSock.sock_ops.connect(
+					connectingSock,
+					info.addr,
+					info.port
+				);
+			} catch (e) {
+				if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) {
+					return -ERRNO_CODES.ECONNREFUSED;
+				}
+				return -e.errno;
+			}
+			return isDatagram ? 0 : -ERRNO_CODES.EINPROGRESS;
+		}
+
 		return Asyncify.handleSleep((wakeUp) => {
 			// Get the socket
 			let sock;
@@ -1326,7 +1428,7 @@ const LibraryExample = {
 			ws.addEventListener('close', handleClose);
 		});
 	},
-	wasm_connect__deps: ['$PHPWASM'],
+	wasm_connect__deps: ['$PHPWASM', '$getSocketAddress', '$getSocketFromFD'],
 
 	/**
 	 * Override Emscripten's __syscall_connect to use our async-aware implementation.
@@ -1337,6 +1439,86 @@ const LibraryExample = {
 		return _wasm_connect(sockfd, addr, addrlen);
 	},
 	__syscall_connect__deps: ['wasm_connect'],
+
+	/**
+	 * recvfrom(2) that blocks on a blocking datagram (UDP) socket.
+	 *
+	 * Emscripten's recvfrom never waits: with nothing queued it returns
+	 * EAGAIN even on a blocking socket, so a blocking UDP read (ext/sockets'
+	 * socket_recvfrom(), net-snmp) fails at once instead of waiting for the
+	 * reply. For a datagram socket that isn't O_NONBLOCK and isn't read
+	 * with MSG_DONTWAIT, this waits for a datagram like wasm_recv() does,
+	 * up to the socket's SO_RCVTIMEO if one is set (then EAGAIN, as on
+	 * Linux). Every other case (stream sockets included) keeps Emscripten's
+	 * non-waiting behavior.
+	 *
+	 * @returns {int|Promise<int>} Bytes received, or a negative errno
+	 */
+	wasm_recvfrom: function (fd, buf, len, flags, addr, addrlen) {
+		const result = PHPWASM.recvfromNow(fd, buf, len, flags, addr, addrlen);
+		if (result !== -ERRNO_CODES.EAGAIN) {
+			return result;
+		}
+		const MSG_DONTWAIT = 0x40;
+		const stream = FS.getStream(fd);
+		const sock = stream?.node?.sock;
+		if (
+			!sock ||
+			sock.type !== Number('{{{cDefs.SOCK_DGRAM}}}') ||
+			stream.flags & PHPWASM.O_NONBLOCK ||
+			flags & MSG_DONTWAIT
+		) {
+			return result;
+		}
+		return Asyncify.handleSleep((wakeUp) => {
+			const receiveTimeout = PHPWASM.socketTimeouts.get(fd)?.receive;
+			const startedAt = Date.now();
+			const poll = function () {
+				const n = PHPWASM.recvfromNow(fd, buf, len, flags, addr, addrlen);
+				if (n !== -ERRNO_CODES.EAGAIN) {
+					wakeUp(n);
+					return;
+				}
+				// SOCKFS keeps answering EAGAIN for an empty datagram queue
+				// even once its peer WebSocket is gone (the proxy refused or
+				// dropped it, and SOCKFS may have removed the peer), so no
+				// datagram can arrive any more: fail like Linux does after an
+				// ICMP port unreachable instead of waiting forever. SOCKFS
+				// records such a failure in sock.error (ECONNREFUSED,
+				// EHOSTUNREACH).
+				const webSockets = PHPWASM.getAllWebSockets(sock);
+				const allClosed =
+					webSockets.length > 0 &&
+					webSockets.every(
+						(ws) =>
+							ws.readyState === ws.CLOSING ||
+							ws.readyState === ws.CLOSED
+					);
+				if (sock.error || allClosed) {
+					wakeUp(-(sock.error || ERRNO_CODES.ECONNREFUSED));
+					return;
+				}
+				if (receiveTimeout > 0 && Date.now() - startedAt >= receiveTimeout) {
+					wakeUp(-ERRNO_CODES.EAGAIN);
+					return;
+				}
+				setTimeout(poll, 20);
+			};
+			poll();
+		});
+	},
+	wasm_recvfrom__deps: ['$PHPWASM'],
+
+	/**
+	 * Override Emscripten's __syscall_recvfrom with wasm_recvfrom(), so
+	 * every recv()/recvfrom() call (PHP core, extensions, and side modules
+	 * through the core's libc) gets blocking datagram reads. Same shape as
+	 * the __syscall_connect override above.
+	 */
+	__syscall_recvfrom: function (fd, buf, len, flags, addr, addrlen) {
+		return _wasm_recvfrom(fd, buf, len, flags, addr, addrlen);
+	},
+	__syscall_recvfrom__deps: ['wasm_recvfrom'],
 
 	/**
 	 * Returns the assigned process ID of the current process or 42 if not available.

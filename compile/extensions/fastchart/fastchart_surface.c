@@ -1,0 +1,155 @@
+/*
+  +----------------------------------------------------------------------+
+  | Copyright (c) 2025-2026, Ilia Alshanetsky                            |
+  | Copyright (c) 2025-2026, Advanced Internet Designs Inc.              |
+  +----------------------------------------------------------------------+
+  | This source file is subject to the BSD 3-Clause license that is      |
+  | bundled with this package in the file LICENSE.                       |
+  +----------------------------------------------------------------------+
+  | Author: Ilia Alshanetsky <ilia@ilia.ws>                              |
+  +----------------------------------------------------------------------+
+*/
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include "php.h"
+#include "Zend/zend_exceptions.h"
+
+#include "php_fastchart.h"
+#include "fastchart_palette.h"
+#include "fastchart_target.h"
+#include "fastchart_axis.h"
+#include "fastchart_text.h"
+#include "fastchart_effects.h"
+
+#include <math.h>
+
+int fastchart_surface_render_to_target(fastchart_surface_obj *self, fastchart_target_t *t)
+{
+    if (!self->grid.cells || self->grid.rows == 0 || self->grid.cols == 0) {
+        zend_throw_error(NULL,
+            "FastChart\\SurfaceChart::draw() requires setGrid() with non-empty data");
+        return -1;
+    }
+    double *grid = self->grid.cells;
+    int rows = self->grid.rows;
+    int cols = self->grid.cols;
+
+    double vmin = 0, vmax = 0;
+    int seen = 0;
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            double v = grid[i * cols + j];
+            if (isnan(v)) continue;
+            fastchart_range_update(v, &vmin, &vmax, &seen);
+        }
+    }
+    if (!seen) {
+        zend_throw_error(NULL,
+            "FastChart\\SurfaceChart::draw() found no numeric cells");
+        return -1;
+    }
+
+    fastchart_palette pal;
+    fastchart_palette_init(t, (int)self->theme, &pal);
+    fastchart_palette_apply_overrides(t, (fastchart_obj *)self, &pal);
+
+    int W, H;
+    fastchart_target_get_dims(t, &W, &H);
+    fastchart_paint_canvas_bg(t, (fastchart_obj *)self, &pal);
+
+    int top = (self->title && ZSTR_LEN(self->title) > 0) ? 32 : 12;
+    int margin_x = 50;
+    int margin_b = 30;
+    int plot_x0 = margin_x, plot_y0 = top;
+    int plot_x1 = W - margin_x - 1, plot_y1 = H - margin_b - 1;
+    bool forced_plot = fastchart_apply_plot_rect((fastchart_obj *)self,
+        &plot_x0, &plot_y0, &plot_x1, &plot_y1);
+    int plot_w = plot_x1 - plot_x0 + 1;
+    int plot_h = plot_y1 - plot_y0 + 1;
+    if (!forced_plot && plot_w < 50) plot_w = 50;
+    if (!forced_plot && plot_h < 50) plot_h = 50;
+
+    /* Cell boundaries are derived from the normalized plot span (not a
+     * clamped integer cell size) so a dense grid whose column/row count
+     * exceeds the plot's pixel extent stays inside the plot rect instead
+     * of drawing the trailing cells off-canvas. */
+
+    /* Draw grid cells. A 256-entry color LUT keyed on the
+     * normalized cell value is allocated once instead of per-cell.
+     * Two contrasting label-text colors (dark / light) are also
+     * pre-allocated here so the value-label path stops allocating
+     * a target color per cell. */
+    int low = (int)self->color_ramp_low;
+    int high = (int)self->color_ramp_high;
+    int color_lut[256];
+    int rgb_lut[256];
+    for (int k = 0; k < 256; k++) {
+        int rgb = fastchart_lerp_rgb(low, high, (double)k / 255.0);
+        rgb_lut[k] = rgb;
+        color_lut[k] = fastchart_target_color_rgb(t, rgb);
+    }
+    int label_dark  = fastchart_target_color(t, 0x22, 0x22, 0x22, 0xFF);
+    int label_light = fastchart_target_color(t, 0xEE, 0xEE, 0xEE, 0xFF);
+    int edge_handle = self->edge_color >= 0
+        ? fastchart_target_color_rgb(t, (int)self->edge_color) : -1;
+
+    for (int y_idx = 0; y_idx < rows; y_idx++) {
+        for (int x_idx = 0; x_idx < cols; x_idx++) {
+            double v = grid[y_idx * cols + x_idx];
+            if (isnan(v)) continue;
+            double tv = fastchart_normalize_finite(v, vmin, vmax);
+            int idx = (int)(tv * 255.0 + 0.5);
+            if (idx < 0) idx = 0; else if (idx > 255) idx = 255;
+            int color = color_lut[idx];
+            int rgb = rgb_lut[idx];
+            int x0 = plot_x0 + x_idx * plot_w / cols;
+            int y0 = plot_y0 + y_idx * plot_h / rows;
+            int x1 = plot_x0 + (x_idx + 1) * plot_w / cols - 1;
+            int y1 = plot_y0 + (y_idx + 1) * plot_h / rows - 1;
+            if (x1 < x0 || y1 < y0) continue;  /* grid denser than pixels */
+            fastchart_target_rect(t, x0, y0, x1 - x0 + 1, y1 - y0 + 1, color, 1, 0);
+            if (edge_handle >= 0) {
+                fastchart_target_rect(t, x0, y0, x1 - x0 + 1, y1 - y0 + 1,
+                                      edge_handle, 0, 1);
+            }
+            if (self->surface_show_values) {
+                const char *font = fastchart_resolve_font((fastchart_obj *)self, FC_FONT_LABEL);
+                if (font) {
+                    const char *fmt = self->surface_value_format
+                        ? ZSTR_VAL(self->surface_value_format) : "%g";
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), fmt, v);
+                    double base = self->font_size > 0 ? self->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+                    double size = fastchart_resolve_font_size((fastchart_obj *)self, FC_FONT_LABEL, base * 0.8);
+                    int tx = (x0 + x1) / 2;
+                    int ty = (y0 + y1) / 2 + (int)(size * 0.35);
+                    int luma = ((rgb >> 16) & 0xFF) * 299
+                             + ((rgb >>  8) & 0xFF) * 587
+                             + ( rgb        & 0xFF) * 114;
+                    int tc = luma > 128000 ? label_dark : label_light;
+                    fastchart_text_draw(t, font, size, tc, tx, ty,
+                                        FASTCHART_ALIGN_CENTER, buf, NULL, 0);
+                }
+            }
+        }
+    }
+
+    int frame_x1 = plot_x0 + plot_w - 1;
+    int frame_y1 = plot_y0 + plot_h - 1;
+    if (self->border_sides & FASTCHART_BORDER_TOP)
+        fastchart_target_line(t, plot_x0, plot_y0, frame_x1, plot_y0, pal.border, 1, FASTCHART_DASH_SOLID);
+    if (self->border_sides & FASTCHART_BORDER_BOTTOM)
+        fastchart_target_line(t, plot_x0, frame_y1, frame_x1, frame_y1, pal.border, 1, FASTCHART_DASH_SOLID);
+    if (self->border_sides & FASTCHART_BORDER_LEFT)
+        fastchart_target_line(t, plot_x0, plot_y0, plot_x0, frame_y1, pal.border, 1, FASTCHART_DASH_SOLID);
+    if (self->border_sides & FASTCHART_BORDER_RIGHT)
+        fastchart_target_line(t, frame_x1, plot_y0, frame_x1, frame_y1, pal.border, 1, FASTCHART_DASH_SOLID);
+
+    fastchart_draw_floating_title(t, (fastchart_obj *)self, &pal, W / 2, 24);
+
+    fastchart_draw_text_annotations(t, (fastchart_obj *)self, &pal);
+    return 0;
+}

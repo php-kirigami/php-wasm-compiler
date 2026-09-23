@@ -12,6 +12,21 @@ file.
 
 ## Open
 
+- **`snmp`: a request to an unreachable agent never returns (found
+  2026-09-23).** `SNMP::get('127.0.0.1:1', ...)` with a 100 ms timeout and
+  no retries hangs PHP. Traced: the WebSocket for the datagram peer fails
+  right away (`ECONNREFUSED`, close 1006), then net-snmp calls `recvmsg()`
+  about 65 times a second (each `EAGAIN`, with `clock_time_get` calls in
+  between) and never gives up; `select()`/`poll()` aren't called at all,
+  and the session timeout never fires. Not investigated further yet: why
+  net-snmp's synchronous response loop ignores its timeout in this build
+  (its compiled select/poll configuration is the first thing to check).
+  The core's datagram fixes (blocking `recvfrom()` with `ECONNREFUSED` once
+  the peer is gone, POLLIN-only `select()`, closed-WebSocket readiness in
+  `wasm_poll_socket`) don't cover `recvmsg()`. `snmp`'s `smoke-test.php`
+  stops at the session setup until this is fixed. A request to a real
+  agent through `@kirigami/php-wasm`'s UDP relay is also still untested.
+
 Found 2026-09-22 while verifying the PHP 8.5.11 core rebuild. None of these
 are regressions from that rebuild: all three extensions had only ever been
 checked load-only by `check-shared-extension-symbols.mjs` (no

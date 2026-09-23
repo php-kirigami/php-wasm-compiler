@@ -1,0 +1,7 @@
+# Local shim (not upstream): see ../PROVENANCE.md. Points pkg-config at the
+# vendorLib staging path; Libs repeats the archive vendorLibs already links.
+Name: libjpeg
+Description: libjpeg as staged for the fastchart side-module build
+Version: 3.0.3
+Cflags: -I/build/vendor/libjpeg/include
+Libs: /build/vendor/libjpeg/lib/libjpeg.a

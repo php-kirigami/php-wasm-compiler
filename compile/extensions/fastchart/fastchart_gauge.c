@@ -1,0 +1,240 @@
+/*
+  +----------------------------------------------------------------------+
+  | Copyright (c) 2025-2026, Ilia Alshanetsky                            |
+  | Copyright (c) 2025-2026, Advanced Internet Designs Inc.              |
+  +----------------------------------------------------------------------+
+  | This source file is subject to the BSD 3-Clause license that is      |
+  | bundled with this package in the file LICENSE.                       |
+  +----------------------------------------------------------------------+
+  | Author: Ilia Alshanetsky <ilia@ilia.ws>                              |
+  +----------------------------------------------------------------------+
+*/
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include "php.h"
+#include "Zend/zend_exceptions.h"
+
+#include "php_fastchart.h"
+#include "fastchart_palette.h"
+#include "fastchart_target.h"
+#include "fastchart_axis.h"
+#include "fastchart_text.h"
+
+#include <math.h>
+
+/* Map a gauge value v in [min, max] to an angle in degrees on a
+ * 180° arc (180° = left/min, 0° = right/max, CW convention). */
+static double gauge_value_to_deg(double v, double mn, double mx)
+{
+    if (!(v >= mn)) v = mn;
+    if (v > mx) v = mx;
+    double frac = (mx > mn) ? (v - mn) / (mx - mn) : 0.0;
+    return 180.0 - frac * 180.0;
+}
+
+int fastchart_gauge_render_to_target(fastchart_gauge_obj *self, fastchart_target_t *t)
+{
+    fastchart_palette pal;
+    fastchart_palette_init(t, (int)self->theme, &pal);
+    fastchart_palette_apply_overrides(t, (fastchart_obj *)self, &pal);
+
+    int W, H;
+    fastchart_target_get_dims(t, &W, &H);
+    fastchart_paint_canvas_bg(t, (fastchart_obj *)self, &pal);
+
+    /* Reserve title height proportional to font size, not a hardcoded
+     * 32px constant. At larger canvas + larger font (1200x800 with
+     * setFontSize(22)), 32px clipped the ascender against the canvas
+     * top. Measure the title's actual height; fall back to scaling
+     * from the base font size if measurement fails. */
+    double base_size = self->font_size > 0 ? self->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double title_size = fastchart_resolve_font_size((fastchart_obj *)self, FC_FONT_TITLE, base_size * 1.4);
+    int title_baseline = 12;
+    int top = 12;
+    if (self->title && ZSTR_LEN(self->title) > 0) {
+        const char *tfont = fastchart_resolve_font((fastchart_obj *)self, FC_FONT_TITLE);
+        int th = (int)(title_size * 1.0);
+        if (tfont) {
+            int measured_h = 0;
+            if (fastchart_text_measure(t, tfont, title_size, ZSTR_VAL(self->title),
+                                       NULL, &measured_h, NULL, 0) == 0) {
+                th = measured_h;
+            }
+        }
+        title_baseline = th + 10;
+        top = title_baseline + 12;
+    }
+
+    /* Compute the gauge geometry from the available area. The body is
+     * a top-half semicircle of radius `radius`; the bottom-tick labels
+     * (0% / 100%) sit just under the cy line and need ~size*1.5 below.
+     * Vertically centre the body+labels block inside [top, H]. */
+    int label_pad = (int)(base_size * 1.5) + 8;
+    int avail_h = H - top - label_pad;
+    int avail_w = W - 60;  /* 30px side padding for 0%/100% labels */
+    int radius = (avail_w / 2 < avail_h ? avail_w / 2 : avail_h);
+    if (radius < 40) radius = 40;
+    int diameter = radius * 2;
+    int cx = W / 2;
+    /* Centre the (radius + label_pad) block vertically in [top, H]:
+     *   block_top  = top + (avail_h_total - block_h) / 2
+     *   cy         = block_top + radius
+     *   avail_h_total = H - top, block_h = radius + label_pad
+     */
+    int block_h = radius + label_pad;
+    int cy = top + ((H - top) - block_h) / 2 + radius;
+    int plot_x0 = cx - radius, plot_y0 = cy - radius;
+    int plot_x1 = cx + radius, plot_y1 = cy;
+    if (fastchart_apply_plot_rect((fastchart_obj *)self,
+            &plot_x0, &plot_y0, &plot_x1, &plot_y1)) {
+        int plot_w = plot_x1 - plot_x0;
+        int plot_h = plot_y1 - plot_y0;
+        radius = plot_w / 2 < plot_h ? plot_w / 2 : plot_h;
+        if (radius < 1) return 0;
+        diameter = radius * 2;
+        cx = (plot_x0 + plot_x1) / 2;
+        cy = plot_y1;
+    }
+
+    double mn = self->gauge_min;
+    double mx = self->gauge_max;
+    double v = self->gauge_value;
+
+    /* Draw zones (or a single fill). CW angles: 0° at 3-o'clock;
+     * a 180° arc covers 180° (left) to 360° (right). Zones are
+     * pre-parsed into typed C state by setZones. */
+    int default_color = pal.series[0];
+
+    int is_solid = self->gauge_style == FASTCHART_GAUGE_STYLE_SOLID;
+
+    if (is_solid) {
+        /* Solid style: a progress arc filled from min to the value in
+         * the color of the zone the value falls in (or the default
+         * color), over a grid-colored background ring. No needle. */
+        fastchart_target_arc(t, cx, cy, radius, radius, 180, 360, pal.grid, 1, 0);
+        double frac = (mx > mn) ? (v - mn) / (mx - mn) : 0.0;
+        if (!(frac >= 0.0)) frac = 0.0;
+        if (frac > 1.0) frac = 1.0;
+        int fill_color = default_color;
+        if (self->zones && self->n_zones > 0) {
+            for (int i = 0; i < self->n_zones; i++) {
+                const fastchart_gauge_zone *zn = &self->zones[i];
+                if (v >= zn->from && v <= zn->to) {
+                    if (zn->color_rgb >= 0) {
+                        fill_color = fastchart_target_color_rgb(t, zn->color_rgb);
+                    }
+                    break;
+                }
+            }
+        }
+        int start = 180;
+        int end = 180 + (int)(frac * 180);
+        if (end > start) {
+            fastchart_target_arc(t, cx, cy, radius, radius,
+                                 (double)start, (double)end, fill_color, 1, 0);
+        }
+    } else if (self->zones && self->n_zones > 0) {
+        fastchart_target_arc(t, cx, cy, radius, radius, 180, 360, pal.grid, 1, 0);
+        for (int i = 0; i < self->n_zones; i++) {
+            const fastchart_gauge_zone *zn = &self->zones[i];
+            int color = default_color;
+            if (zn->color_rgb >= 0) {
+                color = fastchart_target_color_rgb(t, zn->color_rgb);
+            }
+            /* Map gauge values directly into the arc-angle frame:
+             *   value=min  -> 180° (left edge of upper half)
+             *   value=max  -> 360° (right edge of upper half)
+             * Increasing value sweeps CCW through the top. */
+            double frac_a = (zn->from - mn) / (mx - mn);
+            double frac_b = (zn->to   - mn) / (mx - mn);
+            if (!(frac_a >= 0.0)) frac_a = 0.0;
+            if (frac_a > 1.0) frac_a = 1.0;
+            if (!(frac_b >= 0.0)) frac_b = 0.0;
+            if (frac_b > 1.0) frac_b = 1.0;
+            int start = (int)(180 + frac_a * 180);
+            int end   = (int)(180 + frac_b * 180);
+            if (start > end) { int tmp = start; start = end; end = tmp; }
+            if (end <= start) continue;
+            fastchart_target_arc(t, cx, cy, radius, radius,
+                                 (double)start, (double)end, color, 1, 0);
+        }
+    } else {
+        fastchart_target_arc(t, cx, cy, radius, radius, 180, 360, pal.grid, 1, 0);
+        double aV = gauge_value_to_deg(v, mn, mx);
+        int start = 180;
+        int end = 180 + (int)(180 - aV);
+        if (end > start) {
+            fastchart_target_arc(t, cx, cy, radius, radius,
+                                 (double)start, (double)end, default_color, 1, 0);
+        }
+    }
+
+    int hole = (int)(diameter * 0.55);
+    fastchart_target_ellipse(t, cx, cy, hole / 2, hole / 2, pal.bg, 1, 0);
+
+    fastchart_target_arc(t, cx, cy, radius, radius, 180, 360, pal.border, 0, 1);
+
+    /* Needle + hub (NEEDLE style only; SOLID shows the fill arc
+     * instead). gauge_value_to_deg returns 180 (value=min) to 0
+     * (value=max), the standard math angle (CCW from +x axis):
+     * 180=left, 90=up, 0=right. Screen y points down, so negate sine. */
+    if (!is_solid) {
+        double aV = gauge_value_to_deg(v, mn, mx);
+        double rad = aV * M_PI / 180.0;
+        int nx = cx + (int)((double)(radius - 6) * cos(rad));
+        int ny = cy - (int)((double)(radius - 6) * sin(rad));
+        /* Needle thickness scales with gauge size — visible on a
+         * 1200x800 canvas, not dominant on a 480x320 one. SVG renderers
+         * AA at the layer level so the thick stroke suffices. */
+        double needle_thickness = (double)diameter / 200.0 + 2.0;
+        if (needle_thickness < 3.0) needle_thickness = 3.0;
+        fastchart_target_line(t, cx, cy, nx, ny,
+                              pal.text, (int)needle_thickness, FASTCHART_DASH_SOLID);
+
+        /* Hub: scale with diameter so it isn't tiny on a large canvas. */
+        int hub = diameter / 60;
+        if (hub < 8) hub = 8;
+        fastchart_target_ellipse(t, cx, cy, hub / 2, hub / 2, pal.text, 1, 0);
+    }
+
+    const char *font = fastchart_resolve_font((fastchart_obj *)self, FC_FONT_LABEL);
+    if (font) {
+        const char *fmt = self->gauge_value_format
+            ? ZSTR_VAL(self->gauge_value_format) : "%.1f";
+        char *buf = fastchart_format_double_label(fmt, v);
+        double base = self->font_size > 0 ? self->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+        double size = fastchart_resolve_font_size((fastchart_obj *)self, FC_FONT_LABEL, base * 1.4);
+        int tx = cx;
+        int ty = cy + (int)(diameter * 0.35);
+        fastchart_text_draw(t, font, size, pal.text, tx, ty,
+                            FASTCHART_ALIGN_CENTER, buf, NULL, 0);
+        efree(buf);
+    }
+
+    if (font) {
+        const char *fmt = self->gauge_value_format
+            ? ZSTR_VAL(self->gauge_value_format) : "%.0f";
+        char *minbuf = fastchart_format_double_label(fmt, mn);
+        char *maxbuf = fastchart_format_double_label(fmt, mx);
+        double base = self->font_size > 0 ? self->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+        double size = fastchart_resolve_font_size((fastchart_obj *)self, FC_FONT_LABEL, base * 0.85);
+        fastchart_text_draw(t, font, size, pal.text,
+                            cx - radius, cy + (int)(size * 1.5),
+                            FASTCHART_ALIGN_CENTER, minbuf, NULL, 0);
+        fastchart_text_draw(t, font, size, pal.text,
+                            cx + radius, cy + (int)(size * 1.5),
+                            FASTCHART_ALIGN_CENTER, maxbuf, NULL, 0);
+        efree(minbuf);
+        efree(maxbuf);
+    }
+
+    /* Title. Baseline scales with the title font size so the ascender
+     * stays inside the canvas at any canvas/font scale. */
+    fastchart_draw_floating_title(t, (fastchart_obj *)self, &pal, W / 2, title_baseline);
+
+    fastchart_draw_text_annotations(t, (fastchart_obj *)self, &pal);
+    return 0;
+}

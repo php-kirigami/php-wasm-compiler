@@ -1,0 +1,2498 @@
+<?php
+
+/** @generate-class-entries */
+
+namespace FastChart;
+
+/**
+ * Chart objects carry their entire state in a native C struct, not in
+ * PHP properties. Dynamic properties would be silently dropped from
+ * every render, and serialize() would emit a state-less husk that
+ * unserializes into a blank chart. Forbid both so misuse fails loudly.
+ *
+ * @strict-properties
+ * @not-serializable
+ */
+abstract class Chart
+{
+    public const int THEME_LIGHT = 0;
+    public const int THEME_DARK  = 1;
+
+    public const int MARKER_NONE    = 0;
+    public const int MARKER_CIRCLE  = 1;
+    public const int MARKER_SQUARE  = 2;
+    public const int MARKER_DIAMOND = 3;
+    public const int MARKER_CROSS   = 4;
+    public const int MARKER_PLUS    = 5;
+
+    public const int LEGEND_NONE         = 0;
+    public const int LEGEND_TOP_RIGHT    = 1;
+    public const int LEGEND_TOP_LEFT     = 2;
+    public const int LEGEND_BOTTOM_RIGHT = 3;
+    public const int LEGEND_BOTTOM_LEFT  = 4;
+
+    public const int SCALE_LINEAR = 0;
+    public const int SCALE_LOG    = 1;
+
+    public const int LABEL_NONE    = 0;
+    public const int LABEL_INSIDE  = 1;
+    public const int LABEL_OUTSIDE = 2;
+
+    public const int STYLE_CANDLE  = 0;
+    public const int STYLE_BAR     = 1;
+    public const int STYLE_DIAMOND = 2;
+    public const int STYLE_I_CAP   = 3;
+    public const int STYLE_HOLLOW  = 4;
+    public const int STYLE_VOLUME  = 5;
+    public const int STYLE_VECTOR  = 6;
+
+    /** Border-side bitmask for setBorderSides(). OR them together. */
+    public const int BORDER_NONE   = 0;
+    public const int BORDER_LEFT   = 1;
+    public const int BORDER_RIGHT  = 2;
+    public const int BORDER_TOP    = 4;
+    public const int BORDER_BOTTOM = 8;
+    public const int BORDER_ALL    = 15;
+
+    /** Line interpolation modes for setLineInterpolation(). */
+    public const int INTERP_LINEAR      = 0;
+    public const int INTERP_SMOOTH      = 1;
+    public const int INTERP_STEP_AFTER  = 2;
+    public const int INTERP_STEP_BEFORE = 3;
+
+    /** Tick mode for setTickMode(). */
+    public const int TICK_NONE   = 0;
+    public const int TICK_LABELS = 1;
+    public const int TICK_POINTS = 2;
+    public const int TICK_BOTH   = 3;
+
+    /** Stacking mode for BarChart::setStackMode() / AreaChart. */
+    public const int STACK_SUM    = 0;
+    public const int STACK_BESIDE = 1;
+    public const int STACK_LAYER  = 2;
+
+    /** Pie slice-label positions (extends LABEL_INSIDE / OUTSIDE / NONE). */
+    public const int LABEL_LEFT  = 3;
+    public const int LABEL_RIGHT = 4;
+
+    /** Line dash style for setLineStyle(). */
+    public const int LINE_SOLID  = 0;
+    public const int LINE_DASHED = 1;
+    public const int LINE_DOTTED = 2;
+
+    /** Gradient direction for setGradientFill(). */
+    public const int GRADIENT_VERTICAL   = 0;
+    public const int GRADIENT_HORIZONTAL = 1;
+
+    /** Date-axis stride units for setDateAxisStride(). */
+    public const int DATE_DAY     = 0;
+    public const int DATE_WEEK    = 1;
+    public const int DATE_MONTH   = 2;
+    public const int DATE_QUARTER = 3;
+    public const int DATE_YEAR    = 4;
+
+    /**
+     * SVG text emission mode for setSvgTextMode().
+     *
+     * `SVG_TEXT_PATHS` (default) flattens every `<text>` element to a
+     * `<g><path d="..."/></g>` group via FreeType outline
+     * decomposition. The resulting SVG is self-contained — it renders
+     * correctly in any SVG rasterizer, including ones that don't
+     * support text (such as plutovg, which fastchart uses internally
+     * for PNG/JPG/WebP output). File size grows ~30%+ vs native text.
+     *
+     * `SVG_TEXT_NATIVE` emits raw `<text>` elements. Smaller files;
+     * requires the consumer's renderer to support SVG text and have
+     * the named font (or a sans-serif fallback) available.
+     *
+     * `renderPng()`, `renderJpeg()`, `renderWebp()`, and
+     * `renderToFile()` for raster formats always use PATHS internally
+     * regardless of this setting — they go through plutovg.
+     */
+    public const int SVG_TEXT_NATIVE = 0;
+    public const int SVG_TEXT_PATHS  = 1;
+
+    /**
+     * WebP encoder modes selected via `setWebpMode()`.
+     *
+     * `WEBP_DRAWING` (default) — `WEBP_PRESET_DRAWING` + `method=2`,
+     * tuned for chart-shaped content (flat fills, sharp edges, small
+     * palette). Best speed/size trade-off for most charts.
+     *
+     * `WEBP_PHOTO` — `WEBP_PRESET_PHOTO` + `method=4`. Better for
+     * charts that embed photographic background images via
+     * `setBackgroundImage()`; libwebp's photo entropy model handles
+     * gradient and natural-image regions more efficiently than the
+     * drawing preset.
+     *
+     * `WEBP_LOSSLESS` — `lossless=1` + `method=6`. Bit-exact output
+     * with no perceptual loss. For chart content with limited
+     * palettes, lossless WebP often produces similar or smaller
+     * files than lossy at quality 90 and is faster to encode (no
+     * quality-search pass). Use for archival output or when the
+     * downstream tooling needs pixel-exact recovery. The `quality`
+     * parameter to `renderWebp()` is ignored in this mode.
+     *
+     * `WEBP_FAST` — `WEBP_PRESET_DRAWING` + `method=0`. Fastest
+     * encode at the cost of larger files (~10-20% larger than
+     * DRAWING). Use for short-lived previews and hot paths where
+     * encode time dominates.
+     */
+    public const int WEBP_DRAWING  = 0;
+    public const int WEBP_PHOTO    = 1;
+    public const int WEBP_LOSSLESS = 2;
+    public const int WEBP_FAST     = 3;
+
+    /**
+     * Optionally pass canvas dimensions at construction so callers
+     * can skip the `imagecreatetruecolor()` step entirely when they
+     * use the renderXxx() shortcuts. Both `null` keeps the default
+     * 800 x 600. setSize() still works and overrides per-instance.
+     */
+    public function __construct(?int $width = null, ?int $height = null) {}
+
+    public static function version(): string {}
+
+    /**
+     * Rasterize a caller-supplied SVG document to PNG bytes via the
+     * same plutosvg + plutovg + libpng pipeline that powers
+     * `renderPng()`. Useful for converting stitched
+     * `drawSvgFragment()` output back to raster, or for any
+     * SVG-bytes → PNG conversion that fastchart can serve in-process
+     * (no fork / ImageMagick dependency).
+     *
+     * Output dimensions are read from the root `<svg>` element's
+     * `width` / `height` / `viewBox`. Percentage dimensions are
+     * rejected — fastchart doesn't carry an outer viewport.
+     *
+     * **SVG `<text>` elements are not rendered.** plutovg has no
+     * text engine; fastchart's own SVG output flattens text to
+     * `<path>` data via `SVG_TEXT_PATHS` mode before rasterizing.
+     * Caller-supplied SVG must do the same — `<text>` elements
+     * survive parsing but produce no glyph geometry in the output.
+     * Use Inkscape's "Object to Path", Illustrator's "Create
+     * Outlines", or `text-to-path` in your SVG toolchain before
+     * passing the bytes here.
+     *
+     * **Rejected for safety, all throw `\ValueError`:**
+     * - SVG containing `data:image/` URIs (any case). plutosvg's
+     *   `<image href="data:image/...">` loader decodes the embedded
+     *   raster inline via libpng/libjpeg, bypassing the output
+     *   dimension caps below. Decode embedded images separately
+     *   if your workflow needs them.
+     * - SVG containing `<use>` elements (any case). plutosvg's
+     *   reference-expansion path is a billion-laughs vector — a
+     *   sub-2-KB SVG can trigger 10^8+ shape renders via nested
+     *   `<use>` fan-out. Inline the referenced content with
+     *   `<g transform="...">` to compose multiple chart fragments
+     *   instead.
+     *
+     * Caps: SVG input ≤ 16 MB, ≤ 65,536 elements,
+     * ≤ 262,144 attributes, and ≤ 256 nesting levels; output
+     * ≤ 4096 px per side and ≤ 16M total pixels. Malformed XML,
+     * out-of-range dimensions, and rasterizer failure throw
+     * `\ValueError`. Encoder failure or unavailable encoder support
+     * throws `\Error`.
+     */
+    public static function svgToPng(string $svg): string {}
+
+    /**
+     * Rasterize SVG to JPEG bytes. Same constraints as
+     * `svgToPng()`, plus a flat background color (`$bgRgb`,
+     * 24-bit RGB, default white `0xFFFFFF`) is composited under
+     * the rasterized output before JPEG encoding — JPEG has no
+     * alpha channel, so transparent SVG regions would otherwise
+     * render as black.
+     *
+     * `$quality` is 1..100; default 88 matches the chart-side
+     * default. The encoder runs libjpeg-turbo with
+     * `optimize_coding=TRUE` and 4:2:0 chroma subsampling.
+     */
+    public static function svgToJpeg(string $svg, int $quality = 88,
+                                      int $bgRgb = 0xFFFFFF): string {}
+
+    /**
+     * Rasterize SVG to WebP bytes. Same constraints as
+     * `svgToPng()`. `$quality` is 1..100; ignored when
+     * `$mode === Chart::WEBP_LOSSLESS`. `$mode` is one of
+     * `WEBP_DRAWING` (default), `WEBP_PHOTO`, `WEBP_LOSSLESS`,
+     * `WEBP_FAST` — see the `WEBP_*` constants for the per-mode
+     * encoder configuration.
+     */
+    public static function svgToWebp(string $svg, int $quality = 90,
+                                      int $mode = Chart::WEBP_DRAWING): string {}
+
+    public function setSize(int $width, int $height): static {}
+    /**
+     * Set the chart title. Throws ValueError if $title exceeds 8192
+     * bytes; glyph-path SVG output replays each glyph inline, so an
+     * unbounded title balloons the document. The same 8192-byte cap
+     * applies to every rendered-text setter (axis titles, annotation
+     * and band/line labels); oversized array-element labels are
+     * dropped rather than throwing. Graph node labels, hierarchy
+     * labels, and text annotations each have a 65536-byte aggregate
+     * budget. A chart accepts at most 128 text annotations.
+     */
+    public function setTitle(string $title): static {}
+    public function setTheme(int $theme): static {}
+    public function setBackgroundColor(int $rgb): static {}
+    public function setPlotBackgroundColor(int $rgb): static {}
+    public function setSeriesColors(array $colors): static {}
+    public function setFontPath(string $path): static {}
+    public function setFontSize(float $size): static {}
+    public function setCategoryLabels(array $labels): static {}
+    public function setLegendPosition(int $position): static {}
+    /**
+     * Scale of the *value* axis. SCALE_LINEAR (default) or SCALE_LOG
+     * (base-10, requires strictly positive data).
+     *
+     * Misnomer note: the setter is named for the Y axis because every
+     * chart family except horizontal BarChart puts values on Y.
+     * BarChart with `setOrientation(BAR_HORIZONTAL)` puts values on
+     * the X axis, but still consults this setter (i.e. on horizontal
+     * bar charts, `setYAxisScale(SCALE_LOG)` actually configures the
+     * X axis). The name is preserved across types so callers don't
+     * need a chart-specific setter.
+     */
+    public function setYAxisScale(int $scale): static {}
+    /**
+     * Strict-mode validation for setSeries() input. When enabled,
+     * non-numeric / non-null cells in the data array trigger a
+     * TypeError instead of silently coercing to NaN. Default: off.
+     *
+     * Coverage: enforced on `LineChart::setSeries`,
+     * `AreaChart::setSeries`, `BarChart::setSeries`, and
+     * `Funnel::setStages`. All other
+     * array-based setters (Pie::setSlices, Scatter::setPoints,
+     * Stock::setOhlcv, Gantt::setTasks, BoxPlot::setBoxes,
+     * Radar/Polar::setSeries, Surface/Contour::setGrid,
+     * Treemap/Waterfall/Heatmap/Sunburst/Sankey/etc.)
+     * are best-effort: malformed entries are silently dropped
+     * (or turned into NaN) even when setStrict(true) is used.
+     * See docs/README.md "Strict mode coverage and best-effort families".
+     */
+    public function setStrict(bool $strict): static {}
+
+    /**
+     * X-axis title rendered below the X-axis labels. Empty string
+     * suppresses. Pie ignores. Default: "" (no title).
+     */
+    public function setXAxisTitle(string $title): static {}
+
+    /**
+     * Y-axis title rendered rotated 90deg to the left of the
+     * Y-axis labels. Empty string suppresses.
+     */
+    public function setYAxisTitle(string $title): static {}
+
+    /**
+     * Rotate the X-axis tick labels. 0, 45, or 90 degrees only;
+     * other values raise \ValueError. Useful when long date or
+     * category labels overlap horizontally.
+     */
+    public function setXAxisLabelAngle(int $degrees): static {}
+
+    /**
+     * Force Y-axis bounds and (optionally) tick interval. Pass
+     * null for any argument to keep the auto-computed value.
+     * Forced ranges still go through "nice" tick rounding unless
+     * `$interval` is supplied. If one forced endpoint conflicts with
+     * the other endpoint after data-driven auto-ranging, rendering
+     * throws \ValueError.
+     */
+    public function setYAxisRange(?float $min = null, ?float $max = null, ?float $interval = null): static {}
+
+    /**
+     * Enable a secondary Y axis on the right side of the plot.
+     * Series can opt into the right axis via an `'axis' => 'right'`
+     * key in the series dict (default 'left'). Independent value
+     * range and tick scale per axis. Currently honored on
+     * `LineChart` and `AreaChart`; other types silently ignore.
+     */
+    public function setSecondaryYAxis(bool $enabled): static {}
+
+    /**
+     * Draw a straight reference line across the plot: addHorizontalLine
+     * at a constant Y value, addVerticalLine at a constant X position.
+     * `$label` is an optional annotation drawn at the line; `$color`
+     * is a 24-bit RGB int (null = theme default).
+     *
+     * Supported by AreaChart, BarChart, BoxPlot, BubbleChart,
+     * LineChart, ScatterChart, StockChart, Waterfall, and ParetoChart;
+     * other chart types accept and silently ignore the call.
+     */
+    public function addHorizontalLine(float $value, ?string $label = null, ?int $color = null): static {}
+    public function addVerticalLine(float $position, ?string $label = null, ?int $color = null): static {}
+
+    /**
+     * Overlay an external image at data coordinates on the chart.
+     * Honored on `LineChart` and `AreaChart` (x = fractional category
+     * index, e.g. 2.5 = halfway between the 3rd and 4th category),
+     * `BarChart`, `BoxPlot`, `BubbleChart`, `ScatterChart` (x, y in
+     * data coordinates), and `StockChart` (x = unix timestamp,
+     * y = price). Other chart types silently ignore the call.
+     *
+     * `$path` is opened at draw time through PHP's stream layer
+     * (which enforces `open_basedir` natively); missing or invalid
+     * images are silently skipped so a typo doesn't abort the whole
+     * render. Supported formats: PNG and JPEG only — plutosvg's
+     * data-URI loader handles those two; WebP / GIF / AVIF sources
+     * are skipped. `$maxWidth` / `$maxHeight` cap the display size
+     * while preserving the source aspect ratio (-1 = use the source
+     * dimension as-is). Source files larger than 8 MiB OR with
+     * declared dimensions over 4096px on either axis OR a pixel
+     * product over 16M are silently skipped to bound worker memory
+     * if the path is fed from untrusted input. Up to 32 icons per
+     * chart.
+     */
+    public function addIconAt(float $x, float $y, string $path,
+                              int $maxWidth = -1,
+                              int $maxHeight = -1): static {}
+
+    /**
+     * Add a horizontal plot band: a shaded Y-range region drawn behind
+     * the chart data on Cartesian charts (Line / Area / Bar / Scatter
+     * / Bubble / Stock / BoxPlot). Useful for "normal range" callouts
+     * (e.g. healthy heart-rate band, target SLA window). `$low` and
+     * `$high` are in data Y units; the renderer reorders if needed.
+     * `$color` is a 24-bit RGB. `$alpha` uses the 0..127 convention
+     * (0 = opaque, 127 = fully transparent), defaulting to 64 for a
+     * visible-but-translucent overlay. Up to 16 bands per chart
+     * (shared budget with addVerticalBand).
+     *
+     * Supported by AreaChart, BarChart, BoxPlot, BubbleChart,
+     * LineChart, ScatterChart, StockChart, Waterfall, and ParetoChart;
+     * other chart types accept and silently ignore the call.
+     */
+    public function addHorizontalBand(float $low, float $high, int $color,
+                                      int $alpha = 64,
+                                      ?string $label = null): static {}
+
+    /**
+     * Add a vertical plot band: a shaded X-range region drawn behind
+     * the chart data. Companion to addHorizontalBand. The X-axis
+     * interpretation depends on the chart type:
+     *   - Line / Area / Bar (vertical) / BoxPlot: fractional category
+     *     index (0 = first category, n_categories = past last). Pass
+     *     2.0 / 4.0 to span the 3rd through 4th category slots.
+     *   - Scatter / Bubble: data X value.
+     *   - Stock: unix timestamp.
+     * Color / alpha / label / band cap are identical to
+     * addHorizontalBand; the two share the 16-band-per-chart budget.
+     *
+     * Supported by AreaChart, BarChart, BoxPlot, BubbleChart,
+     * LineChart, ScatterChart, StockChart, Waterfall, and ParetoChart;
+     * other chart types accept and silently ignore the call.
+     */
+    public function addVerticalBand(float $low, float $high, int $color,
+                                    int $alpha = 64,
+                                    ?string $label = null): static {}
+
+    /**
+     * Per-element color overrides. Each takes a 24-bit RGB int or
+     * -1 to revert to the theme palette default.
+     */
+    public function setAxisColor(int $rgb): static {}
+    public function setGridColor(int $rgb): static {}
+    public function setBorderColor(int $rgb): static {}
+    public function setTextColor(int $rgb): static {}
+
+    /**
+     * Per-element font overrides. `setTitleFont` is used for the
+     * chart title; `setAxisFont` for axis tick labels and axis
+     * titles; `setLabelFont` for category labels, value labels,
+     * and pie slice labels. Pass null path to keep using the
+     * global setFontPath() font; pass null size (or omit it) to keep
+     * the computed default. A given size must be in 1.0..200.0. The
+     * two arguments are independent.
+     */
+    public function setTitleFont(?string $path = null, ?float $size = null): static {}
+    public function setAxisFont(?string $path = null, ?float $size = null): static {}
+    public function setLabelFont(?string $path = null, ?float $size = null): static {}
+
+    /**
+     * Show numeric value labels next to each data point. For line
+     * and scatter, labels appear above each marker; for bar, above
+     * each bar. No-op for pie (use setSliceLabelFormat).
+     *
+     * `$format` is an sprintf conversion applied to each value.
+     * `null` (or omitting the argument) leaves the current format
+     * unchanged — toggling visibility without disturbing a format set
+     * earlier. `''` resets to the built-in default ("%g"). A non-empty
+     * string sets the format (validated for exactly one numeric
+     * conversion).
+     */
+    public function setShowValues(bool $show, ?string $format = null): static {}
+
+    /**
+     * Render the canvas with a transparent background. The PNG and
+     * WebP outputs preserve the alpha channel; JPEG collapses to
+     * white. Default: false.
+     */
+    public function setTransparentBackground(bool $enabled): static {}
+
+    /**
+     * Composite a background image onto the canvas before drawing
+     * any chart elements. Path is resolved through PHP's filesystem
+     * policy (`open_basedir`). Supported source formats: PNG and
+     * JPEG only — plutosvg's data-URI loader handles those two and
+     * the SVG embed silently skips other formats. The image is
+     * scaled to fill the entire canvas.
+     *
+     * Source-file caps: the loader silently skips files larger
+     * than 8 MiB OR with declared dimensions over 4096px on either
+     * axis OR a pixel product over 16M. open_basedir is the
+     * primary access gate; these caps are defense-in-depth so an
+     * untrusted path can't make the decoder allocate hundreds of
+     * MiB on a small file with declared 100000x100000 dimensions.
+     */
+    public function setBackgroundImage(string $path): static {}
+
+    /**
+     * Line interpolation mode. `INTERP_LINEAR` (default) connects
+     * data points with straight segments. `INTERP_SMOOTH` uses
+     * Catmull-Rom spline interpolation for a curved through-the-
+     * points appearance. Affects LineChart series, AreaChart top
+     * edges, and StockChart SMA overlays.
+     */
+    public function setLineInterpolation(int $mode): static {}
+
+    /**
+     * Force the plot rectangle to specific canvas coordinates,
+     * bypassing the auto-layout that reserves space for title /
+     * axes / labels. Useful for pixel-perfect chart placement
+     * inside a larger composition. Coordinates are inclusive.
+     * Pass any negative width / height to revert to auto-layout.
+     */
+    public function setPlotRect(int $x0, int $y0, int $x1, int $y1): static {}
+
+    /**
+     * Which sides of the plot border to draw. Bitwise OR of
+     * `BORDER_LEFT` / `BORDER_RIGHT` / `BORDER_TOP` / `BORDER_BOTTOM`,
+     * or `BORDER_ALL` (default) / `BORDER_NONE`. The Y-axis line
+     * is drawn separately and is not affected by this setting.
+     */
+    public function setBorderSides(int $sides): static {}
+
+    /**
+     * Add a series that draws on top of the primary chart's data,
+     * using the same X axis and (by default) the same Y axis.
+     * Lets a `BarChart` carry a trend line, an `AreaChart` carry
+     * a target band, etc. -- the v0.x equivalent of GDChart's
+     * `COMBO_*` chart types.
+     *
+     * `$type` is `'line'` or `'area'`. `$values` is a list of
+     * numeric values parallel to the primary's categories (or
+     * matching the candle count for `StockChart`). `$opts` keys:
+     *   - `'color'`     => int 0xRRGGBB
+     *   - `'thickness'` => int (line width, default 2)
+     *   - `'axis'`      => `'left'` (default) or `'right'` for
+     *                      secondary Y axis
+     */
+    public function addOverlaySeries(string $type, array $values, ?array $opts = null): static {}
+
+    /**
+     * Show or hide the X axis line, ticks, and labels entirely.
+     * Default true. The X-axis title remains independently controlled
+     * via setXAxisTitle().
+     */
+    public function setXAxisVisible(bool $visible): static {}
+
+    /**
+     * Show or hide the Y axis line, ticks, and labels entirely.
+     * Default true. The Y-axis title remains independently controlled
+     * via setYAxisTitle().
+     */
+    public function setYAxisVisible(bool $visible): static {}
+
+    /**
+     * sprintf format string for Y-axis tick labels (e.g., '$%.2f',
+     * '%d ms'). Empty string reverts to auto-formatting based on
+     * the tick step. Receives the numeric tick value as its sole
+     * argument.
+     */
+    public function setYAxisLabelFormat(string $format): static {}
+
+    /**
+     * sprintf format string for X-axis tick labels when the X axis
+     * is numeric (Stock charts, scatter). Empty string reverts to
+     * auto-formatting. No effect on category-axis charts -- use
+     * setCategoryLabels() instead.
+     */
+    public function setXAxisLabelFormat(string $format): static {}
+
+    /**
+     * Tick rendering mode: TICK_NONE suppresses both ticks and
+     * labels, TICK_LABELS draws only labels (no tick marks),
+     * TICK_POINTS draws only tick marks (no labels), TICK_BOTH
+     * (default) draws both.
+     */
+    public function setTickMode(int $mode): static {}
+
+    /**
+     * Bar fill width as a percent of the slot width (1..100).
+     * 100 means bars touch each other; the GDChart default was 75.
+     * Affects BarChart and StockChart candle bodies.
+     */
+    public function setBarWidth(int $percent): static {}
+
+    /**
+     * Edge (outline) color for filled shapes -- bars, area fills,
+     * pie slices. 24-bit RGB or -1 for no outline (default).
+     */
+    public function setEdgeColor(int $rgb): static {}
+
+    /**
+     * When the data range crosses zero, draw a horizontal "shelf"
+     * line at y=0 in axis color. Helps separate negative bars
+     * from positive ones visually. Default false.
+     */
+    public function setZeroShelf(bool $enabled): static {}
+
+    /**
+     * Render only every Nth X-axis label, starting from index 0.
+     * Useful when many category labels overlap. Pass 1 (default)
+     * to render all labels.
+     */
+    public function setXLabelStride(int $stride): static {}
+
+    /**
+     * Title for the secondary Y axis (when setSecondaryYAxis(true)).
+     * Rendered rotated 90deg to the right of the right-axis labels.
+     */
+    public function setSecondaryYAxisTitle(string $title): static {}
+
+    /**
+     * Thumbnail mode auto-shrinks fonts and elides labels for tiny
+     * preview renders. Useful for sparkline-style or grid-of-charts
+     * layouts. Default false.
+     */
+    public function setThumbnailMode(bool $enabled): static {}
+
+    /**
+     * Per-element text color overrides. Each takes a 24-bit RGB or
+     * -1 to fall through to setTextColor() / theme. setTitleColor
+     * is the chart title; setAxisLabelColor is tick labels;
+     * setAxisTitleColor is X/Y axis titles.
+     */
+    public function setTitleColor(int $rgb): static {}
+    public function setAxisLabelColor(int $rgb): static {}
+    public function setAxisTitleColor(int $rgb): static {}
+
+    /**
+     * Two-stop color ramp (low value -> high value). 24-bit RGB ints.
+     * Used by chart families that map a numeric range to a continuous
+     * color (SurfaceChart, ContourChart). Default cool blue -> warm
+     * red. No-op on chart types that don't paint a color ramp.
+     */
+    public function setColorRamp(int $low, int $high): static {}
+
+    /**
+     * Add a free-floating text annotation at canvas coordinates
+     * (`$x`, `$y` are pixel positions in the rendered image).
+     * Useful for callouts, watermarks, or labeled regions. Color
+     * defaults to the configured text color.
+     */
+    public function addTextAnnotation(string $text, int $x, int $y, ?int $color = null): static {}
+
+    /**
+     * Line dash style for line series and overlay lines:
+     * `LINE_SOLID` (default), `LINE_DASHED`, `LINE_DOTTED`.
+     * Doesn't affect grid, axis, or annotation lines.
+     */
+    public function setLineStyle(int $style): static {}
+
+    /**
+     * Apply a linear gradient to filled shapes (bars, area fills,
+     * pie slices). `$from` is the color at the top (or left, for
+     * horizontal); `$to` is at the bottom (or right). Pass -1 for
+     * `$from` to disable gradient and revert to solid fills.
+     *
+     * Supported by AreaChart, BarChart, ContourChart, PieChart, and
+     * SurfaceChart; other chart types silently ignore the call.
+     */
+    public function setGradientFill(int $from, int $to = -1, int $direction = Chart::GRADIENT_VERTICAL): static {}
+
+    /**
+     * Add a drop shadow behind filled shapes and text. `$offsetX`
+     * and `$offsetY` are shadow displacement in pixels. `$color`
+     * defaults to a 50% opacity black. Pass `setDropShadow(0, 0)`
+     * to disable.
+     *
+     * Supported by AreaChart, BarChart, ContourChart, PieChart, and
+     * SurfaceChart; other chart types silently ignore the call.
+     */
+    public function setDropShadow(int $offsetX, int $offsetY, ?int $color = null): static {}
+
+    /**
+     * Drop-shadow opacity in the 0..127 alpha space: 0 = fully
+     * opaque, 127 = fully transparent. Default is 64 (~50% opacity).
+     * Same convention `imagecolorallocatealpha()` uses, kept for
+     * source-compat across v0.x callers.
+     */
+    public function setShadowAlpha(int $alpha): static {}
+
+    /**
+     * Calendar-aware date-axis tick stride for charts that use a
+     * Unix-timestamp X axis (StockChart, etc.). `$unit` is one of
+     * `DATE_DAY` / `DATE_WEEK` / `DATE_MONTH` / `DATE_QUARTER` /
+     * `DATE_YEAR`; `$every` is the multiplier (e.g. `every=2,
+     * unit=DATE_WEEK` = a tick every 14 days, snapped to Mondays).
+     * Pass `$every = 0` to revert to auto-density labels.
+     */
+    public function setDateAxisStride(int $unit, int $every = 1): static {}
+
+    /**
+     * Output / FreeType DPI for the rendered canvas.
+     *
+     * fastchart owns the canvas and scales its physical pixel
+     * dimensions by `dpi/96` on the raster render paths
+     * (`renderPng()` / `renderJpeg()` / `renderWebp()` /
+     * `renderToFile()` for those formats). The `setSize()` value is
+     * the *logical* size; a chart at `setSize(640, 320)->setDpi(200)`
+     * is allocated as a 1333×667 pixel canvas. Apparent layout is
+     * preserved; pixel density doubles. Layout margins, tick marks,
+     * and label paddings scale proportionally so labels don't crowd
+     * the canvas edge. SVG output is DPI-invariant (vectors scale
+     * infinitely) and reports the configured DPI in the PNG `pHYs`
+     * and JPEG density metadata only.
+     *
+     * Common values: 96 (default, web-screen), 192 (2× retina),
+     * 300 (print). Range is `[24, 1200]`.
+     */
+    public function setDpi(int $dpi): static {}
+
+    /**
+     * Select the SVG text emission mode used by `renderSvg()`,
+     * `drawSvgFragment()`, and `renderToFile('*.svg')`. One of
+     * `self::SVG_TEXT_PATHS` (default — self-contained) or
+     * `self::SVG_TEXT_NATIVE` (compact, requires consumer text
+     * support). Raster outputs are unaffected (they always use
+     * PATHS internally).
+     */
+    public function setSvgTextMode(int $mode): static {}
+
+    /**
+     * Set the JPEG encode quality used by `renderJpeg()` and
+     * `renderToFile('*.jpg' | '*.jpeg')`. Range 1..100; default 88.
+     * Quality maps onto libjpeg-turbo's `jpeg_set_quality()` with
+     * `optimize_coding=TRUE` and 4:2:0 chroma subsampling.
+     */
+    public function setJpegQuality(int $quality): static {}
+
+    /**
+     * Set the zlib compression level used by `renderPng()` and
+     * `renderToFile('*.png')`. Range 0 (store) to 9 (max); the
+     * default is libpng's own default (6). Chart-shaped content
+     * compresses ~30-40% faster at level 3 for a 13-22% larger
+     * file — a worthwhile trade when PNGs are served once and
+     * discarded.
+     */
+    public function setPngCompressionLevel(int $level): static {}
+
+    /**
+     * Select the WebP encoder mode used by `renderWebp()` and
+     * `renderToFile('*.webp')`. Pass one of `self::WEBP_DRAWING`
+     * (default), `WEBP_PHOTO`, `WEBP_LOSSLESS`, or `WEBP_FAST`. See
+     * the constant docblocks for the trade-offs each mode picks.
+     * Throws `\ValueError` on any other value.
+     */
+    public function setWebpMode(int $mode): static {}
+
+    /** Render to PNG bytes at the configured size. */
+    public function renderPng(): string {}
+
+    /**
+     * Render to JPEG bytes. When given, `$quality` must be in 1..100;
+     * pass null (or omit) to use the value set via setJpegQuality()
+     * (default 88).
+     */
+    public function renderJpeg(?int $quality = null): string {}
+
+    /** Render to WebP bytes. `$quality` is 1..100. */
+    public function renderWebp(int $quality = 90): string {}
+
+    /**
+     * Render and write directly to a file. Format is inferred from
+     * the path extension: `.png` / `.jpg` / `.jpeg` / `.webp` /
+     * `.svg` / `.pdf`. `$quality` only applies to JPEG / WebP outputs;
+     * SVG, PNG, and PDF ignore it. Default `0` means "use the
+     * per-format default": JPEG uses the value set via
+     * `setJpegQuality()` (default 88), WebP uses 90. Explicit values
+     * must be in `1..100`. Returns the byte count written. Only local
+     * filesystem paths are accepted, and writes replace the destination
+     * atomically. Honors `open_basedir`. `.pdf` requires the
+     * `--with-pdfio` build;
+     * without it, writing a `.pdf` path throws "PDF support not
+     * compiled in". Like `renderPdf()`, the `.pdf` lane omits raster
+     * background images and icons (vector paths and glyph outlines
+     * only). `.gif` / `.avif` extensions raise a clear
+     * "dropped in v1.0" Error.
+     */
+    public function renderToFile(string $path, int $quality = 0): int {}
+
+    /**
+     * Render to an SVG document. Returns the full markup including
+     * `<?xml ...>` prolog and `<svg>` root.
+     *
+     * Supported on every concrete `Chart` subclass (LineChart,
+     * AreaChart, BarChart, PieChart, ScatterChart, BubbleChart,
+     * RadarChart, PolarChart, SurfaceChart, ContourChart, GaugeChart,
+     * GanttChart, BoxPlot, Treemap, Funnel, Waterfall, Heatmap,
+     * LinearMeter, BulletChart, ParetoChart, CalendarHeatmap,
+     * SunburstChart, SankeyChart, MarimekkoChart, VectorChart,
+     * ArcDiagram, ChordDiagram, NetworkChart, PopulationPyramid,
+     * ViolinPlot, CirclePacking, Pictogram, VennDiagram, WordCloud,
+     * SerpentineTimeline, StockChart). The `Symbol` family (Code128, QrCode)
+     * exposes the same method on its own abstract base.
+     *
+     * The output viewport matches the logical `setSize()` dimensions.
+     * SVG is DPI-invariant: `setDpi()` still scales the raster canvas
+     * for `renderPng()` / `renderJpeg()` / etc., but does not multiply
+     * the SVG viewport — vector strokes scale infinitely, so layout
+     * and text measurement stay at the 96-DPI baseline regardless of
+     * the configured DPI.
+     *
+     * Text defaults to `SVG_TEXT_PATHS` mode: every `<text>` is
+     * flattened to a `<g><path d="…"/></g>` group via FreeType
+     * outline decomposition. The output is self-contained and
+     * renders identically in any rasterizer including plutovg.
+     * Call `setSvgTextMode(SVG_TEXT_NATIVE)` to switch to raw
+     * `<text>` elements with the font family resolved via FreeType
+     * — smaller files, but consumers need text rendering support.
+     */
+    public function renderSvg(): string {}
+
+    /**
+     * Render to a vector PDF document. Returns the PDF bytes (a
+     * single page sized to the logical `setSize()` dimensions).
+     *
+     * Chart bodies emit PDF path operators directly through the same
+     * primitive layer as `renderSvg()` — no rasterization — so the
+     * output stays crisp at any zoom and print resolution. Text is
+     * flattened to glyph outlines (no font embedding in this release).
+     *
+     * Requires the extension to be built `--with-pdfio` against a
+     * system pdfio install (msweet.org); without it this method throws
+     * an `Error` ("PDF support not compiled in"). DPI-invariant like
+     * `renderSvg()`. Gradients fall back to a solid fill and raster
+     * background images and icons are omitted in this release.
+     */
+    public function renderPdf(): string {}
+
+    /**
+     * Render to an SVG fragment: a single `<g class="fastchart">…</g>`
+     * group with no outer `<svg>` or XML prolog. Intended for
+     * stitching multiple charts into one caller-managed SVG document.
+     * The caller owns the outer viewport / coordinate space.
+     *
+     * Gradient and clip-path ids inside a fragment are `fcg1`, `fcc1`,
+     * … per chart; stitching two fragments that both use gradients or
+     * clips into ONE host document therefore collides — chart 2's
+     * `url(#fcg1)` resolves to chart 1's gradient. When stitching N
+     * fragments into one document each MUST use a distinct `$idPrefix`
+     * (1-16 chars of `[A-Za-z0-9_-]`, starting with a letter or
+     * underscore) to namespace the ids (`a_fcg1`); reusing the default
+     * (null) prefix across stitched fragments is unsupported.
+     *
+     * Available on every concrete `Chart` subclass — same coverage as
+     * `renderSvg()`.
+     */
+    public function drawSvgFragment(?string $idPrefix = null): string {}
+
+    /**
+     * Attach per-data-point href / tooltip metadata. The array is
+     * index-aligned with setSeries() / setSlices() / setPoints() —
+     * entry $i becomes the hot-spot for data point $i. Each entry
+     * is `['href' => string, 'tooltip' => string?]`. ScatterChart
+     * already takes per-point href/tooltip on setPoints() directly;
+     * other chart types use setImageMap() to attach them.
+     * At most 4096 entries are accepted; href / tooltip strings
+     * longer than 4096 bytes throw `\ValueError`. Embedded NULs in
+     * a field silently drop that field.
+     *
+     * After a render, call `getImageMap()` to retrieve the matching
+     * HTML `<map>` markup with `<area>` elements positioned over
+     * each bar / slice / point.
+     */
+    public function setImageMap(array $entries): static {}
+
+    /**
+     * Return an HTML imagemap describing the clickable hot-spots for
+     * each rendered data point. The chart must have been rendered at
+     * least once (renderSvg/renderPng/renderJpeg/renderWebp/renderToFile)
+     * for this to return non-empty output. Hot-spots are emitted for
+     * BarChart (rect), PieChart (poly), and ScatterChart (circle);
+     * other chart types render no hot-spots.
+     * Map name defaults to 'fastchart'; sanitized to alphanumeric +
+     * '-' + '_' so it's safe to inline into an `<img usemap="#...">`.
+     *
+     * Coordinates are in LOGICAL (setSize) pixels. Raster output at
+     * `setDpi()` above 96 is physically larger, so either display the
+     * image at its logical size (`<img width="..." height="...">`) or
+     * scale the coords by dpi/96 before emitting `<area>` tags.
+     */
+    public function getImageMap(string $name = 'fastchart'): string {}
+
+    /**
+     * Return structured hot-spot data (for custom <map>, JS overlays,
+     * or server-side link generation). Same contract as getImageMap():
+     * the chart must have been rendered at least once.
+     *
+     * Returns a list of arrays:
+     *   [
+     *     'shape'  => 'rect' | 'circle' | 'poly',
+     *     'coords' => int[],   // HTML <area> form: rect=[left,top,right,bottom],
+     *                          // circle=[cx,cy,r], poly=[x1,y1,x2,y2,...]
+     *     'index'  => int,     // position in the original setSeries/setSlices/setPoints
+     *     'href'   => string,
+     *     'tooltip'=> string|null,
+     *   ]
+     *
+     * Only entries that had a non-empty allowed href after scheme
+     * filtering are included (same rules as getImageMap).
+     * Shape strings are lowercase.
+     */
+    public function getImageMapAreas(): array {}
+}
+
+/** @strict-properties */
+final class LineChart extends Chart
+{
+    public function setSeries(array $series): static {}
+    public function setMarkerStyle(int $style): static {}
+    public function setMarkerSize(int $size): static {}
+
+    /**
+     * Per-point error bar magnitudes. `$errors` is a flat list
+     * parallel to the primary series: each entry is either a single
+     * positive number (symmetric ±error) or `[lo, hi]` for an
+     * asymmetric bar. Pass `[]` to clear. Drawn as vertical stems
+     * with horizontal caps in the configured axis color. Throws
+     * `\ValueError` above 2048 entries without changing prior error bars.
+     */
+    public function setErrorBars(array $errors): static {}
+
+}
+
+/** @strict-properties */
+final class AreaChart extends Chart
+{
+    /**
+     * Same data shape as `LineChart::setSeries()`. Each series is
+     * filled below the line down to the zero baseline (or to the
+     * Y-axis min, whichever is higher). Multi-series stacks by
+     * default; pass `setStacked(false)` for overlapping translucent
+     * fills.
+     */
+    public function setSeries(array $series): static {}
+
+    public function setStacked(bool $stacked): static {}
+
+    /**
+     * Fill alpha for non-stacked overlapping areas (0..127, where
+     * 127 is fully transparent and 0 is fully opaque — the same
+     * convention `imagecolorallocatealpha()` uses). Default 64.
+     * Stacked areas are always opaque.
+     */
+    public function setFillOpacity(int $alpha): static {}
+
+    /**
+     * Band mode: with exactly two series, fill the envelope between
+     * them instead of filling each series down to the baseline.
+     * series[0] is the upper bound, series[1] is the lower. Useful
+     * for confidence intervals, min/max ranges, forecast bands.
+     * Silently no-op when n_series != 2 or setStacked(true) is also
+     * active; falls back to the per-series fill in that case.
+     */
+    public function setBandMode(bool $enabled): static {}
+
+    /**
+     * Stream graph (ThemeRiver): render a stacked area centered on a
+     * baseline instead of anchored at zero, so the silhouette flows
+     * symmetrically. Requires at least two series and a linear Y axis,
+     * and assumes non-negative data (negatives are clamped to zero for
+     * the centering). Always stacks on the primary axis; the secondary
+     * axis is ignored. Silently no-op with fewer than two series.
+     */
+    public function setStreamMode(bool $on): static {}
+
+}
+
+/** @strict-properties */
+final class BarChart extends Chart
+{
+    /** Orientation for setOrientation(). */
+    public const int BAR_VERTICAL   = 0;
+    public const int BAR_HORIZONTAL = 1;
+    public const int BAR_RADIAL     = 2;
+
+    /** Glyph style for setBarStyle(). */
+    public const int BAR_STYLE_BAR      = 0;
+    public const int BAR_STYLE_LOLLIPOP = 1;
+    public const int BAR_STYLE_DUMBBELL = 2;
+
+    public function setSeries(array $series): static {}
+    public function setStacked(bool $stacked): static {}
+
+    /**
+     * Glyph style for vertical bars. BAR_STYLE_BAR (default) draws
+     * filled rectangles. BAR_STYLE_LOLLIPOP draws a thin stem from the
+     * zero baseline to the value with a circle bullet at the tip.
+     * BAR_STYLE_DUMBBELL requires setFloating(true): it draws a
+     * connector between each `[$min, $max]` pair with a circle at both
+     * ends. Both lollipop and dumbbell styles apply to the vertical
+     * orientation; horizontal bars fall back to filled rectangles.
+     */
+    public function setBarStyle(int $style): static {}
+
+    /**
+     * Bar orientation. BAR_VERTICAL (default) draws traditional
+     * vertical bars with categories along the X axis. BAR_HORIZONTAL
+     * draws bars running left-to-right with categories along the Y
+     * axis -- useful when category labels are long. All other bar
+     * features (stacking, floating, per-point colors, value labels)
+     * carry over with X/Y semantics swapped. BAR_RADIAL draws a
+     * circular ("race track") bar chart: each category is a concentric
+     * ring (category 0 outermost) and its bar is a thick arc swept
+     * clockwise from 12 o'clock, the peak value reaching a near-full
+     * circle. Multiple series stack as concentric sub-bands.
+     */
+    public function setOrientation(int $orientation): static {}
+
+    /**
+     * Stacking algorithm for multi-series bars when stacked mode is
+     * on: STACK_SUM (default) cumulates bars vertically;
+     * STACK_LAYER overlays bars front-to-back at the same baseline
+     * with translucent fills; STACK_BESIDE is equivalent to
+     * setStacked(false) (side-by-side groups).
+     */
+    public function setStackMode(int $mode): static {}
+
+    /**
+     * Switch the chart to floating-bar mode: each series entry must
+     * be `[$min, $max]` rather than a scalar, and bars are drawn
+     * between min and max instead of from zero. Useful for Gantt-style
+     * timelines, salary-range plots, etc.
+     */
+    public function setFloating(bool $enabled): static {}
+
+}
+
+/** @strict-properties */
+final class PieChart extends Chart
+{
+    /**
+     * Slice data, in either of two shapes: an associative
+     * `{label => value}` map, or a list of dicts
+     * `['label' => string, 'value' => float, 'color' => int, 'radius' => float]`
+     * where `color` and `radius` are optional. Supplying a positive
+     * `radius` on any slice switches the chart to a variable-radius
+     * (rose) pie: each slice keeps its value-proportional angle, but its
+     * outer radius scales with `radius` (normalised to the largest,
+     * floored so small slices stay visible). Slices without a `radius`
+     * draw at the full radius.
+     */
+    public function setSlices(array $slices): static {}
+    public function setDonutHoleRatio(float $ratio): static {}
+
+    /**
+     * Concentric nested-donut rings. Each element is itself a slice
+     * array in the same shapes setSlices() accepts ({label => value}
+     * or a list of {value, label?, color?} dicts). The first ring is
+     * the innermost band, the last the outermost; at most eight rings
+     * render. When set, the rings replace the flat single-pie slices.
+     * setDonutHoleRatio() carves an optional center hole.
+     */
+    public function setRings(array $rings): static {}
+
+    /**
+     * Sweep window in degrees for a partial / semi-circle pie. The
+     * default 0..360 draws a full pie from 12 o'clock. A narrower
+     * window such as setStartAngle(0)->setEndAngle(180) draws a
+     * semi-circle; the start angle also rotates the whole pie. A
+     * degenerate or oversized span falls back to the full circle.
+     */
+    public function setStartAngle(float $degrees): static {}
+    public function setEndAngle(float $degrees): static {}
+
+    /**
+     * Per-slice radial offset in pixels, indexed by slice index.
+     * Pass `[0 => 20]` to push the first slice 20px outward to
+     * highlight it. Slices not mentioned stay at radius 0.
+     */
+    public function setExplode(array $offsets): static {}
+
+    /**
+     * Where slice labels render. `LABEL_INSIDE` (default) places
+     * labels at the radial midpoint inside the slice.
+     * `LABEL_OUTSIDE` places labels just past the slice edge with
+     * a short leader line. `LABEL_NONE` suppresses labels.
+     */
+    public function setSliceLabelPosition(int $position): static {}
+
+    /**
+     * sprintf format string for slice labels. Receives the
+     * percentage value as its sole argument. Default `"%.0f%%"`.
+     */
+    public function setSliceLabelFormat(string $format): static {}
+
+    /**
+     * Aggregate slices below `$percent` of the total into a single
+     * "Other" slice (or the configurable label via the second
+     * argument). Pass 0 to disable (default). Useful when a long
+     * tail of small slices clutters the pie.
+     */
+    public function setOtherThreshold(float $percent, string $label = 'Other'): static {}
+
+}
+
+/** @strict-properties */
+final class ScatterChart extends Chart
+{
+    public function setPoints(array $points): static {}
+    public function setMarkerStyle(int $style): static {}
+    public function setMarkerSize(int $size): static {}
+
+    /**
+     * Overlay a least-squares regression curve over the scatter
+     * points. `$degree = 1` (default) is the linear fit; 2 or 3
+     * fits a polynomial of that order. Higher degrees are rejected;
+     * quartic / quintic fits over noisy scatter data overfit and
+     * are numerically fragile. Pass `$enabled = false` (default) to
+     * suppress.
+     */
+    public function setTrendLine(bool $enabled, ?int $color = null, int $degree = 1): static {}
+
+    /**
+     * Per-point error bar magnitudes parallel to setPoints().
+     * Each entry is either a single positive number (symmetric)
+     * or `[lo, hi]` (asymmetric). Pass `[]` to clear. Throws
+     * `\ValueError` above 4096 entries without changing prior error bars.
+     */
+    public function setErrorBars(array $errors): static {}
+
+}
+
+/** @strict-properties */
+final class StockChart extends Chart
+{
+    /** Moving-average kind passed to addMovingAverage(). */
+    public const int MA_SMA = 0;
+    public const int MA_EMA = 1;
+    public const int MA_WMA = 2;
+
+    public function setOhlcv(array $ohlcv): static {}
+
+    /**
+     * Add a single moving-average overlay over the close price.
+     * `$period` is the window length in bars (>= 2). `$type` selects
+     * the smoothing kind:
+     *   - `MA_SMA` simple moving average (arithmetic mean of the last
+     *     `$period` closes)
+     *   - `MA_EMA` exponential moving average (alpha = 2 /
+     *     (period + 1), seeded with the SMA of the first `$period`
+     *     closes)
+     *   - `MA_WMA` linear-weighted moving average (weights 1..period,
+     *     so the most recent close has weight `period`).
+     *
+     * Up to 8 overlays per chart; further calls raise ValueError.
+     * Mix freely: `addMovingAverage(20, MA_SMA)` plus
+     * `addMovingAverage(12, MA_EMA)` is the typical setup.
+     */
+    public function addMovingAverage(int $period, int $type = StockChart::MA_SMA): static {}
+
+    /**
+     * Bulk shortcut for adding several SMA overlays. Equivalent to
+     * clearing the overlay list and calling `addMovingAverage($p,
+     * MA_SMA)` for each period in `$periods`.
+     */
+    public function setMovingAverages(array $periods): static {}
+
+    public function setVolumePane(bool $enabled): static {}
+
+    /**
+     * Per-bar volume color override. `$colors` is an array of
+     * 24-bit RGB ints parallel to the OHLCV rows -- one entry per
+     * candle. When set, replaces the candle-direction up/down
+     * volume coloring. Pass `[]` to revert to the default coloring.
+     */
+    public function setVolumeColors(array $colors): static {}
+
+    /**
+     * OHLC presentation style.
+     *   - `STYLE_CANDLE` (default): filled body + high-low wick.
+     *   - `STYLE_BAR`: vertical wick + left tick at open + right
+     *     tick at close (classic Western HLC bar).
+     *   - `STYLE_DIAMOND`: diamond at close + high-low wick.
+     *   - `STYLE_I_CAP`: wick with horizontal caps at high and low.
+     *   - `STYLE_HOLLOW`: outlined-only body for bullish bars,
+     *     filled body for bearish bars (TradingView convention).
+     *   - `STYLE_VOLUME`: body width scales with the bar's volume
+     *     relative to the rolling-average volume (requires the OHLCV
+     *     row to carry a volume column).
+     *   - `STYLE_VECTOR`: six-color scheme based on (direction) ×
+     *     (volume strength: climax / rising / neutral). Uses the
+     *     same algorithm as the pinescript "Vector Candles"
+     *     indicator: climax when volume >= 2× avg or
+     *     volume × (high-low) >= the running max; rising when volume
+     *     >= 1.5× avg; otherwise neutral. Requires a volume column.
+     */
+    public function setCandleStyle(int $style): static {}
+
+    public function addIndicatorPane(string $name, array $values, ?array $opts = null): static {}
+
+    /**
+     * Wilder's Relative Strength Index. Oscillator in [0, 100]
+     * computed from close-to-close differences over `$period` bars
+     * (default 14): seeds avg gain / loss with the SMA of the first
+     * window, then updates with the standard recurrence
+     * `avg = (avg * (p-1) + cur) / p`. Conventional reference lines:
+     * 30 (oversold) and 70 (overbought); the pane renders 50 by
+     * default; lower it via setIndicatorPane opts if you prefer.
+     *
+     * Requires `setOhlcv()` to have been called first; the values
+     * are computed at this call. A subsequent `setOhlcv()` does NOT
+     * recompute. Re-add the indicator after replacing the data.
+     */
+    public function addRSI(int $period = 14): static {}
+
+    /**
+     * Momentum oscillator: `close[i] - close[i-period]`. Centered
+     * on zero; positive values mean upward momentum over the
+     * window. Default `$period` is 10. Requires `setOhlcv()` first
+     * (see addRSI for the order constraint).
+     */
+    public function addMomentum(int $period = 10): static {}
+
+    /**
+     * Rate of change: `(close[i] / close[i-period] - 1) * 100`,
+     * expressed as a percentage. Centered on zero; default
+     * `$period` is 10. NaN when the comparison close was zero.
+     * Requires `setOhlcv()` first.
+     */
+    public function addROC(int $period = 10): static {}
+
+    /**
+     * On-balance volume: cumulative running sum of signed volume.
+     * Each bar contributes +volume if its close is above the
+     * previous close, -volume if below, 0 otherwise. Bars without
+     * a volume column contribute zero. Requires `setOhlcv()` first;
+     * starts the cumulative at 0 by convention.
+     */
+    public function addOBV(): static {}
+
+    /**
+     * MACD (Moving Average Convergence Divergence): a separate
+     * pane with three series: MACD line (EMA fast minus EMA slow),
+     * signal line (EMA of MACD with `signal` period), and a
+     * histogram of MACD minus signal coloured by sign.
+     *
+     * Defaults are the classical (12, 26, 9). Requires
+     * `setOhlcv()` first; the values are computed at this call.
+     * Each pane counts against the 3-pane indicator cap.
+     */
+    public function addMACD(int $fast = 12, int $slow = 26, int $signal = 9): static {}
+
+    /**
+     * Stochastic oscillator: a pane with two lines, %K and %D.
+     *   - %K[i] = (close[i] − lowest_low(period)) /
+     *             (highest_high(period) − lowest_low(period)) × 100
+     *   - %D    = SMA(%K, smooth)
+     *
+     * Default (14, 3) matches the conventional fast / smooth setup.
+     * Range pinned to [0, 100]; reference lines at 20 (oversold)
+     * and 80 (overbought) by convention; the renderer draws no
+     * reference; configure setIndicatorPane opts on the resulting
+     * pane if you want them.
+     */
+    public function addStochastic(int $period = 14, int $smooth = 3): static {}
+
+    /**
+     * Bollinger Bands: three lines OVERLAID on the price pane.
+     * The middle SMA(close, period), an upper band at +n·σ above,
+     * and a lower band at −n·σ below. Default (20, 2.0). Doesn't
+     * consume an indicator-pane slot; uses the price-overlay
+     * budget (4 overlays).
+     */
+    public function addBollingerBands(int $period = 20, float $stddev = 2.0): static {}
+
+    /**
+     * Parabolic SAR (Wilder): a dot per bar overlaid on the price
+     * pane, indicating the trailing stop level for the current
+     * trend. `af_init` is the starting acceleration factor (default
+     * 0.02), `af_max` the cap (default 0.2). Requires `setOhlcv()`
+     * first and at least 3 candles. Uses the price-overlay budget.
+     */
+    public function addParabolicSAR(float $af_init = 0.02, float $af_max = 0.2): static {}
+
+    /**
+     * VWAP (volume-weighted average price): one line overlaid on the
+     * price pane, the running sum(typical*volume)/sum(volume) with
+     * typical = (high+low+close)/3. With no usable volume it falls back
+     * to the cumulative typical-price average. `color` is an optional
+     * 0xRRGGBB override. Requires `setOhlcv()`; uses the overlay budget.
+     */
+    public function addVWAP(int $color = -1): static {}
+
+    /**
+     * ZigZag: a pivot line overlaid on the price pane that connects
+     * swing highs and lows, filtering out moves smaller than
+     * `threshold_pct` percent (default 5, clamped to (0, 100]). Requires
+     * `setOhlcv()`; uses the overlay budget.
+     */
+    public function addZigZag(float $threshold_pct = 5.0): static {}
+
+    /**
+     * ATR (Wilder's Average True Range): a pane indicator measuring
+     * volatility as the smoothed average of the true range over
+     * `period` bars (default 14). Requires `setOhlcv()`; uses the
+     * indicator-pane budget.
+     */
+    public function addATR(int $period = 14): static {}
+
+    /**
+     * CCI (Commodity Channel Index): a pane oscillator, (typical -
+     * SMA(typical)) / (0.015 * mean absolute deviation) over `period`
+     * bars (default 20), centered on 0. Requires `setOhlcv()`; uses the
+     * indicator-pane budget.
+     */
+    public function addCCI(int $period = 20): static {}
+
+    /**
+     * Williams %R: a pane oscillator in [-100, 0] measuring the close
+     * relative to the high-low range over `period` bars (default 14).
+     * Requires `setOhlcv()`; uses the indicator-pane budget.
+     */
+    public function addWilliamsR(int $period = 14): static {}
+
+    /**
+     * Rolling standard deviation of close over `period` bars (default
+     * 20), drawn as a pane indicator. Requires `setOhlcv()`; uses the
+     * indicator-pane budget.
+     */
+    public function addStdDev(int $period = 20): static {}
+
+    /**
+     * Aroon: a two-line pane indicator (Aroon Up and Aroon Down, each
+     * in [0, 100]) measuring how recently the highest high / lowest low
+     * occurred within the trailing `period`+1 window (default 25).
+     * Requires `setOhlcv()`; uses the indicator-pane budget.
+     */
+    public function addAroon(int $period = 25): static {}
+
+}
+
+/**
+ * Spider / radar chart. Each axis radiates from the center; one
+ * polygon per series threads its values across all axes.
+  * @strict-properties
+ */
+final class RadarChart extends Chart
+{
+    /**
+     * Either a flat `[v0, v1, v2, ...]` (single series) or a list of
+     * `['data' => [...], 'label' => 'name', 'color' => 0xRRGGBB]` for
+     * multi-series. All series must have the same length, which fixes
+     * the number of axes (use setCategoryLabels for axis names).
+     */
+    public function setSeries(array $series): static {}
+
+    /** Force a maximum value for the radial scale. 0 = auto. */
+    public function setMaxValue(float $max): static {}
+
+    /**
+     * Fill the radar polygon area in the series color (translucent).
+     * Default true. Pass false for line-only spider plots.
+     */
+    public function setFilled(bool $filled): static {}
+
+}
+
+/**
+ * Bubble chart. Each point is `[x, y, size]`, optionally
+ * `[x, y, size, color]`. Size is a positive radius in pixels.
+  * @strict-properties
+ */
+final class BubbleChart extends Chart
+{
+    public function setPoints(array $points): static {}
+}
+
+/**
+ * Surface / heatmap. Data is a 2D array (rows of columns) of numeric
+ * values. Each cell is colored by its value via a configurable color
+ * ramp.
+  * @strict-properties
+ */
+final class SurfaceChart extends Chart
+{
+    /**
+     * 2D grid of values: `[[v00, v01, ...], [v10, v11, ...]]`. Rows
+     * paint top-to-bottom; columns left-to-right.
+     */
+    public function setGrid(array $grid): static {}
+
+    /**
+     * Show the numeric value inside each cell. Default false.
+     */
+    public function setShowCellValues(bool $show, string $format = '%g'): static {}
+
+}
+
+/**
+ * Gauge / dial readout: a single value within `[min, max]`, drawn as
+ * a 180° arc with a needle. Optional colored zones partition the arc.
+  * @strict-properties
+ */
+final class GaugeChart extends Chart
+{
+    /** Dial style for setStyle(). */
+    public const int STYLE_NEEDLE = 0;
+    public const int STYLE_SOLID  = 1;
+
+    public function setValue(float $value): static {}
+
+    /**
+     * Numeric range of the gauge. Default `[0.0, 100.0]`.
+     */
+    public function setRange(float $min, float $max): static {}
+
+    /**
+     * Colored zones along the arc. Each zone is
+     * `['from' => float, 'to' => float, 'color' => int]`. Zones not
+     * covering the full range fill in with the theme accent color.
+     */
+    public function setZones(array $zones): static {}
+
+    /**
+     * Dial style. STYLE_NEEDLE (default) draws a pointer and hub.
+     * STYLE_SOLID instead fills a progress arc from min to the value
+     * in the color of the zone the value falls in (or the theme accent
+     * when no zone matches), with no needle.
+     */
+    public function setStyle(int $style): static {}
+
+    /**
+     * sprintf format for the central value label. Default `"%.1f"`.
+     */
+    public function setValueFormat(string $format): static {}
+
+}
+
+/**
+ * Gantt chart: a horizontal-bar timeline. Each task has a name, a
+ * start and end timestamp, an optional color, and an optional list
+ * of dependency-task indices that draw an arrow from the dependency
+ * task's end to this task's start.
+  * @strict-properties
+ */
+final class GanttChart extends Chart
+{
+    /**
+     * Tasks: list of dicts with keys `'name'`, `'start'` (Unix
+     * timestamp), `'end'` (Unix timestamp), optional `'color'`
+     * (0xRRGGBB), optional `'milestone'` (bool, default false --
+     * draws a diamond at end instead of a bar), optional
+     * `'depends'` (list of indices into the same tasks array).
+     */
+    public function setTasks(array $tasks): static {}
+
+    /**
+     * Force the time-axis range. Pass null for either to auto-fit.
+     */
+    public function setTimeRange(?int $start = null, ?int $end = null): static {}
+
+    /** Show task name labels on / next to the bars. Default true. */
+    public function setShowTaskLabels(bool $show): static {}
+
+}
+
+/**
+ * Box-and-whisker plot. Each category renders a box from Q1..Q3
+ * with a median line and whiskers extending to the min/max, plus
+ * optional outlier dots.
+  * @strict-properties
+ */
+final class BoxPlot extends Chart
+{
+    /**
+     * One box per entry. Each entry is either a flat
+     * `[$min, $q1, $median, $q3, $max]` or a dict with the same
+     * keys plus optional `'outliers' => [v1, v2, ...]` and
+     * `'label' => 'name'`.
+     */
+    public function setBoxes(array $boxes): static {}
+
+    /**
+     * Box width as a percent of slot width (1..100). Default 60.
+     */
+    public function setBoxWidth(int $percent): static {}
+
+}
+
+/**
+ * Polar plot: continuous angular coordinate (radar's parent shape).
+ * Points are `[angle_deg, radius]` and connect into a polygon.
+  * @strict-properties
+ */
+final class PolarChart extends Chart
+{
+    /** setStyle(): line/area mode (default), connect points into a polygon. */
+    public const int STYLE_LINE = 0;
+    /** setStyle(): rose mode, each point is an angular wedge from the centre. */
+    public const int STYLE_ROSE = 1;
+
+    /**
+     * Points (single series) or list of series with
+     * `['data' => [[deg, r], ...], 'label' => 'name', 'color' => int]`.
+     *
+     * In `STYLE_ROSE`, each entry's angle is the wedge START and
+     * the angular width runs to the NEXT entry's angle (or evenly
+     * spaced when the series is uniformly distributed). Radius
+     * controls wedge length.
+     */
+    public function setSeries(array $series): static {}
+
+    /** Force the radial scale. 0 = auto. */
+    public function setMaxRadius(float $max): static {}
+
+    /** Fill the polygon area in the series color (translucent). */
+    public function setFilled(bool $filled): static {}
+
+    /**
+     * Switch between line/area mode and rose (angular bar) mode.
+     * `STYLE_LINE` (default) connects points into a polygon, optionally
+     * filled. `STYLE_ROSE` renders each (angle, radius) as a filled
+     * wedge, useful for histograms in polar coordinates (wind roses,
+     * bearing distributions).
+     */
+    public function setStyle(int $style): static {}
+
+    /**
+     * Polygon edge interpolation in STYLE_LINE. `INTERP_LINEAR`
+     * (default) connects consecutive points with straight segments.
+     * `INTERP_SMOOTH` runs Catmull-Rom subdivision through each
+     * segment for a curved fit. Ignored in STYLE_ROSE.
+     */
+    public function setInterpolation(int $mode): static {}
+
+    /**
+     * Overlay arrow vectors on the polar plot. Each entry is
+     * `['angle' => float, 'radius' => float, 'angle_to' => float,
+     *   'radius_to' => float, 'color' => int?]`. The arrow runs
+     * from (angle, radius) to (angle_to, radius_to) in the same
+     * data space as the series; the radial scale follows the chart's
+     * setMaxRadius() / auto-fit. Useful for wind / flow / phase plots.
+     */
+    public function addVectors(array $vectors): static {}
+
+}
+
+/**
+ * Contour plot: isolines drawn through a 2D grid of values.
+ * Each level produces a closed-or-open curve where the grid value
+ * equals that level (marching-squares algorithm).
+  * @strict-properties
+ */
+final class ContourChart extends Chart
+{
+    /** 2D grid of numeric values. */
+    public function setGrid(array $grid): static {}
+
+    /**
+     * Levels at which to draw isolines. If empty, the renderer picks
+     * 5 evenly-spaced levels between the min and max grid values.
+     */
+    public function setLevels(array $levels): static {}
+
+    /**
+     * Color the area between isolines on a low->high color ramp.
+     * Default true. Pass false for line-only contours.
+     */
+    public function setFilled(bool $filled): static {}
+
+}
+
+/**
+ * Treemap: rectangle packing where each cell's area is proportional
+ * to its `value`. Useful for flattened-hierarchy weighted views:
+ * revenue-by-product, log-volume-by-source, market-cap-by-ticker.
+ *
+ * The squarify algorithm (Bruls / Huijsen / van Wijk) optimises
+ * cell aspect ratios so cells stay close to square. Items with
+ * non-positive `value` are silently dropped at setItems().
+  * @strict-properties
+ */
+final class Treemap extends Chart
+{
+    /**
+     * Cell list. Each entry is
+     * `['label' => string?, 'value' => number, 'color' => int?]`.
+     * `value` is required and must be > 0; non-positive entries are
+     * dropped. `label` is optional and centred in the cell; cells
+     * too small to fit the label leave it blank. `color` is a 24-bit
+     * RGB; missing draws from the theme palette.
+     */
+    public function setItems(array $items): static {}
+
+    /**
+     * Toggle rendering of cell labels. Default true. Disable for
+     * dense charts where labels clutter; colour carries the cell-
+     * identity signal.
+     */
+    public function setShowLabels(bool $enabled): static {}
+
+}
+
+/**
+ * Funnel chart: descending stacked horizontal trapezoids. Each
+ * stage's width is proportional to its value relative to the
+ * largest stage. Common use: conversion funnels, drop-off rates.
+  * @strict-properties
+ */
+final class Funnel extends Chart
+{
+    /** setStyle(): default funnel layout — each stage is a trapezoid
+     *  whose top width is its own value and bottom width is the next
+     *  stage's value, both scaled to the largest stage. */
+    public const int STYLE_FUNNEL  = 0;
+    /** setStyle(): pyramid layout — a single triangle subdivided into
+     *  horizontal bands. Each band's height is proportional to its
+     *  stage value; bandwidths follow the triangle's natural taper
+     *  (apex at the top, widest band at the base). */
+    public const int STYLE_PYRAMID = 1;
+    /** setStyle(): cone layout — pyramid bands with front-facing
+     *  ellipse arcs at each band's top and bottom edges, suggesting
+     *  a 3D cone seen from the side. Layout is identical to
+     *  STYLE_PYRAMID; only the silhouette changes. */
+    public const int STYLE_CONE = 2;
+
+    /**
+     * Stages, top to bottom. Each entry is
+     * `['label' => string?, 'value' => number, 'color' => int?]`.
+     * `value` is required and must be > 0; non-positive entries are
+     * silently dropped at setStages().
+     */
+    public function setStages(array $stages): static {}
+
+    /**
+     * Switch between `STYLE_FUNNEL` (default trapezoid stages, value
+     * scales the width), `STYLE_PYRAMID` (single triangle with
+     * value-proportional band heights), and `STYLE_CONE` (pyramid
+     * layout with ellipse-arc band edges that suggest a 3D cone).
+     * All three render the same stages — only the silhouette
+     * changes.
+     */
+    public function setStyle(int $style): static {}
+
+    /* setShowValues(bool, ?string $format = null) is inherited from
+     * Chart and toggles the value labels rendered next to each
+     * stage. The funnel default is to show values. */
+
+}
+
+/**
+ * Waterfall chart: bar series with rising / falling / total
+ * semantics. Useful for income statements, budget breakdowns,
+ * step-change attribution. Each bar starts at the prior cumulative
+ * and runs to cumulative + value, except `'kind' => 'total'` which
+ * renders an absolute bar from zero.
+  * @strict-properties
+ */
+final class Waterfall extends Chart
+{
+    /**
+     * Bars, in display order. Each entry is
+     * `['label' => string, 'value' => number, 'kind' => 'delta'|'total']`.
+     * `kind` defaults to `'delta'`. Delta bars carry signed values;
+     * positive renders in the rise colour, negative in the fall
+     * colour. Total bars use the total colour and reset the running
+     * cumulative to their value.
+     */
+    public function setBars(array $bars): static {}
+
+    public function setRiseColor(int $rgb): static {}
+    public function setFallColor(int $rgb): static {}
+    public function setTotalColor(int $rgb): static {}
+
+}
+
+/**
+ * Discrete heatmap: a 2D grid of cells coloured by value. Distinct
+ * from `ContourChart` (which interpolates isolines through the same
+ * input shape); heatmap colours each cell directly from a low/high
+ * ramp, optionally writing the cell value inside.
+  * @strict-properties
+ */
+final class Heatmap extends Chart
+{
+    /** 2D array of numeric values. Rows of equal length expected. */
+    public function setGrid(array $grid): static {}
+
+    /**
+     * Color ramp for the cell-value→colour interpolation. Both
+     * arguments are 24-bit RGB. Defaults to a cool-blue → warm-red
+     * ramp.
+     */
+    public function setColorRamp(int $low, int $high): static {}
+
+    /* setShowValues(bool, ?string $format = null) is inherited from
+     * Chart; it toggles the per-cell value rendering AND sets the
+     * printf format used for it. */
+
+}
+
+/**
+ * Linear meter: bar-shaped gauge. Same zone / value / format
+ * vocabulary as `GaugeChart`, rotated to a horizontal or vertical
+ * bar. Useful for compact status / capacity readouts where a
+ * round gauge is too tall.
+  * @strict-properties
+ */
+final class LinearMeter extends Chart
+{
+    public const int METER_HORIZONTAL = 0;
+    public const int METER_VERTICAL   = 1;
+
+    /** Set the meter's data range. min must be < max. */
+    public function setRange(float $min, float $max): static {}
+
+    /** Set the current value. Clamped to [min, max] at draw time. */
+    public function setValue(float $value): static {}
+
+    /** Choose horizontal or vertical orientation. Default horizontal. */
+    public function setOrientation(int $orientation): static {}
+
+    /**
+     * Coloured zones along the bar. Each entry:
+     * `['from' => number, 'to' => number, 'color' => int?]`. Up to
+     * 8 zones; out-of-range or empty zones are skipped.
+     */
+    public function setZones(array $zones): static {}
+
+    /**
+     * Printf format for the min / max / current-value labels.
+     * Default `%.0f`. Same validation rules as setYAxisLabelFormat.
+     */
+    public function setValueFormat(string $format): static {}
+
+}
+
+/**
+ * Bullet chart (Stephen Few). One horizontal performance bar against
+ * qualitative background bands and a target tick mark. Designed as
+ * a compact replacement for radial gauges in dashboards. Range,
+ * bands, and value units all share one scalar axis.
+  * @strict-properties
+ */
+final class BulletChart extends Chart
+{
+    /** Data range. min must be < max. */
+    public function setRange(float $min, float $max): static {}
+
+    /** Current performance value. Clamped to [min, max] at draw time. */
+    public function setValue(float $value): static {}
+
+    /**
+     * Target value rendered as a vertical tick across the bar.
+     * Pass NAN to suppress the marker. Defaults to NAN (no target).
+     */
+    public function setTarget(float $target): static {}
+
+    /**
+     * Qualitative background bands. Each entry:
+     * `['from' => number, 'to' => number, 'color' => int?]`. Up to
+     * 8 bands; out-of-range or empty bands are skipped. Bands paint
+     * behind the performance bar, conventionally light → dark to
+     * mark poor / satisfactory / good ranges.
+     */
+    public function setBands(array $bands): static {}
+
+    /**
+     * Printf format for the min / max / current-value labels.
+     * Default `%.0f`. Same validation rules as setYAxisLabelFormat.
+     */
+    public function setValueFormat(string $format): static {}
+
+}
+
+/**
+ * Pareto chart: descending-value bars + cumulative-percentage line
+ * overlay on a secondary axis. The convention is bars sorted high
+ * to low at setBars() time; the cumulative line crosses 80% near
+ * the few categories that explain most of the total ("80/20 rule").
+  * @strict-properties
+ */
+final class ParetoChart extends Chart
+{
+    /**
+     * Bars in display order. Each entry:
+     * `['label' => string, 'value' => number, 'color' => int?]`.
+     * Negative values are dropped. The renderer does NOT re-sort —
+     * caller controls the order so labels stay meaningful.
+     */
+    public function setBars(array $bars): static {}
+
+    /**
+     * Color of the cumulative-% overlay line. Default uses the
+     * palette's accent color. 24-bit RGB.
+     */
+    public function setLineColor(int $rgb): static {}
+
+    /**
+     * Printf format for the bar value labels (when setShowValues is
+     * on). Default `%.0f`. Same validation rules as
+     * setYAxisLabelFormat.
+     */
+    public function setValueFormat(string $format): static {}
+
+}
+
+/**
+ * Calendar heatmap: GitHub-style day-grid of value-colored cells.
+ * Seven day-of-week rows × N week columns; cells colored on a
+ * low → high ramp like `Heatmap::setColorRamp()`. Useful for
+ * activity charts, attendance, daily metrics.
+  * @strict-properties
+ */
+final class CalendarHeatmap extends Chart
+{
+    /**
+     * Per-day values, keyed by ISO-8601 date string `YYYY-MM-DD`.
+     * `['2026-01-01' => 12, '2026-01-02' => 3, ...]`. The date range
+     * is inferred from the min / max key; missing days render as
+     * empty cells in the palette's grid color.
+     */
+    public function setData(array $values): static {}
+
+    /**
+     * Color ramp for value → cell color. Both arguments are 24-bit
+     * RGB. Defaults to a cool-blue → warm-red ramp.
+     */
+    public function setColorRamp(int $low, int $high): static {}
+
+}
+
+/**
+ * Sunburst (radial hierarchical donut): nested rings where each
+ * ring is a level of the hierarchy and each slice's angular span is
+ * proportional to its value. Children always sum to their parent.
+  * @strict-properties
+ */
+final class SunburstChart extends Chart
+{
+    /**
+     * Hierarchical tree. Each node:
+     * `['label' => string?, 'value' => number?, 'color' => int?,
+     *   'children' => array?]`. Leaf nodes need a value; interior
+     * nodes sum their children's values if no value is set.
+     */
+    public function setHierarchy(array $root): static {}
+
+}
+
+/**
+ * Sankey diagram: bipartite (or multi-layered) flow with bezier
+ * ribbons whose width is proportional to flow value. Suitable for
+ * energy / cost / user-flow attribution where source → sink shares
+ * matter more than absolute counts.
+  * @strict-properties
+ */
+final class SankeyChart extends Chart
+{
+    /**
+     * Node list. Each entry:
+     * `['label' => string?, 'color' => int?]`. Order in the array
+     * is the node id used in `setLinks()`.
+     */
+    public function setNodes(array $nodes): static {}
+
+    /**
+     * Flow list. Each entry:
+     * `['from' => int, 'to' => int, 'value' => number]`. `from` /
+     * `to` are 0-based indices into the `setNodes()` array. Negative
+     * or non-positive values are dropped.
+     */
+    public function setLinks(array $links): static {}
+
+}
+
+/**
+ * Arc diagram: nodes laid out on a single baseline, each link drawn as
+ * a semicircular (elliptical for long spans) arc connecting its two
+ * endpoints. Shares the node/link data model with SankeyChart. Good
+ * for showing relationships in a 1D ordering (sequence adjacency,
+ * call graphs, co-occurrence) where a full network layout is overkill.
+  * @strict-properties
+ */
+final class ArcDiagram extends Chart
+{
+    /** setOrientation(): link arcs bulge above the baseline (default). */
+    public const int ORIENT_UP = 0;
+    /** setOrientation(): link arcs bulge below the baseline. */
+    public const int ORIENT_DOWN = 1;
+    /**
+     * setOrientation(): forward links (`to` > `from`) arc above the
+     * baseline, backward links below, to reduce visual crossings.
+     */
+    public const int ORIENT_SPLIT = 2;
+
+    /**
+     * Node list. Each entry: `['label' => string?, 'color' => int?]`.
+     * Order in the array is the node id used in `setLinks()`.
+     */
+    public function setNodes(array $nodes): static {}
+
+    /**
+     * Link list. Each entry:
+     * `['from' => int, 'to' => int, 'value' => number]`. `from` / `to`
+     * are 0-based indices into the `setNodes()` array; `value` drives
+     * the arc stroke width. Out-of-range indices, self-loops, and
+     * non-positive values are dropped.
+     */
+    public function setLinks(array $links): static {}
+
+    /**
+     * Which side of the node baseline link arcs bulge toward.
+     * `ORIENT_UP` (default), `ORIENT_DOWN`, or `ORIENT_SPLIT`.
+     */
+    public function setOrientation(int $orientation): static {}
+
+}
+
+/**
+ * Chord diagram: nodes are arc segments around a circle sized by their
+ * total incident flow; links are ribbons that attach to value-
+ * proportional slices of each endpoint's arc and curve through the
+ * centre. Shares the node/link data model with SankeyChart. Good for
+ * dense any-to-any relationship matrices (migration flows, trade,
+ * co-occurrence) where a left-to-right Sankey would tangle.
+  * @strict-properties
+ */
+final class ChordDiagram extends Chart
+{
+    /** setStyle(): filled translucent ribbons (default). */
+    public const int STYLE_RIBBON = 0;
+    /**
+     * setStyle(): non-ribbon mode. Each link is a single curve between
+     * the centres of its endpoint slices, stroke width proportional to
+     * value, rather than a filled ribbon.
+     */
+    public const int STYLE_LINE = 1;
+    /**
+     * setStyle(): filled ribbons with an arrowhead at each link's target
+     * endpoint, marking flow direction. A->B and B->A are distinct links,
+     * so reciprocal flows draw two opposing arrows.
+     */
+    public const int STYLE_DIRECTED = 2;
+
+    /**
+     * Node list. Each entry: `['label' => string?, 'color' => int?]`.
+     * Order in the array is the node id used in `setLinks()`.
+     */
+    public function setNodes(array $nodes): static {}
+
+    /**
+     * Link list. Each entry:
+     * `['from' => int, 'to' => int, 'value' => number]`. `from` / `to`
+     * are 0-based indices into the `setNodes()` array; `value` sizes the
+     * ribbon. Out-of-range indices, self-loops, and non-positive values
+     * are dropped.
+     */
+    public function setLinks(array $links): static {}
+
+    /**
+     * Angular gap between adjacent node arcs, in degrees. Default 2.0.
+     * Clamped to [0, 30]; the total padding is further capped so node
+     * arcs always remain visible.
+     */
+    public function setPadAngle(float $deg): static {}
+
+    /**
+     * Ribbon rendering style: `STYLE_RIBBON` (default, filled translucent
+     * ribbons) or `STYLE_LINE` (thin value-weighted curves, the
+     * "non-ribbon" chord variant).
+     */
+    public function setStyle(int $style): static {}
+
+}
+
+/**
+ * Force-directed network graph (Fruchterman-Reingold). Nodes repel one
+ * another while links pull their endpoints together; the simulation
+ * settles into an organic layout that reveals clusters and hubs.
+ * Shares the node/link data model with SankeyChart.
+ *
+ * The layout is deterministic: initial placement is driven by a seeded
+ * PRNG and the iteration count is fixed, so identical input + `setSeed()`
+ * + `setIterations()` always produce identical output. Change the seed
+ * to explore alternative settled arrangements of the same graph.
+  * @strict-properties
+ */
+final class NetworkChart extends Chart
+{
+    /**
+     * Node list. Each entry: `['label' => string?, 'color' => int?]`.
+     * Order in the array is the node id used in `setLinks()`. Node
+     * radius scales with degree (number of incident links).
+     */
+    public function setNodes(array $nodes): static {}
+
+    /**
+     * Link list. Each entry:
+     * `['from' => int, 'to' => int, 'value' => number]`. `from` / `to`
+     * are 0-based indices into the `setNodes()` array; `value` drives
+     * the edge stroke width. Out-of-range indices, self-loops, and
+     * non-positive values are dropped.
+     */
+    public function setLinks(array $links): static {}
+
+    /**
+     * PRNG seed for the initial node placement. Default 1. Same graph +
+     * same seed = identical layout; vary it to get a different (still
+     * deterministic) arrangement.
+     */
+    public function setSeed(int $seed): static {}
+
+    /**
+     * Requested number of force-relaxation passes. Default 300, accepted
+     * up to 5000. This is an upper bound: because each pass is O(n^2) in
+     * the node count, the renderer automatically reduces the pass count
+     * for large graphs so a single render stays within a fixed work
+     * budget. Small graphs run the full requested count.
+     */
+    public function setIterations(int $iterations): static {}
+
+}
+
+/**
+ * Population pyramid: two opposing series share a common set of category
+ * rows (age bands, cohorts). One series extends left of the central
+ * axis, the other right; category labels sit in the centre. The classic
+ * demographic age/sex pyramid, also useful for any back-to-back
+ * comparison of two groups across the same categories.
+  * @strict-properties
+ */
+final class PopulationPyramid extends Chart
+{
+    /**
+     * Row labels, top to bottom (e.g. age bands). Defines the number of
+     * rows; each side's `data` is read positionally against this list.
+     */
+    public function setCategories(array $categories): static {}
+
+    /**
+     * Left-extending series:
+     * `['label' => string?, 'color' => int?, 'data' => [number, ...]]`.
+     * `data[i]` is the magnitude for category `i`; missing or non-finite
+     * entries render as zero.
+     */
+    public function setLeftSeries(array $series): static {}
+
+    /**
+     * Right-extending series, same shape as `setLeftSeries()`. Both sides
+     * share one value scale so the two halves stay comparable.
+     */
+    public function setRightSeries(array $series): static {}
+
+}
+
+/**
+ * Violin plot: for each group, a gaussian kernel-density estimate of the
+ * sample distribution is mirrored about the group's centre line to form
+ * the violin silhouette, with the median marked. Bandwidth follows
+ * Silverman's rule. Shows distribution shape (modes, skew, spread) that
+ * a box plot's five-number summary hides.
+  * @strict-properties
+ */
+final class ViolinPlot extends Chart
+{
+    /**
+     * Groups to plot side by side. Each entry:
+     * `['label' => string?, 'color' => int?, 'values' => [number, ...]]`.
+     * `values` are the raw samples for that group; non-finite entries are
+     * dropped. All groups share one vertical value scale.
+     */
+    public function setGroups(array $groups): static {}
+
+}
+
+/**
+ * Circle packing: a hierarchy drawn as nested circles. Leaf circles are
+ * sized so area tracks `value`; each parent is the enclosing circle of
+ * its packed children. A compact, space-filling alternative to a treemap
+ * for part-of-whole hierarchies.
+  * @strict-properties
+ */
+final class CirclePacking extends Chart
+{
+    /**
+     * Root node of the hierarchy. Each node:
+     * `['label' => string?, 'color' => int?, 'value' => number?,
+     *   'children' => [ ...nodes ]]`. Leaves use `value` for sizing;
+     * internal nodes derive their size from packed children. Nesting is
+     * capped at 24 levels and 2048 total nodes.
+     */
+    public function setHierarchy(array $root): static {}
+
+}
+
+/**
+ * Dendrogram: a hierarchy drawn as a node-link tree. Shares CirclePacking's
+ * nested-node input shape, but lays nodes out by depth (root to leaves) with
+ * parent-to-child edges, the classic cluster/linkage view.
+  * @strict-properties
+ */
+final class Dendrogram extends Chart
+{
+    /** setStyle(): straight diagonal parent-child edges (default). */
+    public const int STYLE_TREE = 0;
+    /** setStyle(): right-angle (elbow) edges, the dendrogram convention. */
+    public const int STYLE_ELBOW = 1;
+    /** setOrientation(): root at top, depth grows downward (default). */
+    public const int ORIENT_TOP = 0;
+    /** setOrientation(): root at left, depth grows rightward. */
+    public const int ORIENT_LEFT = 1;
+
+    /**
+     * Root node of the hierarchy. Each node:
+     * `['label' => string?, 'color' => int?, 'value' => number?,
+     *   'children' => [ ...nodes ]]`. Nesting is capped at 24 levels and
+     * 2048 total nodes, same as CirclePacking.
+     */
+    public function setHierarchy(array $root): static {}
+
+    /** Edge style: STYLE_TREE (diagonal) or STYLE_ELBOW (right-angle). */
+    public function setStyle(int $style): static {}
+
+    /** Layout direction: ORIENT_TOP (top-down) or ORIENT_LEFT (left-right). */
+    public function setOrientation(int $orientation): static {}
+
+}
+
+/**
+ * Partition: a hierarchy drawn as nested rectangles. Shares CirclePacking's
+ * nested-node input shape; each depth level is a band, and a node's span is
+ * subdivided among its children in proportion to their leaf-value sums.
+ * ORIENT_VERTICAL is the icicle variant (depth grows downward).
+  * @strict-properties
+ */
+final class Partition extends Chart
+{
+    /** setOrientation(): depth grows left-to-right (default). */
+    public const int ORIENT_HORIZONTAL = 0;
+    /** setOrientation(): depth grows top-to-bottom (icicle). */
+    public const int ORIENT_VERTICAL = 1;
+
+    /**
+     * Root node of the hierarchy. Each node:
+     * `['label' => string?, 'color' => int?, 'value' => number?,
+     *   'children' => [ ...nodes ]]`. Nesting is capped at 24 levels and
+     * 2048 total nodes, same as CirclePacking.
+     */
+    public function setHierarchy(array $root): static {}
+
+    /** Layout direction: ORIENT_HORIZONTAL (partition) or ORIENT_VERTICAL (icicle). */
+    public function setOrientation(int $orientation): static {}
+
+}
+
+/**
+ * Pictogram (pictorial fraction): a grid of unit icons where a value's
+ * share of a total is shown by filling that fraction of the icons left
+ * to right; the boundary icon is partially filled so fractional values
+ * read precisely. The "7 in 10 people" infographic style.
+  * @strict-properties
+ */
+final class Pictogram extends Chart
+{
+    /** setShape(): filled square cells (default). */
+    public const int SHAPE_SQUARE = 0;
+    /** setShape(): filled circles. */
+    public const int SHAPE_CIRCLE = 1;
+    /** setShape(): a simple person silhouette. */
+    public const int SHAPE_PERSON = 2;
+
+    /** The measured value. Its share of the total drives the fill. */
+    public function setValue(float $value): static {}
+
+    /** The whole that `value` is a fraction of. Must be positive. */
+    public function setTotal(float $total): static {}
+
+    /**
+     * How many unit icons make up the grid. Default 10. Each icon
+     * represents `total / iconCount` units. Clamped to [1, 1000].
+     */
+    public function setIconCount(int $count): static {}
+
+    /** Icons per row. 0 (default) auto-fits (max 10 per row). */
+    public function setColumns(int $columns): static {}
+
+    /** Icon shape: `SHAPE_SQUARE` (default), `SHAPE_CIRCLE`, `SHAPE_PERSON`. */
+    public function setShape(int $shape): static {}
+
+    /** Colour of the filled portion. 0xRRGGBB; default palette colour. */
+    public function setFillColor(int $rgb): static {}
+
+    /** Colour of the unfilled icons. 0xRRGGBB; default light grey. */
+    public function setEmptyColor(int $rgb): static {}
+
+}
+
+/**
+ * Venn diagram for 2 or 3 sets. Circle areas are proportional to set
+ * size and pairwise centre distances are solved so each overlap lens
+ * area matches the requested intersection; circles blend through
+ * translucent fills. Capped at 3 sets — exact area-proportional layout
+ * has no general solution beyond that.
+  * @strict-properties
+ */
+final class VennDiagram extends Chart
+{
+    /**
+     * The sets (2 or 3). Each entry:
+     * `['label' => string?, 'size' => number?, 'color' => int?]`.
+     * `size` drives the circle area (default 1). Passing more than 3 sets
+     * throws `\ValueError` without changing prior sets or intersections.
+     */
+    public function setSets(array $sets): static {}
+
+    /**
+     * Pairwise intersection magnitudes. Each entry:
+     * `['sets' => [i, j], 'size' => number]`, where `i` / `j` are
+     * 0-based indices into `setSets()`. The centre distance for that
+     * pair is fitted so the lens area matches `size`. Pairs left
+     * unspecified are drawn disjoint. An overlap larger than the smaller
+     * set is geometrically impossible (the lens cannot exceed the smaller
+     * circle) and is dropped rather than saturated to full containment.
+     * Duplicate or reversed pairs collapse to one, last value winning.
+     * For three sets, an overlap combination that no triangle can realize
+     * (e.g. A-B and A-C both near-total while B-C is zero) falls back to a
+     * symmetric layout: all three circles stay visible, but the impossible
+     * areas are not reproduced.
+     */
+    public function setIntersections(array $intersections): static {}
+
+}
+
+/**
+ * Word cloud: each word's font size scales with its weight and words are
+ * laid out largest-first along a spiral, skipping positions that would
+ * collide with an already-placed word. Layout is deterministic. Word
+ * orientation is selectable via setOrientation(): horizontal, vertical,
+ * or ORIENT_MIXED.
+  * @strict-properties
+ */
+final class WordCloud extends Chart
+{
+    /** setOrientation(): all words horizontal (default). */
+    public const int ORIENT_HORIZONTAL = 0;
+    /**
+     * setOrientation(): mix horizontal and vertical (90 deg) words; a
+     * deterministic ~1/3 of words are rotated vertical.
+     */
+    public const int ORIENT_MIXED = 1;
+
+    /**
+     * The words. Each entry:
+     * `['text' => string, 'weight' => number?, 'color' => int?]`.
+     * `weight` drives the font size (default 1); `text` is required.
+     * Words that cannot be fitted without overlap are dropped. Capped at
+     * 256 words.
+     */
+    public function setWords(array $words): static {}
+
+    /**
+     * Word orientation: `ORIENT_HORIZONTAL` (default) or `ORIENT_MIXED`
+     * (mix in vertical words). Layout stays deterministic.
+     */
+    public function setOrientation(int $orientation): static {}
+
+}
+
+/**
+ * Serpentine timeline: events laid out in rows that reverse direction
+ * each line (boustrophedon), so the connecting path snakes back and
+ * forth and a long ordered sequence fits a compact rectangle. Good for
+ * roadmaps, process steps, and chronologies.
+  * @strict-properties
+ */
+final class SerpentineTimeline extends Chart
+{
+    /**
+     * Ordered events. Each entry:
+     * `['label' => string?, 'date' => string?, 'color' => int?]`. Events
+     * are placed in array order along the snaking path; `date` renders
+     * above the marker, `label` below. Capped at 512 events.
+     */
+    public function setEvents(array $events): static {}
+
+    /**
+     * Events per row before the path turns back. 0 (default) auto-fits
+     * for roughly square cells.
+     */
+    public function setColumns(int $columns): static {}
+
+}
+
+/**
+ * Marimekko (Mekko) chart: stacked columns where each column's
+ * width is proportional to its category total, and segment heights
+ * within each column are proportional to component values. Reads
+ * the entire data set as a percent breakdown both horizontally and
+ * vertically.
+  * @strict-properties
+ */
+final class MarimekkoChart extends Chart
+{
+    /**
+     * Category columns. Each entry:
+     * `['label' => string, 'segments' => [['label' => string?,
+     *   'value' => number, 'color' => int?], ...]]`. Column widths
+     * are derived from the sum of each column's segment values.
+     */
+    public function setColumns(array $columns): static {}
+
+}
+
+/**
+ * Vector chart: arrow-on-grid field. Each datum is an (x, y) anchor
+ * with a (dx, dy) component pair; arrows render at the anchor
+ * pointing in the (dx, dy) direction with length proportional to
+ * magnitude. Optional color ramp drives arrow color from magnitude.
+  * @strict-properties
+ */
+final class VectorChart extends Chart
+{
+    /**
+     * Vector data. Each entry:
+     * `['x' => number, 'y' => number, 'dx' => number, 'dy' => number,
+     *   'color' => int?]`. Magnitude is computed from (dx, dy);
+     * arrow length scales relative to the max magnitude across the
+     * data set.
+     */
+    public function setVectors(array $vectors): static {}
+
+    /**
+     * Color ramp for magnitude → arrow color. Both arguments are
+     * 24-bit RGB. When set, per-entry `color` overrides are ignored
+     * in favor of the ramp interpolation.
+     */
+    public function setColorRamp(int $low, int $high): static {}
+
+}
+
+/**
+ * Symbol family: 1D barcodes and 2D matrix codes (QR). Render-only
+ * surface — Symbol classes do not accept a caller-supplied canvas.
+ * Use the render*() / renderToFile() helpers to materialise the symbol.
+ *
+ * Symbol does not extend `Chart`; the two hierarchies share no state
+ * (axes, palettes, plot rect, font cache do not apply to symbologies).
+ * Like Chart, all state lives in a native C struct.
+ *
+ * @strict-properties
+ * @not-serializable
+ */
+abstract class Symbol
+{
+    /**
+     * SVG text emission mode for setSvgTextMode(). Mirrors
+     * Chart::SVG_TEXT_NATIVE / Chart::SVG_TEXT_PATHS. PATHS is the
+     * default and matches the Chart-side semantics.
+     */
+    public const int SVG_TEXT_NATIVE = 0;
+    public const int SVG_TEXT_PATHS  = 1;
+
+    /**
+     * Logical canvas size in pixels. Both arguments must be positive
+     * and ≤ 65535. Setting size 0 is rejected; if you want the
+     * class default, simply do not call `setSize()`. Physical
+     * dimensions scale with `setDpi()` and are capped at 16384px /
+     * 64M pixels — see Chart::setDpi() docs for the cap policy.
+     */
+    public function setSize(int $width, int $height): static {}
+
+    /**
+     * Payload to encode. Embedded NUL bytes are rejected with
+     * `\ValueError` (gd's text path truncates at NUL; we reject
+     * rather than encode a different string than the user passed in).
+     * Empty strings are also rejected.
+     */
+    public function setData(string $data): static {}
+
+    /**
+     * Quiet-zone (whitespace) margin around the symbol. Units and
+     * ceiling are per-class: `Code128` measures it in pixels (default
+     * 10× the narrowest bar, max 4096), `QrCode` measures it in
+     * modules (default 4 per the QR spec, max 256). Pass -1 to revert
+     * to the class default; any other negative value, or a value above
+     * the class ceiling, is rejected with `\ValueError` at set time.
+     */
+    public function setQuietZone(int $units): static {}
+
+    /** Foreground colour as 24-bit RGB (0..0xFFFFFF). Default 0x000000. */
+    public function setForeground(int $rgb): static {}
+
+    /** Background colour as 24-bit RGB (0..0xFFFFFF). Default 0xFFFFFF. */
+    public function setBackground(int $rgb): static {}
+
+    /**
+     * Make the background transparent in the encoded output. Honoured
+     * by PNG and WebP; JPEG falls through to the background colour
+     * because the format can't carry alpha.
+     */
+    public function setTransparentBackground(bool $enabled): static {}
+
+    /**
+     * Output DPI, between 24 and 1200. Default 96. Matches
+     * `Chart::setDpi()` semantics: logical canvas size stays the
+     * same, physical canvas grows for crisper rendering.
+     */
+    public function setDpi(int $dpi): static {}
+
+    /**
+     * SVG text-emission mode. See Chart::setSvgTextMode().
+     */
+    public function setSvgTextMode(int $mode): static {}
+
+    /**
+     * JPEG encode quality 1..100; default 88. See
+     * Chart::setJpegQuality().
+     */
+    public function setJpegQuality(int $quality): static {}
+
+    /**
+     * WebP encoder mode. QrCode defaults to WEBP_LOSSLESS; Code128
+     * defaults to WEBP_DRAWING. Pass WEBP_DRAWING, WEBP_PHOTO,
+     * WEBP_LOSSLESS, WEBP_FAST to override. LOSSLESS is the natural
+     * pick for QR codes — bit-exact recovery matters for machine-
+     * readable codes, and the encoder compresses the flat black/
+     * white pattern efficiently. See Chart::setWebpMode().
+     */
+    public function setWebpMode(int $mode): static {}
+
+    public function renderPng(): string {}
+    public function renderJpeg(?int $quality = null): string {}
+    public function renderWebp(int $quality = 90): string {}
+
+    /**
+     * Render to an SVG document. Returns the full markup including
+     * the `<?xml ...>` prolog and `<svg>` root. The viewport matches
+     * the logical canvas size (per-class default applies when
+     * `setSize()` was not called). DPI does not scale the viewport;
+     * SVG is vector and scales infinitely.
+     */
+    public function renderSvg(): string {}
+
+    /**
+     * Render to an SVG fragment: a single
+     * `<g class="fastchart-symbol">…</g>` group with no outer `<svg>`
+     * or XML prolog. Intended for stitching multiple charts /
+     * symbols into one caller-managed SVG document. `$idPrefix`
+     * matches Chart::drawSvgFragment() for API symmetry and future
+     * symbol-local ids; when stitching N fragments into one document
+     * each MUST use a distinct `$idPrefix`, as with Chart fragments.
+     */
+    public function drawSvgFragment(?string $idPrefix = null): string {}
+
+    /**
+     * Render and write to `$path`. Format inferred from extension;
+     * supports .png / .jpg / .jpeg / .webp / .svg. `$quality`
+     * applies to JPEG / WebP and is ignored for PNG and SVG. Default
+     * `0` means "use per-format default": JPEG uses the value set
+     * via `setJpegQuality()` (default 88), WebP uses 90. Explicit
+     * values must be in `1..100`. Only local filesystem paths are
+     * accepted, and writes replace the destination atomically. Honours
+     * `open_basedir`. Returns bytes written. `.gif` / `.avif` raise a
+     * clear "dropped in v1.0" Error.
+     */
+    public function renderToFile(string $path, int $quality = 0): int {}
+}
+
+/**
+ * Abstract 1D linear-barcode base. Concrete subclass: `Code128`.
+ * Other 1D symbologies (Code 39, EAN/UPC, ITF, Codabar, ...) will
+ * subclass this base when implemented; each declares its own
+ * text-rendering / checksum setters because the supported character
+ * set and human-readable layout differ per symbology.
+ */
+abstract class Barcode extends Symbol
+{
+}
+
+/**
+ * Code 128: high-density alphanumeric 1D barcode with three subsets
+ * (A: control + uppercase, B: full ASCII printable, C: digit pairs).
+ * The encoder auto-switches between subsets to minimise encoded
+ * length; mod-103 checksum is appended automatically. ISO/IEC 15417.
+ *
+ * Default canvas size when `setSize()` is not called: 300x80.
+  * @strict-properties
+ */
+final class Code128 extends Barcode
+{
+    /**
+     * Render the human-readable payload below the bar pattern.
+     * Default false. The font follows the same auto-detection chain
+     * as Chart's label font.
+     */
+    public function setShowText(bool $enabled): static {}
+}
+
+/**
+ * QR Code (ISO/IEC 18004). Two-dimensional matrix code with four
+ * error-correction levels. Encoder is the vendored nayuki C library
+ * (versions 1..40; auto-pick within the requested range).
+ *
+ * Default canvas size when `setSize()` is not called: 300x300.
+ * Default ECC: M (~15% recovery). Default version range: 1..40 (the
+ * encoder picks the smallest version that fits the data).
+ *
+ * **Input encoding:** `setData()` payloads must be valid UTF-8 (or
+ * the ASCII subset thereof). The underlying encoder treats the
+ * string as UTF-8 text and selects the most compact QR mode that
+ * fits — numeric, alphanumeric, or byte. Invalid UTF-8 byte
+ * sequences are not rejected by `setData()` (which forbids embedded
+ * NULs and payloads above 7089 bytes) but produce QR symbols that
+ * decode back to garbage or unspecified bytes. If you need to encode
+ * arbitrary binary data, base64-encode upstream and decode after scan.
+  * @strict-properties
+ */
+final class QrCode extends Symbol
+{
+    /** ECC level L: ~7% recovery. */
+    public const int ECC_L = 0;
+    /** ECC level M: ~15% recovery (default). */
+    public const int ECC_M = 1;
+    /** ECC level Q: ~25% recovery. */
+    public const int ECC_Q = 2;
+    /** ECC level H: ~30% recovery. */
+    public const int ECC_H = 3;
+
+    /**
+     * Set the MINIMUM error-correction level. Pass one of the ECC_*
+     * class constants. The encoder may raise the effective ECC level
+     * if there is spare codeword space at the chosen version (the
+     * "boost ECC" feature of the underlying nayuki encoder), which
+     * means the resulting symbol has at LEAST the requested error-
+     * correction tolerance and possibly more. The version range
+     * (`setMinVersion()` / `setMaxVersion()`) is honoured strictly;
+     * only the ECC level may be boosted within that range.
+     */
+    public function setEcc(int $level): static {}
+
+    /**
+     * Floor of the version range the encoder will consider. Range
+     * 1..40. Defaults to 1.
+     */
+    public function setMinVersion(int $version): static {}
+
+    /**
+     * Ceiling of the version range the encoder will consider. Range
+     * 1..40. Defaults to 40. The encoder fails the render if the
+     * data + ECC level cannot fit at any version ≤ this ceiling.
+     */
+    public function setMaxVersion(int $version): static {}
+}

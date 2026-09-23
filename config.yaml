@@ -117,8 +117,6 @@ extensions:
   opcache: { mode: static }
   bz2: { mode: static }
 
-
-
   # --- no Dockerfile flag of their own: compile/php/Dockerfile turns these
   # on together with "libxml" (--enable-dom --enable-simplexml
   # --enable-xmlreader --enable-xmlwriter are all bundled into the
@@ -143,12 +141,9 @@ extensions:
   # ~109 extensions including many PECL ones) is the point — even though
   # the current build matches a narrower reference build, the ambition is
   # every extension in this list eventually being toggleable. ---
-  intl: { mode: 'off' } # requires icu.dat (30MB), see NOTICE.md
-  fileinfo: { mode: 'off' }
-  ffi: { mode: 'off' }
-  snmp: { mode: 'off' }
-  xsl: { mode: 'off' }
-  
+  # (Empty as of 2026-09-23: fileinfo, ffi, snmp, xsl and intl, the last
+  # ones here, all moved to mode: shared below.)
+
   # --- mode: shared — compiled independently via @php-wasm/compile-extension
   # into a standalone WASM side module, loadable at runtime without
   # rebuilding php.wasm (CLAUDE.md decisions 5, 30, 31). Each entry needs a
@@ -529,6 +524,179 @@ extensions:
     configArgs: >-
       ac_cv_lib_fbclient_fb_get_master_interface=yes
       --with-pdo-firebird=/build/vendor/firebird
+
+  # FFI over libffi 3.8.0 (compile/libffi/Dockerfile, already vendored for
+  # enchant's GLib). config.m4 is a single PKG_CHECK_MODULES([FFI], ...) +
+  # PHP_EVAL_LIBLINE, so pkgConfigVar's override is enough, no config.m4
+  # patch. --with-ffi is required (PHP_ARG_WITH, same gap as gmp/ldap).
+  # libffi's wasm32 port calls through EM_JS trampolines that need the main
+  # module's getWasmTableEntry/convertJsFunctionToWasm/stackAlloc/HEAP*
+  # helpers (all present in php_8_5.js) and the double-pointer EM_JS fix in
+  # compile/base-image/patch-libdylink-emjs-multiptr.mjs.
+  #
+  # iniEntries: ffi.enable defaults to "preload", which only allows the FFI
+  # API under the "cli" SAPI (or in preloaded scripts). The core's SAPI is
+  # named "wasm" (compile/php/php_wasm.c), so FFI::cdef() would always throw
+  # without this. See compile/extensions/ffi/PROVENANCE.md.
+  ffi:
+    mode: shared
+    source: compile/extensions/ffi
+    vendorLib: libffi
+    pkgConfigVar: FFI
+    configArgs: '--with-ffi'
+    iniEntries:
+      ffi.enable: '1'
+
+  # XSLT 1.0 over libxslt 1.1.45 + libexslt (compile/libxslt/Dockerfile),
+  # built against the same libxml2 2.15.4 the core links. config.m4 has two
+  # PKG_CHECK_MODULES probes, XSL (libxslt) and EXSLT (libexslt), and no
+  # PHP_SETUP_LIBXML, so the libxslt vendorLib is self-contained (libxslt.a,
+  # libexslt.a and a copy of libxml2.a, like libenchant2). pkgConfigVar
+  # covers XSL; EXSLT gets its own override here (without it, EXSLT support
+  # is silently left out), and XSL_CFLAGS is re-overridden (later
+  # configArgs win, as for enchant) to add libxml2's include/libxml2
+  # directory. extraCflags: php_xsl.h includes ext/dom/*.h and
+  # ext/libxml/php_libxml.h, found in the extension container's php-src
+  # tree (same as soap). --with-xsl is required (PHP_ARG_WITH). ext/dom and
+  # ext/libxml are both static in the core (PHP_ADD_EXTENSION_DEP), so
+  # nothing is bundled. -DHAVE_LIBXML=1: php_libxml.h's whole content is
+  # behind #ifdef HAVE_LIBXML (a core config.h define, absent in the
+  # extension build), same as soap. See compile/extensions/xsl/PROVENANCE.md.
+  xsl:
+    mode: shared
+    source: compile/extensions/xsl
+    vendorLib: libxslt
+    pkgConfigVar: XSL
+    configArgs: >-
+      XSL_CFLAGS="-I/build/vendor/libxslt/include -I/build/vendor/libxslt/include/libxml2"
+      EXSLT_CFLAGS="-I/build/vendor/libxslt/include -I/build/vendor/libxslt/include/libxml2"
+      EXSLT_LIBS=/build/vendor/libxslt/lib/libexslt.a
+      --with-xsl
+    extraCflags: -DHAVE_LIBXML=1 -I/root/php-src -I/root/php-src/ext/libxml
+
+  # SNMP over net-snmp 5.9.5.2's libnetsnmp (compile/netsnmp/Dockerfile,
+  # client library only, with OpenSSL for SNMPv3). config.m4 tries
+  # PKG_CHECK_MODULES([SNMP], [netsnmp >= 5.3]) first when given a bare
+  # --with-snmp, so pkgConfigVar's override skips its net-snmp-config
+  # fallback entirely. Its two PHP_CHECK_LIBRARY (AC_CHECK_LIB) probes are
+  # answered with ac_cv_lib_netsnmp_* instead of run (same reason as pgsql:
+  # unreliable in a side-module link). Runtime: ext/snmp always talks UDP
+  # (it parses the host itself, so no "tcp:" transport prefix), which
+  # needs @kirigami/php-wasm's UDP relay and the core's datagram fixes.
+  # See compile/extensions/snmp/PROVENANCE.md.
+  snmp:
+    mode: shared
+    source: compile/extensions/snmp
+    vendorLib: netsnmp
+    pkgConfigVar: SNMP
+    configArgs: >-
+      ac_cv_lib_netsnmp_init_snmp=yes
+      ac_cv_lib_netsnmp_shutdown_snmp_logging=yes
+      --with-snmp
+
+  # fileinfo, with php-src's own bundled libmagic (no external library).
+  # Off in the reference build (decision 22) and a natural mode:shared
+  # candidate for the same reason: its compiled-in magic database
+  # (data_file.c, ~10 MB of data) would otherwise weigh on every core
+  # load. config.m4 is a PHP_ARG_ENABLE, so compile-extension's own
+  # --enable-fileinfo is enough, no configArgs. Depends on pcre (static in
+  # the core). See compile/extensions/fileinfo/PROVENANCE.md.
+  fileinfo:
+    mode: shared
+    source: compile/extensions/fileinfo
+
+  # intl over ICU 78.3 (compile/icu/Dockerfile: libicuuc/libicui18n/
+  # libicuio, the full ICU data compiled into libicudata.a, plus the PIC
+  # C++ runtime -- intl is C++ and the core has none, as for pdo_firebird).
+  # The data (~32 MB) is inside intl.so: decided 2026-09-23 over shipping a
+  # separate .dat file (was the reason intl was "out of scope", NOTICE.md).
+  # config.m4 is a PHP_ARG_ENABLE (compile-extension's --enable-intl is
+  # enough). PHP_SETUP_ICU's PKG_CHECK_MODULES([ICU], ...) is answered by
+  # pkgConfigVar, but it and config.m4 also run `$PKG_CONFIG icu-uc
+  # --atleast-version=74` (C++17 vs C++11) and `icu-io
+  # --atleast-version=60` directly: PKG_CONFIG_PATH points them at ICU's
+  # own .pc files, staged in the vendorLib (only their Version field
+  # matters). Without it intl falls back to C++11, which ICU 78's headers
+  # reject. See compile/extensions/intl/PROVENANCE.md.
+  intl:
+    mode: shared
+    source: compile/extensions/intl
+    vendorLib: icu
+    pkgConfigVar: ICU
+    configArgs: 'PKG_CONFIG_PATH=/build/vendor/icu/lib/pkgconfig'
+
+  # rar (PECL, cataphract/php-rar, published for PIE as cataphract/rar):
+  # read-only RAR archives, RAR 1.5 through RAR5. The first mode:shared
+  # extension vendored from a PECL repo rather than php-src (tag v4.3.1,
+  # matrix.json's extensions.rar). No external library: the unrar source
+  # it wraps is bundled in the extension (compile/extensions/rar/unrar/).
+  # But unrar is C++, and the core has no C++ runtime, so vendorLib: libcxx
+  # (compile/libcxx/Dockerfile, the C++ runtime alone) links one into
+  # rar.so, as firebird/icu do for pdo_firebird/intl. config.m4 is a
+  # PHP_ARG_ENABLE: compile-extension's --enable-rar is enough. See
+  # compile/extensions/rar/PROVENANCE.md.
+  #
+  # license: the package's SPDX license, instead of the GPL-2.0-or-later
+  # default. php-rar is under the PHP License 3.01, and the bundled unrar
+  # under its own freeware license (no SPDX identifier, hence LicenseRef),
+  # which forbids using it to re-create the RAR compression algorithm.
+  rar:
+    mode: shared
+    source: compile/extensions/rar
+    vendorLib: libcxx
+    license: 'PHP-3.01 AND LicenseRef-UnRAR'
+    # compile-extension's build script defines __x86_64__ for every
+    # extension (build-in-docker.sh's BASE_CFLAGS), and unrar's os.hpp then
+    # includes <x86intrin.h> and turns on its SSE code ("SSE3 instruction
+    # set not enabled"). Our extra flags come after the base ones, so this
+    # undefines it for rar alone; unrar falls back to its portable code.
+    extraCflags: -U__x86_64__
+
+  # scanmeqr (crazy-goat/qrcode-ext on Packagist, tag v0.5.2): the native QR
+  # encoder behind crazy-goat/scanmephp (class CrazyGoat\ScanMePHP\
+  # NativeEncoderCore). Keyed by its extension name, not the Packagist one.
+  # C++20 core bundled in the package, no external library: vendorLib
+  # libcxx carries the C++ runtime, as for rar. config.m4 is a
+  # PHP_ARG_ENABLE defaulting to yes. Its AVX2/AVX-512 kernels are only
+  # built when host_cpu is x86 (wasm32 here), so the portable kernel is the
+  # only one; -U__x86_64__ for the same reason as rar (simd/cpuid.hpp would
+  # otherwise include <cpuid.h>). MIT. See
+  # compile/extensions/scanmeqr/PROVENANCE.md.
+  scanmeqr:
+    mode: shared
+    source: compile/extensions/scanmeqr
+    vendorLib: libcxx
+    license: MIT
+    extraCflags: -U__x86_64__
+
+  # fastchart (iliaal/fastchart on Packagist, tag 1.7.4): chart rendering
+  # (38 chart families + QR/Code128) to SVG/PNG/JPEG/WebP, over vendored
+  # plutovg/plutosvg/qrcodegen (in the package) and freetype, libpng,
+  # libjpeg-turbo, libwebp (the libraries already vendored for gd). Its
+  # config.m4 runs pkg-config itself (--exists/--cflags/--libs, not
+  # PKG_CHECK_MODULES), so pkgConfigVar can't answer it: the vendored
+  # wasm-pkgconfig/*.pc shims (not upstream) point it at the staging paths,
+  # through PKG_CONFIG_PATH. `archives` keeps only one copy of each codec
+  # (libturbojpeg.a/libpng.a would duplicate libjpeg.a/libpng16.a under
+  # --whole-archive). No PDF output (pdfio isn't vendored). A default font
+  # (DejaVu Sans) is embedded in the module and installed where fastchart
+  # looks for one, by a local wasm_default_font.c: see
+  # compile/extensions/fastchart/PROVENANCE.md.
+  fastchart:
+    mode: shared
+    source: compile/extensions/fastchart
+    vendorLibs:
+      - lib: libfreetype
+        archives: [libfreetype.a]
+      - lib: libpng16
+        archives: [libpng16.a]
+      - lib: libjpeg
+        archives: [libjpeg.a]
+      - lib: libwebp
+        archives: [libwebp.a, libsharpyuv.a]
+      - lib: libz
+    configArgs: 'PKG_CONFIG_PATH=/build/wasm-pkgconfig'
+    license: 'BSD-3-Clause AND MIT'
 
 # Version of each third-party library to use (see matrix.json for known
 # versions + their source). "latest" = the newest entry known to

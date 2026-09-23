@@ -1,6 +1,6 @@
 {
 	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. GitHub-hosted libraries (sourceType github-release/github-tag) are auto-refreshed via `node compile/cli.mjs update-versions` (compile/update-lib-versions.mjs); everything else (tarball/sourceforge/googlesource sources) still has to be checked manually via its own checkUrl.",
-	"lastChecked": "2026-09-23T04:36:39.518Z",
+	"lastChecked": "2026-09-23T17:23:08.475Z",
 	"libraries": {
 		"libcurl": {
 			"sourceType": "github-release",
@@ -252,7 +252,7 @@
 			]
 		},
 		"libffi": {
-			"$comment": "For ext/ffi (not yet wired) and GLib's own GObject closures (for ext/enchant, mode: shared, 2026-09-22). Moved here from plannedLibraries once compile/libffi/Dockerfile was written and test-built -- straightforward autotools build, no cross-compile surprises.",
+			"$comment": "For ext/ffi (mode: shared, 2026-09-23) and GLib's own GObject closures (for ext/enchant, mode: shared, 2026-09-22). Moved here from plannedLibraries once compile/libffi/Dockerfile was written and test-built -- straightforward autotools build, no cross-compile surprises.",
 			"sourceType": "github-release",
 			"repo": "libffi/libffi",
 			"sourceTemplate": "https://github.com/libffi/libffi/releases/download/v{version}/libffi-{version}.tar.gz",
@@ -304,6 +304,41 @@
 			"autoUpdate": false,
 			"versions": [
 				"5.0.4.1812"
+			]
+		},
+		"libxslt": {
+			"$comment": "For ext/xsl (mode: shared, 2026-09-23). Moved here from plannedLibraries. libxslt + libexslt (the same tarball), built against the vendored libxml2 (compile/libxml2, 2.15.4; libxslt 1.1.45 requires >= 2.15.1). No Python bindings, no libgcrypt (EXSLT crypto functions off), no debugger. download.gnome.org is the real release source (the GitLab project has tags, no release tarballs). See compile/libxslt/Dockerfile and compile/extensions/xsl/PROVENANCE.md.",
+			"sourceType": "tarball",
+			"sourceTemplate": "https://download.gnome.org/sources/libxslt/1.1/libxslt-{version}.tar.xz",
+			"checkUrl": "https://download.gnome.org/sources/libxslt/1.1/",
+			"versions": [
+				"1.1.45"
+			]
+		},
+		"netsnmp": {
+			"$comment": "For ext/snmp (mode: shared, 2026-09-23). Moved here from plannedLibraries (was keyed net-snmp; renamed to match compile/netsnmp and its Makefile target). libnetsnmp only: no agent, no apps, no MIB files installed, no Perl/Python. OpenSSL (the vendored libopenssl) for SNMPv3 SHA/AES. The GitHub tag archive is used: it ships a pre-generated configure. Tags include pre-releases (v5.10.preN) -- do not adopt those. See compile/netsnmp/Dockerfile and compile/extensions/snmp/PROVENANCE.md.",
+			"sourceType": "github-tag",
+			"repo": "net-snmp/net-snmp",
+			"sourceTemplate": "https://github.com/net-snmp/net-snmp/archive/refs/tags/v{version}.tar.gz",
+			"versions": [
+				"5.9.5.2"
+			]
+		},
+		"icu": {
+			"$comment": "For ext/intl (mode: shared, 2026-09-23). Moved here from plannedLibraries (was keyed ICU; renamed to match compile/icu and its Makefile target). Cross-compiled against a native build of itself (--with-cross-build) whose tools generate the data. libicuuc/libicui18n/libicuio only, static data packaging: the full data (~32 MB) is compiled into libicudata.a (the native icudt<major>l.dat turned into C by genccode) and linked into intl.so -- decided 2026-09-23, rather than a separate .dat loaded at runtime. configure has no emscripten host fragment (config/mh-unknown fails on purpose), so mh-linux is copied over it. Release tags are release-<version> for 78.x. compile/Makefile's FIREBIRD_ICU_VERSION (ICU headers for Firebird's build) is a separate, hardcoded pin. See compile/icu/Dockerfile and compile/extensions/intl/PROVENANCE.md.",
+			"sourceType": "github-release",
+			"repo": "unicode-org/icu",
+			"sourceTemplate": "https://github.com/unicode-org/icu/releases/download/release-{version}/icu4c-{version}-sources.tgz",
+			"versions": [
+				"78.3"
+			]
+		},
+		"libcxx": {
+			"$comment": "The C++ runtime (libc++, libc++abi, libunwind) as its own vendorLib, for C++ mode:shared extensions with no other vendored library to carry it (rar, 2026-09-23). Not downloaded: relocatable builds from the pinned emsdk (embuilder --pic, *-legacyexcept variants), so its version is the emsdk version (compile/base-image/Dockerfile) and moves only with it. The core has no C++ runtime; see compile/libcxx/Dockerfile and compile/firebird/Dockerfile.",
+			"sourceType": "emsdk",
+			"autoUpdate": false,
+			"versions": [
+				"4.0.19"
 			]
 		},
 		"simdjson": {
@@ -1142,9 +1177,18 @@
 			"switch": "--enable-var_representation"
 		},
 		"rar": {
+			"$comment": "cataphract/php-rar (PECL rar, published for PIE as cataphract/rar), mode: shared (2026-09-23). Read-only RAR support (RAR 1.5 to RAR5, multi-volume, encrypted) through the unrar source bundled in the extension itself (C++), so its only vendorLib is libcxx. Vendored under compile/extensions/rar from the GitHub tag, see its PROVENANCE.md.",
 			"builtin": false,
 			"mandatory": false,
-			"switch": "--enable-rar"
+			"switch": "--enable-rar",
+			"repo": "cataphract/php-rar",
+			"sourceTemplate": "https://github.com/cataphract/php-rar/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v4.3.1"
+			],
+			"libraries": [
+				"libcxx"
+			]
 		},
 		"mongodb": {
 			"builtin": false,
@@ -1203,7 +1247,8 @@
 				"v0.1.1",
 				"v0.1.2",
 				"v0.1.3",
-				"v0.1.4"
+				"v0.1.4",
+				"v0.1.5"
 			],
 			"libraries": []
 		},
@@ -1250,6 +1295,38 @@
 			"libraries": [
 				"utf8proc"
 			]
+		},
+		"scanmeqr": {
+			"$comment": "crazy-goat/qrcode-ext (Packagist, PIE extension name scanmeqr): the native QR encoder behind crazy-goat/scanmephp. mode: shared (2026-09-23). Its C++20 core is bundled in the package (no external library), so its only vendorLib is libcxx. Keyed by the extension name, which is also the config.yaml key and the npm package name (@kirigami/phpext-scanmeqr). Vendored under compile/extensions/scanmeqr from the GitHub tag, see its PROVENANCE.md.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-scanmeqr",
+			"repo": "crazy-goat/qrcode-ext",
+			"sourceTemplate": "https://github.com/crazy-goat/qrcode-ext/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v0.5.2"
+			],
+			"libraries": [
+				"libcxx"
+			]
+		},
+		"fastchart": {
+			"$comment": "iliaal/fastchart (Packagist, PIE extension name fastchart): chart rendering to SVG/PNG/JPEG/WebP. mode: shared (2026-09-23). Bundles plutovg/plutosvg/qrcodegen; links freetype, libpng16, libjpeg, libwebp, libz (the gd codec libs). Vendored under compile/extensions/fastchart from the GitHub tag, see its PROVENANCE.md.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-fastchart",
+			"repo": "iliaal/fastchart",
+			"sourceTemplate": "https://github.com/iliaal/fastchart/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"1.7.4"
+			],
+			"libraries": [
+				"freetype",
+				"libpng16",
+				"libjpeg",
+				"libwebp",
+				"libz"
+			]
 		}
 	},
 	"plannedLibraries": {
@@ -1261,14 +1338,6 @@
 				"1.3.2"
 			],
 			"note": "We already vendor zlib as 'libz' (zlib.net tarball, tested/working) — this is just recording the alternate GitHub-mirror source php-static-autobuilder uses, not a second copy to build."
-		},
-		"ICU": {
-			"sourceType": "github-release",
-			"repo": "unicode-org/icu",
-			"versions": [
-				"78.3"
-			],
-			"note": "For ext/intl. Needs icu.dat (~30MB) — see NOTICE.md, explicitly out of scope until reconsidered."
 		},
 		"liblzma": {
 			"sourceType": "github-release",
@@ -1336,14 +1405,6 @@
 			],
 			"note": "For ext/argon2 (also usable by password_hash())."
 		},
-		"libxslt": {
-			"sourceType": "github-release",
-			"repo": "GNOME/libxslt",
-			"versions": [
-				"1.1.45"
-			],
-			"note": "For ext/xsl. php-static-autobuilder itself flags xsl as a 'Compiling error' extension — expect trouble."
-		},
 		"libmaxminddb": {
 			"sourceType": "github-release",
 			"repo": "maxmind/libmaxminddb",
@@ -1367,14 +1428,6 @@
 				"1.0.5-netdata2"
 			],
 			"note": "For ext/bitset (PECL) — original Judy is unmaintained, netdata's fork is the active one. | A été surpassé par une nouvelle extension php que j'.ai vu sur PIE"
-		},
-		"net-snmp": {
-			"sourceType": "github-tag",
-			"repo": "net-snmp/net-snmp",
-			"versions": [
-				"5.9.5"
-			],
-			"note": "For ext/snmp. php-static-autobuilder itself flags snmp as a 'Compiling error' extension — expect trouble."
 		},
 		"libuv": {
 			"sourceType": "github-release",

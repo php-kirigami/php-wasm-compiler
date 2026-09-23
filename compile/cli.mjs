@@ -506,8 +506,12 @@ async function runUpdateVersionsCommand(argv) {
  * @kirigami/plugin-<name> package.json already carries (see the "kirigami"
  * key in ../kirigami/packages/plugin-embed/package.json, `type: "plugin"`)
  * — `type: "extension"` here, per CLAUDE.md decision 5's own terminology.
+ *
+ * `license` defaults to GPL-2.0-or-later; config.yaml's per-extension
+ * `license` (an SPDX expression) overrides it where the vendored code
+ * carries its own terms (e.g. rar: the PHP License plus unrar's own).
  */
-function extensionPackageJson(name, version, kirigami) {
+function extensionPackageJson(name, version, kirigami, license = 'GPL-2.0-or-later') {
 	return {
 		name: `@kirigami/phpext-${name}`,
 		version,
@@ -520,7 +524,7 @@ function extensionPackageJson(name, version, kirigami) {
 			url: 'git+https://github.com/php-kirigami/php-wasm-compiler.git',
 		},
 		publishConfig: { access: 'public' },
-		license: 'GPL-2.0-or-later',
+		license,
 		author: 'Maxime Larrivée-Roy',
 		type: 'module',
 		main: 'index.js',
@@ -567,7 +571,8 @@ const manifestNames = ${JSON.stringify(manifestNames)};
  * (major.minor, e.g. "8.5"), in the order they must be loaded. Each entry's
  * \`soPath\` is an absolute path to the compiled \`.so\` on disk — the caller
  * (@kirigami/php-wasm) reads its bytes, copies it into its own VM FS, and
- * writes the matching \`php.ini\` \`extension=\` directive itself.
+ * writes the matching \`php.ini\` \`extension=\` directive itself, followed by
+ * one \`key=value\` line per \`iniEntries\` entry when there are any.
  */
 export default function register(phpVersion) {
 	return manifestNames.map((manifestName) => {
@@ -576,7 +581,9 @@ export default function register(phpVersion) {
 		if (!artifact) {
 			throw new Error(\`\${manifest.name}: no artifact for PHP \${phpVersion} in \${manifestName}.\`);
 		}
-		return { name: manifest.name, soPath: path.join(packageDir, artifact.sourcePath) };
+		const entry = { name: manifest.name, soPath: path.join(packageDir, artifact.sourcePath) };
+		if (manifest.iniEntries) entry.iniEntries = manifest.iniEntries;
+		return entry;
 	});
 }
 `;
@@ -596,6 +603,8 @@ export interface RegisteredPHPExtension {
 	name: string;
 	/** Absolute path to the compiled .so on disk. */
 	soPath: string;
+	/** Extra php.ini \`key=value\` lines to write after the \`extension=\` line, if any. */
+	iniEntries?: Record<string, string>;
 }
 
 /**
@@ -717,7 +726,7 @@ function syncExtensionPackage(outDir, ext, phpVersionList) {
 
 	writeFileSync(
 		packageJsonPath,
-		JSON.stringify(extensionPackageJson(ext.name, version, kirigami), null, '\t') + '\n',
+		JSON.stringify(extensionPackageJson(ext.name, version, kirigami, ext.license), null, '\t') + '\n',
 		'utf8'
 	);
 	writeFileSync(path.join(outDir, 'index.js'), extensionIndexJs(ext), 'utf8');
@@ -781,13 +790,20 @@ function quoteConfigArg(name, value) {
  * exist) — falls back to that assumption only when the lib hasn't been
  * built yet (a --dry-run before the first `make <lib>_jspi`).
  */
-function vendorLibFlags(lib) {
+function vendorLibFlags(lib, onlyArchives) {
 	const libDir = path.join(repoRoot, 'compile', lib, 'jspi', 'dist', 'root', 'lib', 'lib');
-	const archives = existsSync(libDir)
-		? readdirSync(libDir)
-				.filter((name) => name.endsWith('.a'))
-				.sort()
-		: [`${lib}.a`];
+	// `archives` on a vendorLibs entry restricts the link to those archive
+	// names, for a lib whose build ships overlapping ones: libjpeg's
+	// libturbojpeg.a repeats libjpeg.a's objects, libpng16's libpng.a is a
+	// copy of libpng16.a, and every staged archive is linked with
+	// --whole-archive, so both would be duplicate definitions.
+	const archives = onlyArchives
+		? [...onlyArchives]
+		: existsSync(libDir)
+			? readdirSync(libDir)
+					.filter((name) => name.endsWith('.a'))
+					.sort()
+			: [`${lib}.a`];
 	const includeDir = lib === 'libxml2' ? `include/${lib}` : 'include';
 	return {
 		cflags: `-I/build/vendor/${lib}/${includeDir}`,
@@ -829,8 +845,8 @@ function buildExtensionArgs(ext, phpVersions, outDir) {
 	let extraLdflags = ext.extraLdflags ?? '';
 	let configArgs = ext.configArgs ?? '';
 
-	for (const { lib, pkgConfigVar } of normalizedVendorLibs(ext)) {
-		const { cflags, ldflags } = vendorLibFlags(lib);
+	for (const { lib, pkgConfigVar, archives } of normalizedVendorLibs(ext)) {
+		const { cflags, ldflags } = vendorLibFlags(lib, archives);
 		extraCflags = [cflags, extraCflags].filter(Boolean).join(' ');
 		extraLdflags = [ldflags, extraLdflags].filter(Boolean).join(' ');
 		if (pkgConfigVar) {
@@ -889,6 +905,18 @@ async function buildOneExtensionArtifact(ext, outDir, phpVersions, compileExtens
 	}
 	mkdirSync(outDir, { recursive: true });
 	await runCommand(compileExtensionBin, args);
+	// config.yaml's per-extension `iniEntries` (e.g. ffi's ffi.enable) go
+	// into the manifest's own `iniEntries` field (the format
+	// @php-wasm/compile-extension documents but has no CLI flag for), for
+	// the loader to append after the `extension=` line.
+	if (ext.iniEntries) {
+		const manifestPath = path.join(outDir, 'manifest.json');
+		const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+		manifest.iniEntries = Object.fromEntries(
+			Object.entries(ext.iniEntries).map(([key, value]) => [key, String(value)])
+		);
+		writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+	}
 	if (manifestName !== 'manifest.json') {
 		const from = path.join(outDir, 'manifest.json');
 		const to = path.join(outDir, manifestName);

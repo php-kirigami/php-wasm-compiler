@@ -1,0 +1,2497 @@
+/*
+  +----------------------------------------------------------------------+
+  | Copyright (c) 2025-2026, Ilia Alshanetsky                            |
+  | Copyright (c) 2025-2026, Advanced Internet Designs Inc.              |
+  +----------------------------------------------------------------------+
+  | This source file is subject to the BSD 3-Clause license that is      |
+  | bundled with this package in the file LICENSE.                       |
+  +----------------------------------------------------------------------+
+  | Author: Ilia Alshanetsky <ilia@ilia.ws>                              |
+  +----------------------------------------------------------------------+
+*/
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
+
+#include <float.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+
+#include "php_fastchart.h"
+#include "fastchart_axis.h"
+#include "fastchart_palette.h"
+#include "fastchart_text.h"
+#include "fastchart_effects.h"
+#include "fastchart_target.h"
+
+/* Portable thread-safe gmtime + UTC mktime. POSIX provides
+ * gmtime_r and timegm; MSVC ships gmtime_s (arg order swapped)
+ * and _mkgmtime. Wrap so the rest of the file stays uniform.
+ * Returns false when the timestamp can't be broken down (year
+ * overflows struct tm's int tm_year); on failure *out is left
+ * indeterminate, so callers must not read it. */
+static inline bool fc_gmtime(time_t t, struct tm *out)
+{
+#if defined(_WIN32) && !defined(__MINGW32__)
+    return gmtime_s(out, &t) == 0;
+#else
+    return gmtime_r(&t, out) != NULL;
+#endif
+}
+
+static inline time_t fc_timegm(struct tm *tm)
+{
+#if defined(_WIN32) && !defined(__MINGW32__)
+    return _mkgmtime(tm);
+#else
+    return timegm(tm);
+#endif
+}
+
+/* Layout constants use a 96-DPI baseline. Vector targets keep that scale;
+ * physical raster dimensions carry the requested DPI. */
+#define MARGIN_RIGHT_PAD       12
+#define MARGIN_TOP_PAD          8
+#define MARGIN_BOTTOM_PAD      10
+#define MARGIN_LEFT_PAD         8
+#define TICK_MARK_LEN_PX        4
+#define Y_LABEL_PADDING_PX      6
+#define X_LABEL_PADDING_PX      6
+#define TITLE_PADDING_BELOW_PX 10
+
+static inline double chart_dpi_scale(const fastchart_obj *chart,
+                                      const fastchart_target_t *t)
+{
+    /* Every vector target is DPI-invariant (both from_svg and from_pdf
+     * stamp dpi = 96 and document why); only the raster path scales
+     * margins with the physical pixel density. Scaling PDF margins
+     * while its page and font sizes stay logical inflated the reserved
+     * margins 2x at setDpi(200). */
+    if (t && (t->kind == FASTCHART_TARGET_SVG ||
+              t->kind == FASTCHART_TARGET_PDF)) return 1.0;
+    return chart->dpi > 96 ? (double)chart->dpi / 96.0 : 1.0;
+}
+
+#define DPI_PX(chart, t, value) ((int)((value) * chart_dpi_scale((chart), (t)) + 0.5))
+#define TICK_MARK_LEN(chart, t)        DPI_PX((chart), (t), TICK_MARK_LEN_PX)
+#define Y_LABEL_PADDING(chart, t)      DPI_PX((chart), (t), Y_LABEL_PADDING_PX)
+#define X_LABEL_PADDING(chart, t)      DPI_PX((chart), (t), X_LABEL_PADDING_PX)
+#define TITLE_PADDING_BELOW(chart, t)  DPI_PX((chart), (t), TITLE_PADDING_BELOW_PX)
+
+int fastchart_zval_to_double(zval *zv, double *out)
+{
+    /* A value pulled from a user array can be an IS_REFERENCE wrapper
+     * (e.g. the array was walked with `foreach ($a as &$v)`); deref so
+     * the scalar check sees the referenced number, not the reference. */
+    ZVAL_DEREF(zv);
+    switch (Z_TYPE_P(zv)) {
+        case IS_DOUBLE:
+            if (!isfinite(Z_DVAL_P(zv))) return -1;
+            *out = Z_DVAL_P(zv);
+            return 0;
+        case IS_LONG:
+            *out = (double)Z_LVAL_P(zv);
+            return 0;
+        default:
+            return -1;
+    }
+}
+
+/* zend_long is int64_t on 64-bit and int32_t on 32-bit (regardless of
+ * how the platform sizes `long` — Windows LLP64 has 32-bit `long` with
+ * 64-bit zend_long). Take and return zend_long so timestamps past
+ * 2038 round-trip correctly on every PHP-supported platform. */
+int fastchart_zval_to_long(zval *zv, zend_long *out)
+{
+    ZVAL_DEREF(zv);
+    switch (Z_TYPE_P(zv)) {
+        case IS_LONG:
+            *out = Z_LVAL_P(zv);
+            return 0;
+        case IS_DOUBLE: {
+            double d = Z_DVAL_P(zv);
+            if (!isfinite(d) ||
+                d < (double)ZEND_LONG_MIN || d > FASTCHART_LONG_MAX_AS_DOUBLE) {
+                return -1;
+            }
+            *out = (zend_long)d;
+            return 0;
+        }
+        default:
+            return -1;
+    }
+}
+
+/* Roles map to three buckets: title (title_font_*), axis tick + axis
+ * title + xaxis/yaxis/xtitle/ytitle (axis_font_*), and label/annotation
+ * (label_font_*). Anything unset falls through to the chart-wide
+ * font_path / FASTCHART_DEFAULT_FONT_SIZE.
+ *
+ * Setters validate the path against open_basedir at the time the user
+ * calls them, but draw() runs arbitrarily later. open_basedir can be
+ * narrowed via ini_set() between the setter and the render, so the
+ * resolver re-checks before the target opens the path through a PHP
+ * stream and retains the bytes for FreeType. On a runtime narrowing,
+ * fall through to the default font_path or NULL. */
+static const char *check_font_path(const zend_string *path)
+{
+    if (!path) return NULL;
+    const char *s = ZSTR_VAL(path);
+    if (php_check_open_basedir_ex(s, /*warn=*/0) != 0) return NULL;
+    return s;
+}
+
+const char *fastchart_resolve_font(fastchart_obj *chart,
+                                   fastchart_font_role role)
+{
+    /* Per-draw cache: invalidated by fastchart_compute_layout at the
+     * top of each renderer. First call after invalidation runs the
+     * full resolution + open_basedir checks; subsequent calls within
+     * the same render hit the cached path for free. */
+    if (chart->font_cache_valid) {
+        return chart->font_cache_path[(int)role];
+    }
+    const char *p;
+    const char *resolved[FC_FONT_ROLE_COUNT];
+    const char *fallback = check_font_path(chart->font_path);
+    if ((p = check_font_path(chart->title_font_path)) == NULL) p = fallback;
+    resolved[FC_FONT_TITLE] = p;
+    if ((p = check_font_path(chart->axis_font_path)) == NULL) p = fallback;
+    resolved[FC_FONT_AXIS] = p;
+    if ((p = check_font_path(chart->label_font_path)) == NULL) p = fallback;
+    resolved[FC_FONT_LABEL] = p;
+    resolved[FC_FONT_ANNOTATION] = resolved[FC_FONT_LABEL];
+    for (int i = 0; i < FC_FONT_ROLE_COUNT; i++) {
+        chart->font_cache_path[i] = resolved[i];
+    }
+    chart->font_cache_valid = true;
+    return chart->font_cache_path[(int)role];
+}
+
+double fastchart_resolve_font_size(fastchart_obj *chart,
+                                   fastchart_font_role role,
+                                   double base_default)
+{
+    double sz = base_default;
+    switch (role) {
+        case FC_FONT_TITLE:
+            if (chart->title_font_size > 0) sz = chart->title_font_size;
+            break;
+        case FC_FONT_AXIS:
+            if (chart->axis_font_size > 0) sz = chart->axis_font_size;
+            break;
+        case FC_FONT_LABEL: case FC_FONT_ANNOTATION:
+            if (chart->label_font_size > 0) sz = chart->label_font_size;
+            break;
+        case FC_FONT_ROLE_COUNT:
+            break;  /* sentinel; not a real role */
+    }
+    if (chart->thumbnail_mode) sz *= 0.6;
+    return sz;
+}
+
+/* Catmull-Rom interpolation of one segment (p1 -> p2) at parameter
+ * t in [0, 1], with the surrounding control points p0 (or p1 if
+ * none) and p3 (or p2 if none). */
+void fastchart_catmull_point(int p0x, int p0y, int p1x, int p1y,
+                             int p2x, int p2y, int p3x, int p3y,
+                             double t, int *ox, int *oy)
+{
+    double t2 = t * t;
+    double t3 = t2 * t;
+    double x = 0.5 * ((2 * p1x) +
+                      (-p0x + p2x) * t +
+                      (2 * p0x - 5 * p1x + 4 * p2x - p3x) * t2 +
+                      (-p0x + 3 * p1x - 3 * p2x + p3x) * t3);
+    double y = 0.5 * ((2 * p1y) +
+                      (-p0y + p2y) * t +
+                      (2 * p0y - 5 * p1y + 4 * p2y - p3y) * t2 +
+                      (-p0y + 3 * p1y - 3 * p2y + p3y) * t3);
+    *ox = (int)(x + 0.5);
+    *oy = (int)(y + 0.5);
+}
+
+static void polyline_pass(fastchart_target_t *t, fastchart_obj *chart,
+                          const fastchart_pt *pts, int n,
+                          int color_handle, int thickness, int dash,
+                          int aa_gd_color)
+{
+    (void)aa_gd_color;
+    int i = 0;
+    while (i < n) {
+        while (i < n && !pts[i].valid) i++;
+        int start = i;
+        while (i < n && pts[i].valid) i++;
+        int end = i;
+        int run_n = end - start;
+        if (run_n < 2) continue;
+
+        fastchart_point_t *run;
+        int cap;
+        if (chart->line_interpolation == FASTCHART_INTERP_SMOOTH) {
+            cap = 1 + 20 * (run_n - 1);
+        } else if (chart->line_interpolation == FASTCHART_INTERP_STEP_AFTER ||
+                   chart->line_interpolation == FASTCHART_INTERP_STEP_BEFORE) {
+            cap = 1 + 2 * (run_n - 1);
+        } else {
+            cap = run_n;
+        }
+        run = emalloc((size_t)cap * sizeof(*run));
+        int out = 0;
+        run[out++] = (fastchart_point_t){ pts[start].x, pts[start].y };
+
+        if (chart->line_interpolation == FASTCHART_INTERP_STEP_AFTER ||
+            chart->line_interpolation == FASTCHART_INTERP_STEP_BEFORE) {
+            bool after = (chart->line_interpolation == FASTCHART_INTERP_STEP_AFTER);
+            for (int j = start + 1; j < end; j++) {
+                int prev_x = pts[j - 1].x, prev_y = pts[j - 1].y;
+                int cur_x = pts[j].x, cur_y = pts[j].y;
+                run[out++] = after
+                    ? (fastchart_point_t){ cur_x, prev_y }
+                    : (fastchart_point_t){ prev_x, cur_y };
+                run[out++] = (fastchart_point_t){ cur_x, cur_y };
+            }
+        } else if (chart->line_interpolation == FASTCHART_INTERP_SMOOTH) {
+            for (int j = start; j < end - 1; j++) {
+                int p0i = (j > start) ? j - 1 : j;
+                int p3i = (j + 2 < end) ? j + 2 : j + 1;
+                int dx = pts[j + 1].x - pts[j].x;
+                int dy = pts[j + 1].y - pts[j].y;
+                if (dx < 0) dx = -dx;
+                if (dy < 0) dy = -dy;
+                int subdiv = (dx + dy) / 4;
+                if (subdiv < 2)  subdiv = 2;
+                if (subdiv > 20) subdiv = 20;
+                for (int k = 1; k <= subdiv; k++) {
+                    double tt = (double)k / (double)subdiv;
+                    int x, y;
+                    fastchart_catmull_point(pts[p0i].x, pts[p0i].y,
+                                  pts[j].x,   pts[j].y,
+                                  pts[j + 1].x, pts[j + 1].y,
+                                  pts[p3i].x, pts[p3i].y,
+                                  tt, &x, &y);
+                    run[out++] = (fastchart_point_t){ x, y };
+                }
+            }
+        } else {
+            for (int j = start + 1; j < end; j++) {
+                run[out++] = (fastchart_point_t){ pts[j].x, pts[j].y };
+            }
+        }
+
+        fastchart_target_polyline(t, run, out, color_handle, thickness, dash);
+        efree(run);
+    }
+}
+
+void fastchart_draw_polyline(fastchart_target_t *t, fastchart_obj *chart,
+                             const fastchart_pt *pts, int n,
+                             int color, int thickness, bool antialiased)
+{
+    if (n < 2) return;
+    int dash = (chart->line_style == FASTCHART_LINE_DOTTED)
+                   ? FASTCHART_DASH_DOTTED
+             : (chart->line_style == FASTCHART_LINE_DASHED)
+                   ? FASTCHART_DASH_DASHED
+                   : FASTCHART_DASH_SOLID;
+
+    (void)antialiased;
+    polyline_pass(t, chart, pts, n, color, thickness, dash, -1);
+}
+
+void fastchart_draw_marker(fastchart_target_t *t, int x, int y,
+                           int style, int size, int color)
+{
+    if (style == FASTCHART_MARKER_NONE || size <= 0) return;
+    int half = size / 2;
+    if (half < 1) half = 1;
+
+    switch (style) {
+        case FASTCHART_MARKER_CIRCLE:
+            fastchart_target_ellipse(t, x, y, size / 2, size / 2,
+                                     color, 1, 0);
+            break;
+        case FASTCHART_MARKER_SQUARE:
+            fastchart_target_rect(t, x - half, y - half,
+                                  (x + half) - (x - half) + 1,
+                                  (y + half) - (y - half) + 1,
+                                  color, 1, 0);
+            break;
+        case FASTCHART_MARKER_DIAMOND: {
+            fastchart_point_t pts[4] = {
+                { x,        y - half },
+                { x + half, y        },
+                { x,        y + half },
+                { x - half, y        },
+            };
+            fastchart_target_polygon(t, pts, 4, color, 1, 0);
+            break;
+        }
+        case FASTCHART_MARKER_CROSS:
+            fastchart_target_line(t, x - half, y - half, x + half, y + half,
+                                  color, 2, FASTCHART_DASH_SOLID);
+            fastchart_target_line(t, x - half, y + half, x + half, y - half,
+                                  color, 2, FASTCHART_DASH_SOLID);
+            break;
+        case FASTCHART_MARKER_PLUS:
+            fastchart_target_line(t, x - half, y, x + half, y,
+                                  color, 2, FASTCHART_DASH_SOLID);
+            fastchart_target_line(t, x, y - half, x, y + half,
+                                  color, 2, FASTCHART_DASH_SOLID);
+            break;
+        default:
+            break;
+    }
+}
+
+void fastchart_begin_render(fastchart_obj *chart, fastchart_target_t *t)
+{
+    /* Invalidate before any render work: open_basedir may narrow between
+     * draws, and shadow handles belong to the current target. */
+    chart->font_cache_valid = false;
+    chart->shadow_color_valid = false;
+
+    (void)chart;
+    (void)t;
+}
+
+bool fastchart_apply_plot_rect(const fastchart_obj *chart,
+                               int *x0, int *y0, int *x1, int *y1)
+{
+    if (!chart->has_plot_rect) return false;
+	int max_x = chart->width > 0 ? (int)chart->width - 1 : 0;
+	int max_y = chart->height > 0 ? (int)chart->height - 1 : 0;
+
+	*x0 = chart->plot_x0 < 0 ? 0
+		: (chart->plot_x0 > max_x ? max_x : chart->plot_x0);
+	*y0 = chart->plot_y0 < 0 ? 0
+		: (chart->plot_y0 > max_y ? max_y : chart->plot_y0);
+	*x1 = chart->plot_x1 < 0 ? 0
+		: (chart->plot_x1 > max_x ? max_x : chart->plot_x1);
+	*y1 = chart->plot_y1 < 0 ? 0
+		: (chart->plot_y1 > max_y ? max_y : chart->plot_y1);
+    return true;
+}
+
+void fastchart_compute_layout(fastchart_obj *chart, fastchart_target_t *t,
+                              int has_y_axis, int has_x_axis,
+                              const char *const *cat_y_labels,
+                              int n_cat_y_labels,
+                              fastchart_rect *out_plot)
+{
+    int W, H;
+    fastchart_target_get_dims(t, &W, &H);
+
+    if (chart->has_plot_rect) {
+		out_plot->x0 = 0;
+		out_plot->y0 = 0;
+		out_plot->x1 = W - 1;
+		out_plot->y1 = H - 1;
+		fastchart_apply_plot_rect(chart, &out_plot->x0, &out_plot->y0,
+			&out_plot->x1, &out_plot->y1);
+        return;
+    }
+
+    double dpi_scale = chart_dpi_scale(chart, t);
+    int tick_mark_len = TICK_MARK_LEN(chart, t);
+    int y_label_pad   = Y_LABEL_PADDING(chart, t);
+    int x_label_pad   = X_LABEL_PADDING(chart, t);
+    int title_pad     = TITLE_PADDING_BELOW(chart, t);
+
+    int top    = DPI_PX(chart, t, MARGIN_TOP_PAD);
+    int bottom = DPI_PX(chart, t, MARGIN_BOTTOM_PAD);
+    int left   = DPI_PX(chart, t, MARGIN_LEFT_PAD);
+    int right  = DPI_PX(chart, t, MARGIN_RIGHT_PAD);
+
+    /* Each role is resolved through fastchart_resolve_font so the
+     * draw-time open_basedir re-check fires before the path reaches
+     * FreeType. Layout runs once per draw(), so the per-role
+     * resolution cost is bounded. */
+    const char *title_font = fastchart_resolve_font(chart, FC_FONT_TITLE);
+    const char *axis_font  = fastchart_resolve_font(chart, FC_FONT_AXIS);
+    double size = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    /* Per-role sizes: the draw paths honor set{Title,Axis}Font size
+     * overrides via fastchart_resolve_font_size, so layout must reserve
+     * with the same sizes — measuring with the base size leaves an
+     * oversized title clipping off-canvas and oversized axis labels
+     * overrunning the reserved margins into the plot. */
+    double title_size      = fastchart_resolve_font_size(chart, FC_FONT_TITLE, size * 1.4);
+    double axis_size       = fastchart_resolve_font_size(chart, FC_FONT_AXIS,  size);
+    double axis_title_size = fastchart_resolve_font_size(chart, FC_FONT_AXIS,  size * 1.1);
+
+    /* Thumbnail mode suppresses every label / title / tick text, so
+     * reserving margin for them just shrinks the plot for no reason.
+     * Skip all label-driven reservations and let the plot fill the
+     * canvas minus the small base padding constants. */
+    bool labels_drawn = !chart->thumbnail_mode;
+
+    int probe_w = 0, probe_h = 0;
+    int probe_ok = (axis_font && fastchart_text_measure(t, axis_font, axis_size, "999999",
+                                                        &probe_w, &probe_h, NULL, 0) == 0);
+
+    if (labels_drawn && chart->title && ZSTR_LEN(chart->title) > 0 && title_font) {
+        int th;
+        if (fastchart_text_measure(t, title_font, title_size, ZSTR_VAL(chart->title),
+                                   NULL, &th, NULL, 0) == 0) {
+            top += th + title_pad;
+        }
+    }
+
+    /* Y-axis: reserve enough room for the widest tick label.
+     *
+     * For numeric Y axes the actual label width is data-dependent;
+     * we pick a conservative "999999" sample so layout is stable
+     * across data ranges.
+     *
+     * For categorical Y axes (horizontal-bar) the labels can be
+     * arbitrarily long ("/api/v2/exports", etc.) — measure the
+     * widest one so it doesn't get clipped at the canvas edge.
+     * Falls back to the numeric probe if none of the labels can be
+     * measured. */
+    if (labels_drawn && has_y_axis && probe_ok) {
+        int y_label_w = probe_w;
+        if (cat_y_labels && n_cat_y_labels > 0 && axis_font) {
+            /* Stride exactly like fastchart_draw_y_axis_categorical
+             * (max_visible 20): only labels the drawer renders can clip,
+             * so only those need measuring. */
+            int stride = 1;
+            if (n_cat_y_labels > 20 + 2)
+                stride = (n_cat_y_labels + 20 - 1) / 20;
+            int widest = 0;
+            for (int i = 0; i < n_cat_y_labels; i += stride) {
+                if (!cat_y_labels[i]) continue;
+                int w = 0;
+                if (fastchart_text_measure(t, axis_font, axis_size, cat_y_labels[i],
+                                           &w, NULL, NULL, 0) == 0 && w > widest) {
+                    widest = w;
+                }
+            }
+            if (widest > y_label_w) y_label_w = widest;
+        }
+        left += y_label_w + tick_mark_len + y_label_pad;
+    }
+
+    /* Y-axis title: rotated 90deg on the left of the y-axis labels.
+     * The title's height becomes its visible width after rotation. */
+    if (labels_drawn && has_y_axis && chart->y_axis_title && axis_font) {
+        int th;
+        if (fastchart_text_measure(t, axis_font, axis_title_size, ZSTR_VAL(chart->y_axis_title),
+                                   NULL, &th, NULL, 0) == 0) {
+            left += th + (int)(8 * dpi_scale + 0.5);
+        }
+    }
+
+    /* Secondary Y axis: mirror the left-side reservation on the
+     * right edge using the cached probe. */
+    if (labels_drawn && has_y_axis && chart->secondary_y && probe_ok) {
+        right += probe_w + tick_mark_len + y_label_pad;
+    } else if (labels_drawn && has_y_axis && has_x_axis && probe_ok
+               && left > right * 2) {
+        /* Anchor right margin at left / 2 (visual 2:1 ratio of left to
+         * right). The bare MARGIN_RIGHT_PAD next to a full Y-axis
+         * label reservation on the left read as visibly off-center;
+         * this also gives the rightmost X-axis label half-extent
+         * room to extend past plot.x1 without clipping the canvas. */
+        right = left / 2;
+    }
+
+    /* X-axis labels. Horizontal labels reserve one line; rotated
+     * labels reserve roughly the label width as height. The
+     * "999999" numeric probe is fine for un-rotated numeric ticks
+     * but understates category labels like "Jan 2025" when the
+     * caller set setCategoryLabels(). For rotated layouts the
+     * projected vertical extent is what bounds the bottom margin,
+     * so when category labels are present we measure the widest
+     * and use that instead of the probe. Matches the Y-axis logic
+     * above for `cat_y_labels`. */
+    if (labels_drawn && has_x_axis && probe_ok) {
+        int x_label_w = probe_w;
+        /* The widest-label scan only feeds the rotated (45/90) branches
+         * below; the angle-0 branch uses probe_h alone, so skip the scan
+         * entirely there. When it does run, stride exactly like
+         * fastchart_draw_x_axis_categorical (rotated -> max_visible 30,
+         * times the user stride) so only labels that will actually be
+         * drawn are measured — a strided-out label can't clip. */
+        if (chart->x_axis_label_angle != 0
+            && chart->category_labels && chart->n_category_labels > 0
+            && axis_font) {
+            int n = chart->n_category_labels;
+            int stride = 1;
+            if (n > 30 + 2) stride = (n + 30 - 1) / 30;
+            if (chart->x_label_stride > 1) stride *= (int)chart->x_label_stride;
+            int widest = 0;
+            for (int i = 0; i < n; i += stride) {
+                const char *lbl = chart->category_labels[i];
+                if (!lbl) continue;
+                int w = 0;
+                if (fastchart_text_measure(t, axis_font, axis_size, lbl,
+                                           &w, NULL, NULL, 0) == 0 && w > widest) {
+                    widest = w;
+                }
+            }
+            if (widest > x_label_w) x_label_w = widest;
+        }
+        int needed;
+        if (chart->x_axis_label_angle == 90) {
+            needed = x_label_w + tick_mark_len + x_label_pad;
+        } else if (chart->x_axis_label_angle == 45) {
+            /* Rotated text ends at its anchor just below the axis and
+             * extends down-left; the vertical span below the plot is
+             * ≈ 0.707 * (label width + ascender). */
+            needed = (int)(((double)x_label_w + probe_h) * 0.707)
+                   + tick_mark_len + x_label_pad;
+        } else {
+            needed = probe_h + tick_mark_len + x_label_pad;
+        }
+        bottom += needed;
+    }
+
+    if (labels_drawn && has_x_axis && chart->x_axis_title && axis_font) {
+        int th;
+        if (fastchart_text_measure(t, axis_font, axis_title_size, ZSTR_VAL(chart->x_axis_title),
+                                   NULL, &th, NULL, 0) == 0) {
+            bottom += th + (int)(6 * dpi_scale + 0.5);
+        }
+    }
+
+    out_plot->x0 = left;
+    out_plot->y0 = top;
+    out_plot->x1 = W - right - 1;
+    out_plot->y1 = H - bottom - 1;
+
+    if (out_plot->x1 < out_plot->x0 + 10) out_plot->x1 = out_plot->x0 + 10;
+    if (out_plot->y1 < out_plot->y0 + 10) out_plot->y1 = out_plot->y0 + 10;
+}
+
+/* Standard Cartesian setup; bespoke renderers manage their own layout. */
+void fastchart_render_cartesian_setup(fastchart_obj *chart,
+                                      fastchart_target_t *t,
+                                      int has_y_axis, int has_x_axis,
+                                      const char *const *cat_y_labels,
+                                      int n_cat_y_labels,
+                                      fastchart_rect *out_plot,
+                                      fastchart_palette *out_pal)
+{
+    fastchart_compute_layout(chart, t, has_y_axis, has_x_axis,
+                             cat_y_labels, n_cat_y_labels, out_plot);
+
+    fastchart_palette_init(t, (int)chart->theme, out_pal);
+    fastchart_palette_apply_overrides(t, chart, out_pal);
+
+    fastchart_draw_frame(t, chart, out_plot, out_pal);
+    fastchart_draw_title(t, chart, out_plot, out_pal);
+}
+
+static void fastchart_value_range_compute_indexed(double dmin, double dmax,
+		int target_ticks, fastchart_value_range *out)
+{
+	double scale = fmax(fabs(dmin), fabs(dmax));
+	double scaled_span = dmax / scale - dmin / scale;
+	double step = scale * (scaled_span / (double)(target_ticks - 1));
+
+	if (!isfinite(step) || step <= 0.0) {
+		step = DBL_MAX;
+	}
+	out->min = dmin;
+	out->max = dmax;
+	out->tick_step = step;
+	out->log_scale = 0;
+	out->n_ticks = target_ticks;
+	for (int i = 0; i < target_ticks; i++) {
+		out->ticks[i] = fastchart_lerp_finite(dmin, dmax,
+			(double)i / (double)(target_ticks - 1));
+	}
+}
+
+void fastchart_value_range_compute(double dmin, double dmax,
+                                   int target_ticks,
+                                   fastchart_value_range *out)
+{
+    if (target_ticks < 2) target_ticks = 5;
+    if (target_ticks > FASTCHART_MAX_TICKS) target_ticks = FASTCHART_MAX_TICKS;
+
+    /* Degenerate / empty data: bracket around 0..1 so the axis still
+     * draws something sensible instead of dividing by zero downstream. */
+    if (!isfinite(dmin) || !isfinite(dmax) || dmin > dmax) {
+        dmin = 0.0;
+        dmax = 1.0;
+	} else if (isfinite(dmax - dmin) && dmax - dmin < 1e-12) {
+        if (fabs(dmin) < 1e-12) {
+            dmax = 1.0;
+        } else {
+            double pad = fabs(dmin) * 0.1;
+			double padded_min = dmin - pad;
+			double padded_max = dmax + pad;
+
+			if (isfinite(padded_min)) dmin = padded_min;
+			if (isfinite(padded_max)) dmax = padded_max;
+        }
+    }
+
+	if (!isfinite(dmax - dmin)) {
+		fastchart_value_range_compute_indexed(dmin, dmax, target_ticks, out);
+		return;
+	}
+
+    /* Pick a "nice" tick step using the 1/2/5 × 10^N progression.
+     * Extreme finite ranges can overflow the ordinary span or rounded
+     * endpoints; those use indexed interpolation so the literal data
+     * range is retained without feeding Inf into pixel mapping. */
+    double range = dmax - dmin;
+    double rough_step = range / (double)(target_ticks - 1);
+    double mag = isfinite(rough_step) && rough_step > 0
+        ? pow(10.0, floor(log10(rough_step))) : 1.0;
+    double norm = (isfinite(mag) && mag > 0) ? rough_step / mag : 1.0;
+    double step;
+    if      (norm < 1.5)  step = 1.0  * mag;
+    else if (norm < 3.0)  step = 2.0  * mag;
+    else if (norm < 4.0)  step = 2.5  * mag;
+    else if (norm < 7.0)  step = 5.0  * mag;
+    else                  step = 10.0 * mag;
+
+    double nice_min = floor(dmin / step) * step;
+    double nice_max = ceil(dmax / step) * step;
+    if (!isfinite(nice_min) || !isfinite(nice_max) || !isfinite(step) || step <= 0) {
+		fastchart_value_range_compute_indexed(dmin, dmax, target_ticks, out);
+		return;
+    }
+
+    out->min = nice_min;
+    out->max = nice_max;
+    out->tick_step = step;
+    out->log_scale = 0;
+    out->n_ticks = 0;
+
+    for (double v = nice_min;
+         v <= nice_max + step * 0.5 && out->n_ticks < FASTCHART_MAX_TICKS;
+         v += step) {
+        out->ticks[out->n_ticks++] = v;
+    }
+    if (out->n_ticks < 2) {
+        out->ticks[0] = nice_min;
+        out->ticks[1] = nice_max;
+        out->n_ticks = 2;
+    }
+}
+
+int fastchart_value_range_apply_override(const fastchart_obj *chart,
+                                         fastchart_value_range *out)
+{
+	if (!chart->has_y_min && !chart->has_y_max && !chart->has_y_interval)
+		return 0;
+	if (out->log_scale) return 0;  /* log-scale ignores forced bounds */
+
+    double mn = chart->has_y_min ? chart->y_min : out->min;
+    double mx = chart->has_y_max ? chart->y_max : out->max;
+	if (mx <= mn) {
+		zend_value_error(
+			"FastChart\\Chart::setYAxisRange() resolved min must be < resolved max");
+		return -1;
+	}
+
+    out->min = mn;
+    out->max = mx;
+
+    if (chart->has_y_interval) {
+        double step = chart->y_interval;
+        /* Stride by an integer multiple of the requested interval so the
+         * bounded tick array spans the whole range. */
+		double span = mx - mn;
+		if (!isfinite(span)) {
+			fastchart_value_range_compute_indexed(mn, mx,
+				FASTCHART_MAX_TICKS, out);
+			return 0;
+		}
+        double k = ceil(span / (step * (double)(FASTCHART_MAX_TICKS - 1)));
+        if (k > 1.0 && isfinite(k)) step *= k;
+        out->tick_step = step;
+        out->n_ticks = 0;
+        for (double v = mn;
+             v <= mx + step * 0.5 && out->n_ticks < FASTCHART_MAX_TICKS;
+             v += step) {
+            out->ticks[out->n_ticks++] = v;
+        }
+        if (out->n_ticks < 2) {
+            out->ticks[0] = mn;
+            out->ticks[1] = mx;
+            out->n_ticks = 2;
+        }
+    } else {
+        /* Re-run the nice-tick generator on the forced bounds, keeping
+         * only ticks inside [mn, mx]: the generator rounds outward to
+         * nice values, and an out-of-range tick would be clamped onto
+         * the plot edge by the pixel mapping and drawn there with the
+         * wrong label (e.g. "0" rendered at 0.3's position). */
+        fastchart_value_range tmp;
+        fastchart_value_range_compute(mn, mx, 6, &tmp);
+        double eps = tmp.tick_step * 1e-9;
+        out->tick_step = tmp.tick_step;
+        out->n_ticks = 0;
+        for (int i = 0; i < tmp.n_ticks; i++) {
+            if (tmp.ticks[i] >= mn - eps && tmp.ticks[i] <= mx + eps) {
+                out->ticks[out->n_ticks++] = tmp.ticks[i];
+            }
+        }
+        if (out->n_ticks < 2) {
+            out->ticks[0] = mn;
+            out->ticks[1] = mx;
+            out->n_ticks = 2;
+        }
+        /* But preserve the user's literal min/max (not the rounded
+         * "nice" version), since the user explicitly asked. */
+        out->min = mn;
+        out->max = mx;
+    }
+	return 0;
+}
+
+int fastchart_value_range_compute_log(double dmin, double dmax,
+                                       fastchart_value_range *out)
+{
+    if (!isfinite(dmin) || !isfinite(dmax) || dmin <= 0.0 || dmax <= 0.0) {
+        return -1;
+    }
+    if (dmax < dmin) {
+        double t = dmin; dmin = dmax; dmax = t;
+    }
+    double lo = floor(log10(dmin));
+    double hi = ceil(log10(dmax));
+    if (hi <= lo) hi = lo + 1.0;
+
+    out->min = pow(10.0, lo);
+    out->max = pow(10.0, hi);
+    out->tick_step = 1.0;        /* one decade per tick */
+    out->log_scale = 1;
+    /* Cache the log-domain bounds so the per-point y/x_to_pixel doesn't
+     * recompute log10(min)/log10(max) on every call. */
+    out->log_min = log10(out->min);
+    out->log_span = log10(out->max) - out->log_min;
+    /* A subnormal positive dmin (e.g. 5e-324) passes the dmin > 0 guard
+     * but pow(10, floor(log10(dmin))) underflows to 0.0, making log_min
+     * -Inf and log_span +Inf. Those poison the per-point frac (NaN) which
+     * then reaches the (int) cast in y/x_to_pixel. Reject the underflow
+     * here so the caller takes its strictly-positive value-error path. */
+    if (out->min <= 0.0 || !isfinite(out->log_min) || !isfinite(out->log_span)) {
+        return -1;
+    }
+    out->n_ticks = 0;
+
+    for (double e = lo;
+         e <= hi + 0.5 && out->n_ticks < FASTCHART_MAX_TICKS;
+         e += 1.0) {
+        out->ticks[out->n_ticks++] = pow(10.0, e);
+    }
+    if (out->n_ticks < 2) {
+        out->ticks[0] = out->min;
+        out->ticks[1] = out->max;
+        out->n_ticks = 2;
+    }
+    return 0;
+}
+
+int fastchart_y_to_pixel(double y, const fastchart_value_range *range,
+		const fastchart_rect *plot)
+{
+	/* Callers reject non-finite data upstream; keep this shared cast
+	 * chokepoint defined even when a malformed value gets through. */
+	if (!isfinite(y)) return plot->y1;
+	double frac;
+	if (range->log_scale) {
+		if (y <= 0.0) return plot->y1;
+		double l_span = range->log_span;
+		if (l_span < 1e-12) return plot->y1;
+		frac = (log10(y) - range->log_min) / l_span;
+	} else {
+		double span = range->max - range->min;
+		if (EXPECTED(isfinite(span) && span != 0.0)) {
+			frac = (y - range->min) / span;
+			if (UNEXPECTED(!isfinite(frac))) {
+				frac = fastchart_normalize_finite(
+					y, range->min, range->max);
+			}
+		} else {
+			frac = fastchart_normalize_finite(
+				y, range->min, range->max);
+		}
+	}
+	if (!isfinite(frac)) return plot->y1;
+	if (frac < 0.0) frac = 0.0;
+	if (frac > 1.0) frac = 1.0;
+	int h = plot->y1 - plot->y0;
+	return plot->y1 - (int)(frac * (double)h + 0.5);
+}
+
+int fastchart_x_to_pixel(double x, const fastchart_value_range *range,
+		const fastchart_rect *plot)
+{
+	if (!isfinite(x)) return plot->x0;
+	double frac;
+	if (range->log_scale) {
+		if (x <= 0.0) return plot->x0;
+		double l_span = range->log_span;
+		if (l_span < 1e-12) return plot->x0;
+		frac = (log10(x) - range->log_min) / l_span;
+	} else {
+		double span = range->max - range->min;
+		if (EXPECTED(isfinite(span) && span != 0.0)) {
+			frac = (x - range->min) / span;
+			if (UNEXPECTED(!isfinite(frac))) {
+				frac = fastchart_normalize_finite(
+					x, range->min, range->max);
+			}
+		} else {
+			frac = fastchart_normalize_finite(
+				x, range->min, range->max);
+		}
+	}
+	if (!isfinite(frac)) return plot->x0;
+	if (frac < 0.0) frac = 0.0;
+	if (frac > 1.0) frac = 1.0;
+	int w = plot->x1 - plot->x0;
+	return plot->x0 + (int)(frac * (double)w + 0.5);
+}
+
+int fastchart_frac_to_px(double frac, int lo, int hi)
+{
+    /* Clamp before the int cast: callers derive frac from user
+     * coordinates that addIconAt rejects only for NaN/Inf, so a
+     * finite-but-large value would overflow frac*(hi-lo) past INT_MAX
+     * and make the cast UB (C11 6.3.1.4p1). A NaN frac (inf/inf from an
+     * overflowed axis span) passes both comparisons below, so reject it
+     * explicitly first. */
+    if (!isfinite(frac)) frac = 0.0;
+    if (frac < 0.0) frac = 0.0;
+    if (frac > 1.0) frac = 1.0;
+    return lo + (int)(frac * (hi - lo) + 0.5);
+}
+
+double fastchart_normalize_finite(double value, double start, double end)
+{
+	if (!isfinite(value) || !isfinite(start) || !isfinite(end)) {
+		return 0.0;
+	}
+	double span = end - start;
+	if (EXPECTED(isfinite(span) && span != 0.0)) {
+		double fraction = (value - start) / span;
+		if (fraction <= 0.0) return 0.0;
+		if (fraction >= 1.0) return 1.0;
+		return fraction;
+	}
+	if (start == end) return 0.0;
+
+	double scale = fmax(fabs(start), fabs(end));
+	double scaled_start = start / scale;
+	double scaled_end = end / scale;
+	double fraction = (value / scale - scaled_start)
+		/ (scaled_end - scaled_start);
+	if (!isfinite(fraction)) return 0.0;
+	if (fraction < 0.0) return 0.0;
+	if (fraction > 1.0) return 1.0;
+	return fraction;
+}
+
+double fastchart_lerp_finite(double start, double end, double fraction)
+{
+    if (fraction <= 0.0) return start;
+    if (fraction >= 1.0) return end;
+    if ((start < 0.0 && end < 0.0) || (start > 0.0 && end > 0.0)) {
+        return start + (end - start) * fraction;
+    }
+    return start * (1.0 - fraction) + end * fraction;
+}
+
+int fastchart_y_categorical_center(const fastchart_rect *plot, int idx, int n)
+{
+    if (n <= 0) return plot->y0;
+    int h = plot->y1 - plot->y0;
+    double step = (double)h / (double)n;
+    return plot->y0 + (int)(step * (idx + 0.5));
+}
+
+/* Load each distinct PNG/JPEG through the target once per render; emit
+ * a shared image definition and transformed <use> placements. The loader
+ * enforces open_basedir and source caps, then releases raw/base64 bytes. */
+
+static int composite_bg_image(fastchart_target_t *t, int W, int H,
+                              const char *path)
+{
+    if (!path || !*path) return 0;
+    fastchart_target_image(t, 0, 0, W, H, path);
+    return 1;
+}
+
+void fastchart_blit_icon(fastchart_target_t *t, const fastchart_icon *icon,
+                         int px, int py)
+{
+    if (!icon || !icon->path || !*icon->path) return;
+
+	int sw, sh;
+	if (fastchart_target_image_dims(t, icon->path, &sw, &sh) != 0) return;
+
+    int max_w = icon->max_w > 0 ? icon->max_w : sw;
+    int max_h = icon->max_h > 0 ? icon->max_h : sh;
+
+    int dw = sw, dh = sh;
+    if (dw > max_w) {
+        dh = (int)((double)dh * (double)max_w / (double)dw + 0.5);
+        dw = max_w;
+    }
+    if (dh > max_h) {
+        dw = (int)((double)dw * (double)max_h / (double)dh + 0.5);
+        dh = max_h;
+    }
+    if (dw < 1) dw = 1;
+    if (dh < 1) dh = 1;
+
+    int x = px - dw / 2;
+    int y = py - dh / 2;
+	fastchart_target_image(t, x, y, dw, dh, icon->path);
+}
+
+/* Translate the 0..127 per-band alpha (0=opaque, 127=transparent)
+ * to the 0..255 (255=opaque) convention used by fastchart_target_color.
+ * The inverse of the (255 - a) >> 1 mapping in fastchart_target_color,
+ * with +1 rounding so alpha=0 round-trips to fully opaque. */
+static inline int band_alpha_to_255(int gd_alpha)
+{
+    return fastchart_gd_alpha_to_byte(gd_alpha);
+}
+
+void fastchart_draw_plot_bands(fastchart_target_t *t, fastchart_obj *chart,
+                               const fastchart_rect *plot,
+                               const fastchart_value_range *yrange,
+                               const fastchart_palette *pal)
+{
+    (void)pal;
+    if (!chart->plot_bands || chart->n_plot_bands <= 0) return;
+    for (int i = 0; i < chart->n_plot_bands; i++) {
+        const fastchart_plot_band *b = &chart->plot_bands[i];
+        if (b->is_vertical) continue;
+        /* Map data Y to pixels. fastchart_y_to_pixel inverts the axis,
+         * so the high data value becomes the small pixel y (top). */
+        int y_top    = fastchart_y_to_pixel(b->high, yrange, plot);
+        int y_bottom = fastchart_y_to_pixel(b->low,  yrange, plot);
+
+        /* Clip to the plot rect. Bands fully outside the visible Y
+         * range collapse to a zero-height rectangle and skip. */
+        if (y_top < plot->y0) y_top = plot->y0;
+        if (y_bottom > plot->y1) y_bottom = plot->y1;
+        if (y_top >= y_bottom) continue;
+
+        int r = (b->color_rgb >> 16) & 0xFF;
+        int g = (b->color_rgb >> 8) & 0xFF;
+        int bl = b->color_rgb & 0xFF;
+        int color = fastchart_target_color(t, r, g, bl,
+                                           band_alpha_to_255(b->alpha));
+        if (color < 0) continue;
+        fastchart_target_rect(t, plot->x0 + 1, y_top,
+                              (plot->x1 - 1) - (plot->x0 + 1) + 1,
+                              y_bottom - y_top + 1,
+                              color, 1, 0);
+    }
+}
+
+/* Shared inner: blit the per-band filled rectangle once x0/x1 pixel
+ * bounds are computed by the caller. Bands fully outside the plot
+ * rect or with x0 >= x1 are skipped. */
+static void fastchart_draw_v_band_at(fastchart_target_t *t,
+                                     const fastchart_plot_band *b,
+                                     const fastchart_rect *plot,
+                                     int x_left, int x_right)
+{
+    if (x_left < plot->x0) x_left = plot->x0 + 1;
+    if (x_right > plot->x1) x_right = plot->x1 - 1;
+    if (x_left >= x_right) return;
+    int r = (b->color_rgb >> 16) & 0xFF;
+    int g = (b->color_rgb >> 8) & 0xFF;
+    int bl = b->color_rgb & 0xFF;
+    int color = fastchart_target_color(t, r, g, bl,
+                                       band_alpha_to_255(b->alpha));
+    if (color < 0) return;
+    fastchart_target_rect(t, x_left, plot->y0 + 1,
+                          x_right - x_left + 1,
+                          (plot->y1 - 1) - (plot->y0 + 1) + 1,
+                          color, 1, 0);
+}
+
+/* Horizontal stripes spanning fractional Y category indices, for
+ * horizontal-bar layouts where the category axis runs top-to-bottom.
+ * Skips vertical bands (those are X-range stripes drawn separately
+ * via the xrange helper). */
+void fastchart_draw_h_plot_bands_categorical(fastchart_target_t *t, fastchart_obj *chart,
+                                             const fastchart_rect *plot,
+                                             int n_categories,
+                                             const fastchart_palette *pal)
+{
+    (void)pal;
+    if (!chart->plot_bands || chart->n_plot_bands <= 0) return;
+    if (n_categories <= 0) return;
+    for (int i = 0; i < chart->n_plot_bands; i++) {
+        const fastchart_plot_band *b = &chart->plot_bands[i];
+        if (b->is_vertical) continue;
+        double frac_lo = b->low  / (double)n_categories;
+        double frac_hi = b->high / (double)n_categories;
+        /* Clamp the fractional category index to [0,1] before the pixel
+         * cast: band edges are finite-checked at the setter but not
+         * range-checked, so frac_to_px guards the (int) conversion. */
+        int y_top    = fastchart_frac_to_px(frac_lo, plot->y0, plot->y1);
+        int y_bottom = fastchart_frac_to_px(frac_hi, plot->y0, plot->y1);
+        if (y_top < plot->y0) y_top = plot->y0 + 1;
+        if (y_bottom > plot->y1) y_bottom = plot->y1 - 1;
+        if (y_top >= y_bottom) continue;
+
+        int r = (b->color_rgb >> 16) & 0xFF;
+        int g = (b->color_rgb >> 8) & 0xFF;
+        int bl = b->color_rgb & 0xFF;
+        int color = fastchart_target_color(t, r, g, bl,
+                                           band_alpha_to_255(b->alpha));
+        if (color < 0) continue;
+        fastchart_target_rect(t, plot->x0 + 1, y_top,
+                              (plot->x1 - 1) - (plot->x0 + 1) + 1,
+                              y_bottom - y_top + 1,
+                              color, 1, 0);
+    }
+}
+
+void fastchart_draw_v_plot_bands_categorical(fastchart_target_t *t, fastchart_obj *chart,
+                                             const fastchart_rect *plot,
+                                             int n_categories,
+                                             const fastchart_palette *pal)
+{
+    (void)pal;
+    if (!chart->plot_bands || chart->n_plot_bands <= 0) return;
+    if (n_categories <= 0) return;
+    for (int i = 0; i < chart->n_plot_bands; i++) {
+        const fastchart_plot_band *b = &chart->plot_bands[i];
+        if (!b->is_vertical) continue;
+        /* Categorical X: low/high are fractional category indices.
+         * Map index -> pixel by step = span / n_categories, with the
+         * categorical-center half-step offset baked in by treating
+         * 0..n as the band's natural domain (so band(0, 1) covers
+         * the first slot end-to-end). */
+        double frac_lo = b->low  / (double)n_categories;
+        double frac_hi = b->high / (double)n_categories;
+        int x_left  = fastchart_frac_to_px(frac_lo, plot->x0, plot->x1);
+        int x_right = fastchart_frac_to_px(frac_hi, plot->x0, plot->x1);
+        fastchart_draw_v_band_at(t, b, plot, x_left, x_right);
+    }
+}
+
+void fastchart_draw_v_plot_bands_xrange(fastchart_target_t *t, fastchart_obj *chart,
+                                        const fastchart_rect *plot,
+                                        const fastchart_value_range *xrange,
+                                        const fastchart_palette *pal)
+{
+    (void)pal;
+    if (!chart->plot_bands || chart->n_plot_bands <= 0) return;
+    for (int i = 0; i < chart->n_plot_bands; i++) {
+        const fastchart_plot_band *b = &chart->plot_bands[i];
+        if (!b->is_vertical) continue;
+        int x_left  = fastchart_x_to_pixel(b->low,  xrange, plot);
+        int x_right = fastchart_x_to_pixel(b->high, xrange, plot);
+        fastchart_draw_v_band_at(t, b, plot, x_left, x_right);
+    }
+}
+
+void fastchart_draw_v_plot_bands_time(fastchart_target_t *t, fastchart_obj *chart,
+                                      const fastchart_rect *plot,
+                                      zend_long t_min, zend_long t_max,
+                                      const fastchart_palette *pal)
+{
+    (void)pal;
+    if (!chart->plot_bands || chart->n_plot_bands <= 0) return;
+    for (int i = 0; i < chart->n_plot_bands; i++) {
+        const fastchart_plot_band *b = &chart->plot_bands[i];
+        if (!b->is_vertical) continue;
+        /* addVerticalBand screens b->low / b->high for NaN/Inf only —
+         * a finite-but-out-of-range double (e.g. 1e30) flowing into
+         * (zend_long) is UB per C / Annex F. Clamp to the destination
+         * range before the cast. */
+        double lo = b->low;
+        double hi = b->high;
+        if (lo < (double)ZEND_LONG_MIN) lo = (double)ZEND_LONG_MIN;
+        else if (lo > FASTCHART_LONG_MAX_AS_DOUBLE) lo = FASTCHART_LONG_MAX_AS_DOUBLE;
+        if (hi < (double)ZEND_LONG_MIN) hi = (double)ZEND_LONG_MIN;
+        else if (hi > FASTCHART_LONG_MAX_AS_DOUBLE) hi = FASTCHART_LONG_MAX_AS_DOUBLE;
+        int x_left  = fastchart_x_time_to_pixel(plot, (zend_long)lo, t_min, t_max);
+        int x_right = fastchart_x_time_to_pixel(plot, (zend_long)hi, t_min, t_max);
+        fastchart_draw_v_band_at(t, b, plot, x_left, x_right);
+    }
+}
+
+/* Paint the canvas-wide background honoring the compositing flags:
+ * has_plot_rect (skip — caller owns/composites the canvas), transparent_bg
+ * (skip — leave alpha 0), bg_image_path (base fill + composite), else a
+ * plain fill. Shared by fastchart_draw_frame and the charts that draw their
+ * own frame instead of going through it (surface, serpentine), so those
+ * honor setTransparentBackground / setPlotRect / setBackgroundImage too. */
+void fastchart_paint_canvas_bg(fastchart_target_t *t, fastchart_obj *chart,
+                               const fastchart_palette *pal)
+{
+    int W, H;
+    fastchart_target_get_dims(t, &W, &H);
+
+    /* setPlotRect implies the caller is compositing multiple charts on
+     * one canvas — wiping the whole image to bg would erase neighbours.
+     * Skip the canvas-wide fill in that case; each chart's own region is
+     * painted separately. The caller pre-fills the canvas they own. */
+    if (chart->has_plot_rect) {
+        /* no-op: caller manages canvas-wide background */
+    } else if (chart->transparent_bg) {
+        /* SVG: no-op — implicit transparency. plutovg rasterizes
+         * unpainted regions as alpha=0; encoders honor it on PNG/WebP. */
+    } else if (chart->bg_image_path) {
+        /* Background image: paint a base bg first (so the corners
+         * still have something readable if the image load fails or
+         * the source has alpha), then composite the image on top
+         * stretched to cover the canvas. */
+        fastchart_target_rect(t, 0, 0, W, H, pal->bg, 1, 0);
+        composite_bg_image(t, W, H, ZSTR_VAL(chart->bg_image_path));
+    } else {
+        fastchart_target_rect(t, 0, 0, W, H, pal->bg, 1, 0);
+    }
+}
+
+void fastchart_draw_frame(fastchart_target_t *t, fastchart_obj *chart,
+                          const fastchart_rect *plot,
+                          const fastchart_palette *pal)
+{
+    fastchart_paint_canvas_bg(t, chart, pal);
+
+    /* Plot area background stays opaque so chart elements remain
+     * readable on top of a transparent canvas or a busy bg image. */
+    fastchart_target_rect(t, plot->x0, plot->y0,
+                          plot->x1 - plot->x0 + 1,
+                          plot->y1 - plot->y0 + 1,
+                          pal->plot_bg, 1, 0);
+
+    /* Border-side bitmask: draw selected sides individually. The
+     * Y-axis line gets its own dedicated draw call elsewhere, so
+     * suppressing BORDER_LEFT here is safe (the Y axis still shows). */
+    zend_long sides = chart->border_sides;
+    if (sides & FASTCHART_BORDER_TOP)
+        fastchart_target_line(t, plot->x0, plot->y0, plot->x1, plot->y0,
+                              pal->border, 1, FASTCHART_DASH_SOLID);
+    if (sides & FASTCHART_BORDER_BOTTOM)
+        fastchart_target_line(t, plot->x0, plot->y1, plot->x1, plot->y1,
+                              pal->border, 1, FASTCHART_DASH_SOLID);
+    if (sides & FASTCHART_BORDER_LEFT)
+        fastchart_target_line(t, plot->x0, plot->y0, plot->x0, plot->y1,
+                              pal->border, 1, FASTCHART_DASH_SOLID);
+    if (sides & FASTCHART_BORDER_RIGHT)
+        fastchart_target_line(t, plot->x1, plot->y0, plot->x1, plot->y1,
+                              pal->border, 1, FASTCHART_DASH_SOLID);
+}
+
+/* Centered title at canvas-coord baseline. Used by charts with
+ * non-rectangular layouts (radar / gauge / surface / polar /
+ * contour) that pass the baseline directly, and by the
+ * plot-relative variant below which derives the baseline from
+ * `plot->y0`. */
+void fastchart_draw_floating_title(fastchart_target_t *t, fastchart_obj *chart,
+                                   const fastchart_palette *pal,
+                                   int cx, int baseline)
+{
+    if (!chart->title || ZSTR_LEN(chart->title) == 0) return;
+    if (chart->thumbnail_mode) return;
+    const char *font = fastchart_resolve_font(chart, FC_FONT_TITLE);
+    if (!font) return;
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_TITLE, base * 1.4);
+    int color = chart->title_color >= 0
+        ? fastchart_target_color_rgb(t, (int)chart->title_color)
+        : pal->text;
+    /* Drop shadow intentionally does NOT apply to the chart title.
+     * On every theme it produces a stuttered "doubled" look against
+     * a flat background; the effect is meant for filled shapes
+     * (bars / pies / area polygons) where it reads as depth. */
+    fastchart_text_draw(t, font, size, color, cx, baseline,
+                        FASTCHART_ALIGN_CENTER, ZSTR_VAL(chart->title),
+                        NULL, 0);
+}
+
+void fastchart_draw_title(fastchart_target_t *t, fastchart_obj *chart,
+                          const fastchart_rect *plot,
+                          const fastchart_palette *pal)
+{
+    int W, H;
+    fastchart_target_get_dims(t, &W, &H);
+    /* Centre over the plot rect, not the canvas. With auto-layout the
+     * two coincide; with setPlotRect (compositing several charts on
+     * one canvas) we want each title above its own plot. */
+    int cx = chart->has_plot_rect ? (plot->x0 + plot->x1) / 2
+                                  : W / 2;
+    fastchart_draw_floating_title(t, chart, pal,
+                                  cx,
+                                  plot->y0 - TITLE_PADDING_BELOW(chart, t));
+}
+
+static void format_tick_label(double value, double step, char *out, size_t out_n)
+{
+    /* Find the step's decimal precision: 2.5 needs one digit and 0.25 needs
+     * two. A magnitude-only rule mislabels fractional ticks. */
+    int decimals = 0;
+    if (isfinite(step) && step > 0.0) {
+        while (decimals < 6) {
+            double scaled = step * pow(10.0, decimals);
+            double eps = 1e-9 * (scaled + 1.0);
+            if (fabs(scaled - round(scaled)) <= eps) break;
+            decimals++;
+        }
+    }
+    snprintf(out, out_n, "%.*f", decimals, value);
+}
+
+void fastchart_format_tick_label_user(double value, const zend_string *fmt,
+                                      char *out, size_t out_n)
+{
+    /* The user's format string was validated at setter time by
+     * fastchart_validate_double_format(): it rejects dangerous
+     * conversions (%n, %s), length modifiers, multiple conversions, and
+     * excessive width/precision, and embedded NULs, leaving only a
+     * single safe floating-point conversion. Callers also pass a small
+     * fixed buffer, so a wide format truncates rather than overruns. */
+    snprintf(out, out_n, ZSTR_VAL(fmt), value);
+}
+
+void fastchart_draw_y_axis(fastchart_target_t *t, fastchart_obj *chart,
+                           const fastchart_rect *plot,
+                           const fastchart_palette *pal,
+                           const fastchart_value_range *range)
+{
+    if (!chart->y_axis_visible) return;
+
+    fastchart_target_line(t, plot->x0, plot->y0, plot->x0, plot->y1,
+                          pal->axis, 1, FASTCHART_DASH_SOLID);
+
+    const char *font = fastchart_resolve_font(chart, FC_FONT_AXIS);
+    if (!font) return;
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_AXIS, base);
+    int label_color = chart->axis_label_color >= 0
+        ? fastchart_target_color_rgb(t, (int)chart->axis_label_color)
+        : pal->text;
+
+    bool draw_points = (chart->tick_mode & FASTCHART_TICK_POINTS) != 0;
+    bool draw_labels = (chart->tick_mode & FASTCHART_TICK_LABELS) != 0;
+    if (chart->thumbnail_mode) draw_labels = false;
+
+    char buf[32];
+    for (int i = 0; i < range->n_ticks; i++) {
+        double v = range->ticks[i];
+        int y = fastchart_y_to_pixel(v, range, plot);
+
+        fastchart_target_line(t, plot->x0 + 1, y, plot->x1, y,
+                              pal->grid, 1, FASTCHART_DASH_SOLID);
+
+        if (draw_points) {
+            fastchart_target_line(t, plot->x0 - TICK_MARK_LEN(chart, t), y,
+                                  plot->x0 - 1, y,
+                                  pal->axis, 1, FASTCHART_DASH_SOLID);
+        }
+
+        if (!draw_labels) continue;
+
+        if (chart->y_axis_label_format) {
+            fastchart_format_tick_label_user(v, chart->y_axis_label_format, buf, sizeof(buf));
+        } else {
+            format_tick_label(v, range->tick_step, buf, sizeof(buf));
+        }
+        int label_x = plot->x0 - TICK_MARK_LEN(chart, t) - Y_LABEL_PADDING(chart, t) / 2;
+        int label_y = y + (int)(size * 0.35 * chart_dpi_scale(chart, t));  /* baseline correction */
+        fastchart_text_draw(t, font, size, label_color,
+                            label_x, label_y, FASTCHART_ALIGN_RIGHT,
+                            buf, NULL, 0);
+    }
+
+    /* Zero shelf: when the data range crosses zero, draw a heavier
+     * horizontal axis-color line at y=0 to separate negative from
+     * positive values visually. */
+    if (chart->zero_shelf && range->min < 0.0 && range->max > 0.0) {
+        int zy = fastchart_y_to_pixel(0.0, range, plot);
+        fastchart_target_line(t, plot->x0 + 1, zy, plot->x1, zy,
+                              pal->axis, 1, FASTCHART_DASH_SOLID);
+    }
+}
+
+void fastchart_draw_y_axis_right(fastchart_target_t *t, fastchart_obj *chart,
+                                 const fastchart_rect *plot,
+                                 const fastchart_palette *pal,
+                                 const fastchart_value_range *range)
+{
+    if (!chart->y_axis_visible) return;
+
+    fastchart_target_line(t, plot->x1, plot->y0, plot->x1, plot->y1,
+                          pal->axis, 1, FASTCHART_DASH_SOLID);
+
+    const char *font = fastchart_resolve_font(chart, FC_FONT_AXIS);
+    if (!font) return;
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_AXIS, base);
+    int label_color = chart->axis_label_color >= 0
+        ? fastchart_target_color_rgb(t, (int)chart->axis_label_color)
+        : pal->text;
+    bool draw_points = (chart->tick_mode & FASTCHART_TICK_POINTS) != 0;
+    bool draw_labels = (chart->tick_mode & FASTCHART_TICK_LABELS) != 0;
+    if (chart->thumbnail_mode) draw_labels = false;
+
+    char buf[32];
+    for (int i = 0; i < range->n_ticks; i++) {
+        double v = range->ticks[i];
+        int y = fastchart_y_to_pixel(v, range, plot);
+
+        if (draw_points) {
+            fastchart_target_line(t, plot->x1 + 1, y,
+                                  plot->x1 + TICK_MARK_LEN(chart, t), y,
+                                  pal->axis, 1, FASTCHART_DASH_SOLID);
+        }
+        if (!draw_labels) continue;
+
+        if (chart->y_axis_label_format) {
+            fastchart_format_tick_label_user(v, chart->y_axis_label_format, buf, sizeof(buf));
+        } else {
+            format_tick_label(v, range->tick_step, buf, sizeof(buf));
+        }
+        int label_x = plot->x1 + TICK_MARK_LEN(chart, t) + Y_LABEL_PADDING(chart, t) / 2;
+        int label_y = y + (int)(size * 0.35 * chart_dpi_scale(chart, t));
+        fastchart_text_draw(t, font, size, label_color,
+                            label_x, label_y, FASTCHART_ALIGN_LEFT,
+                            buf, NULL, 0);
+    }
+}
+
+void fastchart_draw_axis_titles(fastchart_target_t *t, fastchart_obj *chart,
+                                const fastchart_rect *plot,
+                                const fastchart_palette *pal)
+{
+    if (chart->thumbnail_mode) return;
+    int W, H;
+    fastchart_target_get_dims(t, &W, &H);
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    int color = chart->axis_title_color >= 0
+        ? fastchart_target_color_rgb(t, (int)chart->axis_title_color)
+        : pal->text;
+
+    if (chart->x_axis_title && ZSTR_LEN(chart->x_axis_title) > 0) {
+        const char *font = fastchart_resolve_font(chart, FC_FONT_AXIS);
+        double size = fastchart_resolve_font_size(chart, FC_FONT_AXIS, base * 1.1);
+        if (font) {
+            int cx = (plot->x0 + plot->x1) / 2;
+            int baseline = H - MARGIN_BOTTOM_PAD - 2;
+            fastchart_text_draw(t, font, size, color,
+                                cx, baseline, FASTCHART_ALIGN_CENTER,
+                                ZSTR_VAL(chart->x_axis_title), NULL, 0);
+        }
+    }
+
+    if (chart->y_axis_title && ZSTR_LEN(chart->y_axis_title) > 0) {
+        const char *font = fastchart_resolve_font(chart, FC_FONT_AXIS);
+        double size = fastchart_resolve_font_size(chart, FC_FONT_AXIS, base * 1.1);
+        if (font) {
+            int cy = (plot->y0 + plot->y1) / 2;
+            int x = MARGIN_LEFT_PAD + (int)(size);
+            int tw = 0, th = 0;
+            if (fastchart_text_measure(t, font, size, ZSTR_VAL(chart->y_axis_title),
+                                       &tw, &th, NULL, 0) == 0) {
+                int y = cy + tw / 2;
+                fastchart_text_draw_rotated(t, font, size, color,
+                                            x, y, FASTCHART_ALIGN_LEFT, 90.0,
+                                            ZSTR_VAL(chart->y_axis_title), NULL, 0);
+            }
+        }
+    }
+
+    if (chart->y_axis_title2 && ZSTR_LEN(chart->y_axis_title2) > 0 && chart->secondary_y) {
+        const char *font = fastchart_resolve_font(chart, FC_FONT_AXIS);
+        double size = fastchart_resolve_font_size(chart, FC_FONT_AXIS, base * 1.1);
+        if (font) {
+            int cy = (plot->y0 + plot->y1) / 2;
+            int x = W - MARGIN_LEFT_PAD - (int)(size);
+            int tw = 0, th = 0;
+            if (fastchart_text_measure(t, font, size, ZSTR_VAL(chart->y_axis_title2),
+                                       &tw, &th, NULL, 0) == 0) {
+                int y = cy - tw / 2;
+                fastchart_text_draw_rotated(t, font, size, color,
+                                            x, y, FASTCHART_ALIGN_LEFT, 270.0,
+                                            ZSTR_VAL(chart->y_axis_title2), NULL, 0);
+            }
+        }
+    }
+}
+
+int fastchart_x_categorical_center(const fastchart_rect *plot, int idx, int n)
+{
+    if (n <= 0) return plot->x0;
+    int w = plot->x1 - plot->x0;
+    /* Half-step at each end so first/last labels don't sit on the axis. */
+    double step = (double)w / (double)n;
+    return plot->x0 + (int)(step * (idx + 0.5));
+}
+
+void fastchart_draw_x_axis_numeric(fastchart_target_t *t, fastchart_obj *chart,
+                                   const fastchart_rect *plot,
+                                   const fastchart_palette *pal,
+                                   const fastchart_value_range *range)
+{
+    if (!chart->x_axis_visible) return;
+
+    fastchart_target_line(t, plot->x0, plot->y1, plot->x1, plot->y1,
+                          pal->axis, 1, FASTCHART_DASH_SOLID);
+
+    const char *font = fastchart_resolve_font(chart, FC_FONT_AXIS);
+    if (!font) return;
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_AXIS, base);
+    int label_color = chart->axis_label_color >= 0
+        ? fastchart_target_color_rgb(t, (int)chart->axis_label_color)
+        : pal->text;
+
+    bool draw_points = (chart->tick_mode & FASTCHART_TICK_POINTS) != 0;
+    bool draw_labels = (chart->tick_mode & FASTCHART_TICK_LABELS) != 0;
+    if (chart->thumbnail_mode) draw_labels = false;
+
+    /* Measure once: ascender pixel height at the chart's DPI so the
+     * label's TOP sits below plot.y1 + tick. Falls back to the
+     * point-size heuristic when measurement fails (no font installed,
+     * etc.). The previous heuristic of `size * 1.2` undersized the
+     * offset at all DPIs — the rendered ascender at 11pt + 96 DPI is
+     * already ~12px tall, leaving ~1px clearance over the plot rect. */
+    int probe_h = 0;
+    if (fastchart_text_measure(t, font, size, "Mg9", NULL, &probe_h, NULL, 0) != 0) {
+        probe_h = (int)(size * 1.2 * chart_dpi_scale(chart, t));
+    }
+    int label_y_base = plot->y1 + TICK_MARK_LEN(chart, t) + probe_h
+                     + (int)(4 * chart_dpi_scale(chart, t));
+
+    char buf[32];
+    for (int i = 0; i < range->n_ticks; i++) {
+        double v = range->ticks[i];
+        int x = fastchart_x_to_pixel(v, range, plot);
+
+        fastchart_target_line(t, x, plot->y0, x, plot->y1 - 1,
+                              pal->grid, 1, FASTCHART_DASH_SOLID);
+
+        if (draw_points) {
+            fastchart_target_line(t, x, plot->y1 + 1,
+                                  x, plot->y1 + TICK_MARK_LEN(chart, t),
+                                  pal->axis, 1, FASTCHART_DASH_SOLID);
+        }
+
+        if (!draw_labels) continue;
+        if (chart->x_axis_label_format) {
+            fastchart_format_tick_label_user(v, chart->x_axis_label_format, buf, sizeof(buf));
+        } else {
+            format_tick_label(v, range->tick_step, buf, sizeof(buf));
+        }
+        int label_y = label_y_base;
+        fastchart_text_draw(t, font, size, label_color,
+                            x, label_y, FASTCHART_ALIGN_CENTER,
+                            buf, NULL, 0);
+    }
+
+    /* Zero shelf: when the value range crosses zero, draw a heavier
+     * vertical axis-color line at x=0 to separate negative from
+     * positive values visually. */
+    if (chart->zero_shelf && range->min < 0.0 && range->max > 0.0) {
+        int zx = fastchart_x_to_pixel(0.0, range, plot);
+        fastchart_target_line(t, zx, plot->y0, zx, plot->y1 - 1,
+                              pal->axis, 1, FASTCHART_DASH_SOLID);
+    }
+}
+
+void fastchart_draw_y_axis_categorical(fastchart_target_t *t, fastchart_obj *chart,
+                                       const fastchart_rect *plot,
+                                       const fastchart_palette *pal,
+                                       int n_categories,
+                                       const char *const *labels)
+{
+    if (!chart->y_axis_visible) return;
+
+    fastchart_target_line(t, plot->x0, plot->y0, plot->x0, plot->y1,
+                          pal->axis, 1, FASTCHART_DASH_SOLID);
+
+    if (n_categories <= 0) return;
+    const char *font = fastchart_resolve_font(chart, FC_FONT_AXIS);
+    if (!font) return;
+
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_AXIS, base);
+    int label_color = chart->axis_label_color >= 0
+        ? fastchart_target_color_rgb(t, (int)chart->axis_label_color)
+        : pal->text;
+    bool draw_points = (chart->tick_mode & FASTCHART_TICK_POINTS) != 0;
+    bool draw_labels = (chart->tick_mode & FASTCHART_TICK_LABELS) != 0;
+    if (chart->thumbnail_mode) draw_labels = false;
+
+    /* Cap labels to ~20 visible categories — Y has more vertical room
+     * than X for label stacking, but enough is enough. */
+    int max_visible = 20;
+    int stride = 1;
+    if (n_categories > max_visible + 2) {
+        stride = (n_categories + max_visible - 1) / max_visible;
+    }
+
+    for (int i = 0; i < n_categories; i += stride) {
+        int y = fastchart_y_categorical_center(plot, i, n_categories);
+        if (draw_points) {
+            fastchart_target_line(t, plot->x0 - TICK_MARK_LEN(chart, t), y,
+                                  plot->x0 - 1, y,
+                                  pal->axis, 1, FASTCHART_DASH_SOLID);
+        }
+        if (!draw_labels) continue;
+
+        char fallback[16];
+        const char *txt;
+        if (labels && labels[i]) {
+            txt = labels[i];
+        } else {
+            snprintf(fallback, sizeof(fallback), "%d", i);
+            txt = fallback;
+        }
+        int label_x = plot->x0 - TICK_MARK_LEN(chart, t) - Y_LABEL_PADDING(chart, t) / 2;
+        int label_y = y + (int)(size * 0.35 * chart_dpi_scale(chart, t));
+        fastchart_text_draw(t, font, size, label_color,
+                            label_x, label_y, FASTCHART_ALIGN_RIGHT,
+                            txt, NULL, 0);
+    }
+}
+
+void fastchart_draw_x_axis_categorical(fastchart_target_t *t, fastchart_obj *chart,
+                                       const fastchart_rect *plot,
+                                       const fastchart_palette *pal,
+                                       int n_categories,
+                                       const char *const *labels)
+{
+    if (!chart->x_axis_visible) return;
+
+    fastchart_target_line(t, plot->x0, plot->y1, plot->x1, plot->y1,
+                          pal->axis, 1, FASTCHART_DASH_SOLID);
+
+    if (n_categories <= 0) return;
+    const char *font = fastchart_resolve_font(chart, FC_FONT_AXIS);
+    if (!font) return;
+
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_AXIS, base);
+    int angle = (int)chart->x_axis_label_angle;
+    int label_color = chart->axis_label_color >= 0
+        ? fastchart_target_color_rgb(t, (int)chart->axis_label_color)
+        : pal->text;
+    bool draw_points = (chart->tick_mode & FASTCHART_TICK_POINTS) != 0;
+    bool draw_labels = (chart->tick_mode & FASTCHART_TICK_LABELS) != 0;
+    if (chart->thumbnail_mode) draw_labels = false;
+
+    /* Stride caps horizontal labels to ~10; rotated labels are
+     * narrow enough that we can show all of them up to ~30. The
+     * user's setXLabelStride() multiplies on top of the auto value,
+     * so passing 1 (default) doesn't fight the auto-density. */
+    int max_visible = (angle == 0) ? 10 : 30;
+    int stride = 1;
+    if (n_categories > max_visible + 2) {
+        stride = (n_categories + max_visible - 1) / max_visible;
+    }
+    if (chart->x_label_stride > 1) {
+        stride *= (int)chart->x_label_stride;
+    }
+
+    /* Measure ascender height once at the chart's DPI so the label
+     * top sits below plot.y1 + tick. The point-size * 1.2 heuristic
+     * undershoots in mixed FreeType configurations and at high DPI,
+     * leaving the label clipping into the plot rect. */
+    int probe_h_x = 0;
+    if (fastchart_text_measure(t, font, size, "Mg9", NULL, &probe_h_x, NULL, 0) != 0) {
+        probe_h_x = (int)(size * 1.2 * chart_dpi_scale(chart, t));
+    }
+    int label_y;
+    fastchart_align align;
+    if (angle == 0) {
+        label_y = plot->y1 + TICK_MARK_LEN(chart, t) + probe_h_x
+                + (int)(4 * chart_dpi_scale(chart, t));
+        align = FASTCHART_ALIGN_CENTER;
+    } else if (angle == 45) {
+        /* Right-aligned rotated text ends at the anchor and extends
+         * down-left into the reserved margin; only the end character's
+         * rotated ascender pokes back up toward the plot, by
+         * sin(45°) * ascender. */
+        label_y = plot->y1 + TICK_MARK_LEN(chart, t)
+                + (int)((double)probe_h_x * 0.707) + 2;
+        align = FASTCHART_ALIGN_RIGHT;
+    } else { /* 90 */
+        /* Vertical label hangs fully downward from the anchor; its
+         * ascender projects horizontally, so only breathing room is
+         * needed below the tick. */
+        label_y = plot->y1 + TICK_MARK_LEN(chart, t)
+                + (int)(4 * chart_dpi_scale(chart, t));
+        align = FASTCHART_ALIGN_RIGHT;
+    }
+    /* Last-resort clamp: if the rotated-label anchor still falls below the
+     * canvas (margin reservation can't expand a too-small canvas), pin it just
+     * inside the bottom edge. The label body may still clip on a canvas shorter
+     * than the label, but the anchor stays in the viewport. */
+    if (draw_labels) {
+        int canvas_w = 0, canvas_h = 0;
+        fastchart_target_get_dims(t, &canvas_w, &canvas_h);
+        (void)canvas_w;
+        if (canvas_h > 2 && label_y > canvas_h - 2) {
+            label_y = canvas_h - 2;
+        }
+    }
+
+    for (int i = 0; i < n_categories; i += stride) {
+        int x = fastchart_x_categorical_center(plot, i, n_categories);
+        if (draw_points) {
+            fastchart_target_line(t, x, plot->y1 + 1,
+                                  x, plot->y1 + TICK_MARK_LEN(chart, t),
+                                  pal->axis, 1, FASTCHART_DASH_SOLID);
+        }
+        if (!draw_labels) continue;
+
+        char fallback[16];
+        const char *txt;
+        if (labels && labels[i]) {
+            txt = labels[i];
+        } else {
+            snprintf(fallback, sizeof(fallback), "%d", i);
+            txt = fallback;
+        }
+        if (angle == 0) {
+            fastchart_text_draw(t, font, size, label_color,
+                                x, label_y, align, txt, NULL, 0);
+        } else {
+            fastchart_text_draw_rotated(t, font, size, label_color,
+                                        x, label_y, align, (double)angle,
+                                        txt, NULL, 0);
+        }
+    }
+}
+
+int fastchart_x_time_to_pixel(const fastchart_rect *plot,
+                              zend_long ts, zend_long t_min, zend_long t_max)
+{
+    /* Promote to double before subtracting — setOhlcv accepts the
+     * full zend_long range, so t_max - t_min as zend_long arithmetic
+     * is signed overflow UB on adversarial timestamps (e.g. LLONG_MIN
+     * .. LLONG_MAX). Double has 53 bits of mantissa, enough to lose a
+     * few seconds of precision at the extremes but never to overflow. */
+    double span = (double)t_max - (double)t_min;
+    if (!(span > 0)) return plot->x0;
+    double frac = ((double)ts - (double)t_min) / span;
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    int w = plot->x1 - plot->x0;
+    return plot->x0 + (int)(frac * (double)w + 0.5);
+}
+
+void fastchart_draw_legend(fastchart_target_t *t, fastchart_obj *chart,
+                           const fastchart_rect *plot,
+                           const fastchart_palette *pal,
+                           int n_entries,
+                           const int *colors,
+                           const char *const *labels)
+{
+    if (n_entries < 1) return;
+    if (chart->legend_position == FASTCHART_LEGEND_NONE) return;
+
+    /* Defer the "no usable font" decision to fastchart_resolve_font:
+     * it knows about per-role overrides, so a chart with no global
+     * font_path but an explicit setLabelFont() must still draw the
+     * legend. The earlier `if (!chart->font_path) return;` short-
+     * circuited that path. */
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_LABEL, base);
+    const char *font = fastchart_resolve_font(chart, FC_FONT_LABEL);
+    if (!font) return;
+
+    int swatch_w  = 14;
+    int swatch_h  = 10;
+    int row_pad   = 4;
+    int outer_pad = 6;
+    int gap       = 6;     /* swatch -> text gap */
+    int margin    = 6;     /* gap to plot border */
+
+    int row_h, dummy;
+    if (fastchart_text_measure(t, font, size, "Mg9", &dummy, &row_h, NULL, 0) != 0) {
+        row_h = (int)(size * 1.4);
+    }
+    if (row_h < swatch_h) row_h = swatch_h;
+
+    int max_label_w = 0;
+    int rows = 0;
+    for (int i = 0; i < n_entries; i++) {
+        if (!labels[i]) continue;
+        int w, h;
+        if (fastchart_text_measure(t, font, size, labels[i], &w, &h, NULL, 0) == 0) {
+            if (w > max_label_w) max_label_w = w;
+        }
+        rows++;
+    }
+    if (rows == 0) return;
+
+    int box_w = outer_pad * 2 + swatch_w + gap + max_label_w;
+    int box_h = outer_pad * 2 + rows * row_h + (rows - 1) * row_pad;
+
+    int x0, y0;
+    switch (chart->legend_position) {
+        case FASTCHART_LEGEND_TOP_LEFT:
+            x0 = plot->x0 + margin;
+            y0 = plot->y0 + margin;
+            break;
+        case FASTCHART_LEGEND_BOTTOM_RIGHT:
+            x0 = plot->x1 - box_w - margin;
+            y0 = plot->y1 - box_h - margin;
+            break;
+        case FASTCHART_LEGEND_BOTTOM_LEFT:
+            x0 = plot->x0 + margin;
+            y0 = plot->y1 - box_h - margin;
+            break;
+        case FASTCHART_LEGEND_TOP_RIGHT:
+        default:
+            x0 = plot->x1 - box_w - margin;
+            y0 = plot->y0 + margin;
+            break;
+    }
+    int x1 = x0 + box_w;
+    int y1 = y0 + box_h;
+    if (x0 < plot->x0 + 6) x0 = plot->x0 + 6;
+    if (y0 < plot->y0 + 6) y0 = plot->y0 + 6;
+
+    fastchart_target_rect(t, x0, y0, x1 - x0 + 1, y1 - y0 + 1,
+                          pal->plot_bg, 1, 0);
+    fastchart_target_rect(t, x0, y0, x1 - x0 + 1, y1 - y0 + 1,
+                          pal->border, 0, 1);
+
+    int row_y = y0 + outer_pad;
+    for (int i = 0; i < n_entries; i++) {
+        if (!labels[i]) continue;
+        int sx0 = x0 + outer_pad;
+        int sy0 = row_y + (row_h - swatch_h) / 2;
+        fastchart_target_rect(t, sx0, sy0, swatch_w, swatch_h,
+                              colors[i], 1, 0);
+        fastchart_target_rect(t, sx0, sy0, swatch_w, swatch_h,
+                              pal->border, 0, 1);
+
+        int tx = sx0 + swatch_w + gap;
+        int ty = row_y + row_h - 2;
+        fastchart_text_draw(t, font, size, pal->text,
+                            tx, ty, FASTCHART_ALIGN_LEFT,
+                            labels[i], NULL, 0);
+
+        row_y += row_h + row_pad;
+    }
+}
+
+void fastchart_draw_series_legend(fastchart_target_t *t, fastchart_obj *chart,
+                                  const fastchart_rect *plot,
+                                  const fastchart_palette *pal,
+                                  int n_series, const char *const *labels)
+{
+    if (n_series < 2) return;
+
+    int colors[FASTCHART_MAX_SERIES];
+    const char *lbls[FASTCHART_MAX_SERIES];
+    int count = 0;
+    for (int s = 0; s < n_series && count < FASTCHART_MAX_SERIES; s++) {
+        if (!labels[s]) continue;
+        colors[count] = pal->series[s % FASTCHART_PALETTE_SERIES_N];
+        lbls[count] = labels[s];
+        count++;
+    }
+    if (count > 0) {
+        fastchart_draw_legend(t, chart, plot, pal, count, colors, lbls);
+    }
+}
+
+void fastchart_draw_value_label(fastchart_target_t *t, fastchart_obj *chart,
+                                const fastchart_palette *pal,
+                                int x, int y, double value)
+{
+    if (!chart->show_values) return;
+    if (!isfinite(value)) return;
+    const char *font = fastchart_resolve_font(chart, FC_FONT_LABEL);
+    if (!font) return;
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_LABEL, base * 0.85);
+
+    const char *fmt = chart->value_format ? ZSTR_VAL(chart->value_format) : "%g";
+    char buf[32];
+    snprintf(buf, sizeof(buf), fmt, value);
+
+    int label_y = y - 6;
+    fastchart_text_draw(t, font, size, pal->text,
+                        x, label_y, FASTCHART_ALIGN_CENTER, buf, NULL, 0);
+}
+
+/* Resolve an overlay's stroke color: an explicit color if the caller
+ * set one, else the rotating palette index derived from `slot`.
+ * Returns a target color handle. */
+static int combo_overlay_color(fastchart_target_t *t, const fastchart_palette *pal,
+                               const fastchart_combo_overlay *ov, int slot)
+{
+    if (ov->has_color) {
+        return fastchart_target_color_rgb(t, ov->color);
+    }
+    return pal->series[(slot + 4) % FASTCHART_PALETTE_SERIES_N];
+}
+
+void fastchart_draw_overlays_categorical(fastchart_target_t *t, fastchart_obj *chart,
+                                          const fastchart_rect *plot,
+                                          const fastchart_palette *pal,
+                                          const fastchart_value_range *yrange,
+                                          const fastchart_value_range *yrange_right,
+                                          int n_categories)
+{
+    if (chart->n_combo_overlays <= 0) return;
+    if (n_categories <= 0) return;
+
+    for (int slot = 0; slot < chart->n_combo_overlays; slot++) {
+        const fastchart_combo_overlay *ov = &chart->combo_overlays[slot];
+
+        bool is_area = ov->is_area;
+        const fastchart_value_range *rng =
+            (ov->right_axis && yrange_right) ? yrange_right : yrange;
+        int color = combo_overlay_color(t, pal, ov, slot);
+        int thick = ov->thickness;
+
+        /* Build a points array. Missing / non-numeric entries break
+         * the polyline (matching the line-gap convention). */
+        fastchart_pt *pts = ecalloc((size_t)n_categories, sizeof(fastchart_pt));
+        for (int i = 0; i < n_categories; i++) {
+            if (i < ov->n && isfinite(ov->values[i])) {
+                pts[i].x = fastchart_x_categorical_center(plot, i, n_categories);
+                pts[i].y = fastchart_y_to_pixel(ov->values[i], rng, plot);
+                pts[i].valid = true;
+            } else {
+                pts[i].valid = false;
+            }
+        }
+
+        if (is_area) {
+            /* Build a closed polygon: top edge through valid points,
+             * then bottom edge along zero baseline (or plot bottom
+             * for log scale). Translucent fill so layered overlays
+             * stay readable. */
+            int zero_y = fastchart_y_to_pixel(rng->log_scale ? rng->min : 0.0, rng, plot);
+            uint32_t rgba = fastchart_target_color_to_rgba(t, color);
+            int r = (int)((rgba >> 16) & 0xFFu);
+            int g = (int)((rgba >>  8) & 0xFFu);
+            int b = (int)( rgba        & 0xFFu);
+            /* 80 in the legacy 0..127 alpha convention -> 95 in 0..255. */
+            int alpha_color = fastchart_target_color(t, r, g, b, 95);
+
+            /* Sized for every valid point: a fixed cap would truncate the
+             * top edge at the head of the series while the bottom edge
+             * walks in from the tail, closing a self-crossing polygon. */
+            fastchart_point_t *poly = safe_emalloc((size_t)n_categories,
+                                         2 * sizeof(fastchart_point_t), 0);
+            /* Fill each contiguous run of valid points as its own closed
+             * polygon so a null/gap breaks the fill (matching the line
+             * gap) instead of painting straight across the missing
+             * category. */
+            int i = 0;
+            while (i < n_categories) {
+                if (!pts[i].valid) { i++; continue; }
+                int j = i;
+                while (j < n_categories && pts[j].valid) j++;
+                int np = 0;
+                for (int k = i; k < j; k++) {
+                    poly[np].x = pts[k].x; poly[np].y = pts[k].y; np++;
+                }
+                for (int k = j - 1; k >= i; k--) {
+                    poly[np].x = pts[k].x; poly[np].y = zero_y; np++;
+                }
+                if (np >= 3 && alpha_color >= 0) {
+                    fastchart_target_polygon(t, poly, np, alpha_color, 1, 0);
+                }
+                i = j;
+            }
+            efree(poly);
+        }
+
+        fastchart_draw_polyline(t, chart, pts, n_categories,
+                                color, thick, !is_area);
+        efree(pts);
+    }
+}
+
+/* Overlay rendering for horizontal-bar layouts: value axis is X,
+ * category axis is Y. Same overlay source (chart->combo_overlays),
+ * same per-entry shape (type / values / color / thickness). Unlike
+ * the categorical helper, lines / area-fill axes flip: y comes from
+ * the categorical center, x comes from the value range. Area fill
+ * closes against x=0 (the value-axis zero shelf) instead of the
+ * y baseline. */
+void fastchart_draw_overlays_horizontal_bar(fastchart_target_t *t, fastchart_obj *chart,
+                                            const fastchart_rect *plot,
+                                            const fastchart_palette *pal,
+                                            const fastchart_value_range *xrange,
+                                            int n_categories)
+{
+    if (chart->n_combo_overlays <= 0) return;
+    if (n_categories <= 0) return;
+
+    for (int slot = 0; slot < chart->n_combo_overlays; slot++) {
+        const fastchart_combo_overlay *ov = &chart->combo_overlays[slot];
+
+        bool is_area = ov->is_area;
+        int color = combo_overlay_color(t, pal, ov, slot);
+        int thick = ov->thickness;
+
+        fastchart_pt *pts = ecalloc((size_t)n_categories, sizeof(fastchart_pt));
+        for (int i = 0; i < n_categories; i++) {
+            if (i < ov->n && isfinite(ov->values[i])) {
+                pts[i].x = fastchart_x_to_pixel(ov->values[i], xrange, plot);
+                pts[i].y = fastchart_y_categorical_center(plot, i, n_categories);
+                pts[i].valid = true;
+            } else {
+                pts[i].valid = false;
+            }
+        }
+
+        if (is_area) {
+            int zero_x = fastchart_x_to_pixel(xrange->log_scale ? xrange->min : 0.0,
+                                              xrange, plot);
+            uint32_t rgba = fastchart_target_color_to_rgba(t, color);
+            int r = (int)((rgba >> 16) & 0xFFu);
+            int g = (int)((rgba >>  8) & 0xFFu);
+            int b = (int)( rgba        & 0xFFu);
+            int alpha_color = fastchart_target_color(t, r, g, b, 95);
+
+            /* Sized for every valid point — see the categorical helper
+             * above for why a fixed cap self-crosses. */
+            fastchart_point_t *poly = safe_emalloc((size_t)n_categories,
+                                         2 * sizeof(fastchart_point_t), 0);
+            /* One closed polygon per contiguous run of valid points so a
+             * gap breaks the fill instead of spanning the missing row. */
+            int i = 0;
+            while (i < n_categories) {
+                if (!pts[i].valid) { i++; continue; }
+                int j = i;
+                while (j < n_categories && pts[j].valid) j++;
+                int np = 0;
+                for (int k = i; k < j; k++) {
+                    poly[np].x = pts[k].x; poly[np].y = pts[k].y; np++;
+                }
+                for (int k = j - 1; k >= i; k--) {
+                    poly[np].x = zero_x; poly[np].y = pts[k].y; np++;
+                }
+                if (np >= 3 && alpha_color >= 0) {
+                    fastchart_target_polygon(t, poly, np, alpha_color, 1, 0);
+                }
+                i = j;
+            }
+            efree(poly);
+        }
+
+        fastchart_draw_polyline(t, chart, pts, n_categories,
+                                color, thick, !is_area);
+        efree(pts);
+    }
+}
+
+void fastchart_draw_overlays_time(fastchart_target_t *t, fastchart_obj *chart,
+                                  const fastchart_rect *plot,
+                                  const fastchart_palette *pal,
+                                  const fastchart_value_range *yrange,
+                                  zend_long t_min, zend_long t_max,
+                                  zend_long *timestamps, int n_candles)
+{
+    if (chart->n_combo_overlays <= 0) return;
+    if (n_candles <= 0) return;
+
+    for (int slot = 0; slot < chart->n_combo_overlays; slot++) {
+        const fastchart_combo_overlay *ov = &chart->combo_overlays[slot];
+
+        int color = combo_overlay_color(t, pal, ov, slot);
+        int thick = ov->thickness;
+
+        fastchart_pt *pts = ecalloc((size_t)n_candles, sizeof(fastchart_pt));
+        for (int i = 0; i < n_candles; i++) {
+            if (i < ov->n && isfinite(ov->values[i])) {
+                pts[i].x = fastchart_x_time_to_pixel(plot, timestamps[i], t_min, t_max);
+                pts[i].y = fastchart_y_to_pixel(ov->values[i], yrange, plot);
+                pts[i].valid = true;
+            } else {
+                pts[i].valid = false;
+            }
+        }
+        fastchart_draw_polyline(t, chart, pts, n_candles, color, thick, true);
+        efree(pts);
+    }
+}
+
+static int annotation_color(const fastchart_palette *pal, fastchart_target_t *t,
+                            zval *color_zv)
+{
+    if (color_zv && Z_TYPE_P(color_zv) == IS_LONG) {
+        zend_long c = Z_LVAL_P(color_zv);
+        if (c >= 0 && c <= 0xFFFFFF) {
+            return fastchart_target_color_rgb(t, (int)c);
+        }
+    }
+    return pal->axis;
+}
+
+static zval *find_annotations(fastchart_obj *chart)
+{
+    zval *list = zend_hash_str_find(Z_ARRVAL(chart->config),
+                                    "annotations", sizeof("annotations") - 1);
+    if (!list || Z_TYPE_P(list) != IS_ARRAY) return NULL;
+    return list;
+}
+
+void fastchart_draw_h_annotations(fastchart_target_t *t, fastchart_obj *chart,
+                                  const fastchart_rect *plot,
+                                  const fastchart_palette *pal,
+                                  const fastchart_value_range *yrange)
+{
+    zval *list = find_annotations(chart);
+    if (!list) return;
+
+    double size = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    const char *font = fastchart_resolve_font(chart, FC_FONT_ANNOTATION);
+
+    zval *entry;
+    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(list), entry) {
+        if (Z_TYPE_P(entry) != IS_ARRAY) continue;
+        zval *kind = zend_hash_str_find(Z_ARRVAL_P(entry), "kind", 4);
+        if (!kind || Z_TYPE_P(kind) != IS_STRING) continue;
+        if (strcmp(Z_STRVAL_P(kind), "h") != 0) continue;
+
+        zval *value_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "value", 5);
+        if (!value_zv || Z_TYPE_P(value_zv) != IS_DOUBLE) continue;
+        double v = Z_DVAL_P(value_zv);
+
+        int y = fastchart_y_to_pixel(v, yrange, plot);
+        if (y < plot->y0 || y > plot->y1) continue;
+
+        int color = annotation_color(pal, t,
+            zend_hash_str_find(Z_ARRVAL_P(entry), "color", 5));
+        fastchart_target_line(t, plot->x0 + 1, y, plot->x1 - 1, y,
+                              color, 1, FASTCHART_DASH_DASHED);
+
+        zval *label_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "label", 5);
+        const char *label = fastchart_label_or_null(label_zv);
+        if (label && font) {
+            int tx = plot->x1 - 6;
+            int ty = y - 4;
+            fastchart_text_draw(t, font, size, color,
+                                tx, ty, FASTCHART_ALIGN_RIGHT,
+                                label, NULL, 0);
+        }
+    } ZEND_HASH_FOREACH_END();
+}
+
+/* Shared body for vertical annotations -- the only difference
+ * across the three coord systems is how `position` becomes a pixel
+ * x. We accept a callback. */
+typedef int (*v_pos_to_x)(const fastchart_rect *plot, double position, void *ctx);
+
+static int v_pos_categorical(const fastchart_rect *plot, double position, void *ctx)
+{
+    int n = *(int *)ctx;
+    if (n <= 0) return -1;
+    /* Range-guard before the cast: position is finite-checked at the
+     * setter but not bounded, so a finite-but-extreme index would make
+     * the (int) conversion UB. Mirror v_pos_time's pre-cast guard. */
+    if (!isfinite(position) || position < -0.5 || position >= (double)n) {
+        return -1;
+    }
+    int idx = (int)floor(position + 0.5);
+    if (idx < 0 || idx >= n) return -1;
+    return fastchart_x_categorical_center(plot, idx, n);
+}
+
+typedef struct { double xmin; double xmax; } v_continuous_ctx;
+static int v_pos_continuous(const fastchart_rect *plot, double position, void *ctx)
+{
+    v_continuous_ctx *c = (v_continuous_ctx *)ctx;
+    double span = c->xmax - c->xmin;
+    if (span <= 0) return -1;
+    if (position < c->xmin || position > c->xmax) return -1;
+    double frac = (position - c->xmin) / span;
+    return plot->x0 + (int)(frac * (plot->x1 - plot->x0) + 0.5);
+}
+
+typedef struct { zend_long t_min; zend_long t_max; } v_time_ctx;
+static int v_pos_time(const fastchart_rect *plot, double position, void *ctx)
+{
+    v_time_ctx *c = (v_time_ctx *)ctx;
+    if (!isfinite(position) ||
+        position < (double)ZEND_LONG_MIN || position > FASTCHART_LONG_MAX_AS_DOUBLE) {
+        return -1;
+    }
+    zend_long ts = (zend_long)position;
+    if (ts < c->t_min || ts > c->t_max) return -1;
+    return fastchart_x_time_to_pixel(plot, ts, c->t_min, c->t_max);
+}
+
+static void draw_v_annotations_with_mapper(fastchart_target_t *t, fastchart_obj *chart,
+                                            const fastchart_rect *plot,
+                                            const fastchart_palette *pal,
+                                            v_pos_to_x mapper, void *ctx)
+{
+    zval *list = find_annotations(chart);
+    if (!list) return;
+
+    double size = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    const char *font = fastchart_resolve_font(chart, FC_FONT_ANNOTATION);
+
+    zval *entry;
+    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(list), entry) {
+        if (Z_TYPE_P(entry) != IS_ARRAY) continue;
+        zval *kind = zend_hash_str_find(Z_ARRVAL_P(entry), "kind", 4);
+        if (!kind || Z_TYPE_P(kind) != IS_STRING) continue;
+        if (strcmp(Z_STRVAL_P(kind), "v") != 0) continue;
+
+        zval *value_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "value", 5);
+        if (!value_zv || Z_TYPE_P(value_zv) != IS_DOUBLE) continue;
+
+        int x = mapper(plot, Z_DVAL_P(value_zv), ctx);
+        if (x < plot->x0 || x > plot->x1) continue;
+
+        int color = annotation_color(pal, t,
+            zend_hash_str_find(Z_ARRVAL_P(entry), "color", 5));
+        fastchart_target_line(t, x, plot->y0 + 1, x, plot->y1 - 1,
+                              color, 1, FASTCHART_DASH_DASHED);
+
+        zval *label_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "label", 5);
+        const char *label = fastchart_label_or_null(label_zv);
+        if (label && font) {
+            int ty = plot->y0 + (int)(size * 1.2 * chart_dpi_scale(chart, t)) + 2;
+            fastchart_text_draw(t, font, size, color,
+                                x + 4, ty, FASTCHART_ALIGN_LEFT,
+                                label, NULL, 0);
+        }
+    } ZEND_HASH_FOREACH_END();
+}
+
+void fastchart_draw_v_annotations_categorical(fastchart_target_t *t, fastchart_obj *chart,
+                                              const fastchart_rect *plot,
+                                              const fastchart_palette *pal,
+                                              int n_categories)
+{
+    int ctx = n_categories;
+    draw_v_annotations_with_mapper(t, chart, plot, pal, v_pos_categorical, &ctx);
+}
+
+void fastchart_draw_v_annotations_continuous(fastchart_target_t *t, fastchart_obj *chart,
+                                             const fastchart_rect *plot,
+                                             const fastchart_palette *pal,
+                                             const fastchart_value_range *xrange)
+{
+    v_continuous_ctx ctx = { xrange->min, xrange->max };
+    draw_v_annotations_with_mapper(t, chart, plot, pal, v_pos_continuous, &ctx);
+}
+
+void fastchart_draw_v_annotations_time(fastchart_target_t *t, fastchart_obj *chart,
+                                       const fastchart_rect *plot,
+                                       const fastchart_palette *pal,
+                                       zend_long t_min, zend_long t_max)
+{
+    v_time_ctx ctx = { t_min, t_max };
+    draw_v_annotations_with_mapper(t, chart, plot, pal, v_pos_time, &ctx);
+}
+
+/* Annotation rendering for horizontal-bar layouts where the value
+ * axis is X and the category axis is Y. Walks the shared annotation
+ * list once and dispatches:
+ *   - "h" entries (addHorizontalLine, value-axis annotation)
+ *     -> vertical screen line at fastchart_x_to_pixel(value)
+ *   - "v" entries (addVerticalLine, category-axis annotation,
+ *     value = fractional category index)
+ *     -> horizontal screen line at the corresponding category center
+ * The user-facing API names are tied to the default vertical-bar
+ * orientation; on horizontal-bar the visual roles swap but the
+ * semantics remain "h = value, v = category". */
+void fastchart_draw_horizontal_bar_annotations(fastchart_target_t *t, fastchart_obj *chart,
+                                               const fastchart_rect *plot,
+                                               const fastchart_palette *pal,
+                                               const fastchart_value_range *xrange,
+                                               int n_categories)
+{
+    zval *list = find_annotations(chart);
+    if (!list) return;
+
+    double size = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    const char *font = fastchart_resolve_font(chart, FC_FONT_ANNOTATION);
+
+    zval *entry;
+    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(list), entry) {
+        if (Z_TYPE_P(entry) != IS_ARRAY) continue;
+        zval *kind_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "kind", 4);
+        if (!kind_zv || Z_TYPE_P(kind_zv) != IS_STRING) continue;
+        zval *value_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "value", 5);
+        if (!value_zv || Z_TYPE_P(value_zv) != IS_DOUBLE) continue;
+        double v = Z_DVAL_P(value_zv);
+
+        int color = annotation_color(pal, t,
+            zend_hash_str_find(Z_ARRVAL_P(entry), "color", 5));
+        zval *label_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "label", 5);
+        const char *label = fastchart_label_or_null(label_zv);
+
+        if (strcmp(Z_STRVAL_P(kind_zv), "h") == 0) {
+            /* Value-axis annotation: vertical screen line at x=value. */
+            int x = fastchart_x_to_pixel(v, xrange, plot);
+            if (x < plot->x0 || x > plot->x1) continue;
+            fastchart_target_line(t, x, plot->y0 + 1, x, plot->y1 - 1,
+                                  color, 1, FASTCHART_DASH_DASHED);
+            if (label && font) {
+                int ty = plot->y0 + (int)(size * 1.2 * chart_dpi_scale(chart, t)) + 2;
+                fastchart_text_draw(t, font, size, color,
+                                    x + 4, ty, FASTCHART_ALIGN_LEFT,
+                                    label, NULL, 0);
+            }
+        } else if (strcmp(Z_STRVAL_P(kind_zv), "v") == 0) {
+            /* Category-axis annotation: horizontal screen line at
+             * y=category-center. v is a fractional category index. */
+            if (n_categories <= 0) continue;
+            /* Bound before the cast: v is finite-checked at the setter but
+             * not magnitude-bounded, so a finite-but-extreme index would
+             * make the (int) conversion UB. Mirror v_pos_categorical. */
+            if (!isfinite(v) || v < -0.5 || v >= (double)n_categories) continue;
+            int idx = (int)floor(v + 0.5);
+            if (idx < 0 || idx >= n_categories) continue;
+            int y = fastchart_y_categorical_center(plot, idx, n_categories);
+            fastchart_target_line(t, plot->x0 + 1, y, plot->x1 - 1, y,
+                                  color, 1, FASTCHART_DASH_DASHED);
+            if (label && font) {
+                int tx = plot->x1 - 6;
+                int ty = y - 4;
+                fastchart_text_draw(t, font, size, color,
+                                    tx, ty, FASTCHART_ALIGN_RIGHT,
+                                    label, NULL, 0);
+            }
+        }
+    } ZEND_HASH_FOREACH_END();
+}
+
+void fastchart_draw_text_annotations(fastchart_target_t *t, fastchart_obj *chart,
+                                     const fastchart_palette *pal)
+{
+    zval *list_zv = zend_hash_str_find(Z_ARRVAL(chart->config),
+                                       "text_annotations",
+                                       sizeof("text_annotations") - 1);
+    if (!list_zv || Z_TYPE_P(list_zv) != IS_ARRAY) return;
+
+    const char *font = fastchart_resolve_font(chart, FC_FONT_ANNOTATION);
+    if (!font) return;
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_ANNOTATION, base);
+
+    zval *entry;
+    ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(list_zv), entry) {
+        if (Z_TYPE_P(entry) != IS_ARRAY) continue;
+        zval *t_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "text", sizeof("text") - 1);
+        zval *x_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "x", sizeof("x") - 1);
+        zval *y_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "y", sizeof("y") - 1);
+        if (!t_zv || !x_zv || !y_zv) continue;
+        if (Z_TYPE_P(t_zv) != IS_STRING) continue;
+
+        int x = (int)Z_LVAL_P(x_zv);
+        int y = (int)Z_LVAL_P(y_zv);
+        int color = pal->text;
+        zval *c_zv = zend_hash_str_find(Z_ARRVAL_P(entry), "color", sizeof("color") - 1);
+        if (c_zv && Z_TYPE_P(c_zv) == IS_LONG) {
+            color = fastchart_target_color_rgb(t, (int)Z_LVAL_P(c_zv));
+        }
+
+        fastchart_text_draw(t, font, size, color, x, y,
+                            FASTCHART_ALIGN_LEFT, Z_STRVAL_P(t_zv), NULL, 0);
+    } ZEND_HASH_FOREACH_END();
+}
+
+void fastchart_draw_x_axis_time(fastchart_target_t *t, fastchart_obj *chart,
+                                const fastchart_rect *plot,
+                                const fastchart_palette *pal,
+                                zend_long t_min, zend_long t_max)
+{
+    if (!chart->x_axis_visible) return;
+    fastchart_target_line(t, plot->x0, plot->y1, plot->x1, plot->y1,
+                          pal->axis, 1, FASTCHART_DASH_SOLID);
+
+    if (t_max <= t_min) return;
+    const char *font = fastchart_resolve_font(chart, FC_FONT_AXIS);
+    if (!font) return;
+
+    double base = chart->font_size > 0 ? chart->font_size : FASTCHART_DEFAULT_FONT_SIZE;
+    double size = fastchart_resolve_font_size(chart, FC_FONT_AXIS, base);
+    int angle = (int)chart->x_axis_label_angle;
+    int label_color = chart->axis_label_color >= 0
+        ? fastchart_target_color_rgb(t, (int)chart->axis_label_color)
+        : pal->text;
+    bool draw_points = (chart->tick_mode & FASTCHART_TICK_POINTS) != 0;
+    bool draw_labels = (chart->tick_mode & FASTCHART_TICK_LABELS) != 0;
+    if (chart->thumbnail_mode) draw_labels = false;
+
+    /* Same measured-ascender rule as numeric/categorical: the
+     * fixed-multiplier heuristic clips into the plot rect when
+     * FreeType's ascender exceeds 1.2 * point-size at the chart's
+     * DPI. */
+    int probe_h_t = 0;
+    if (fastchart_text_measure(t, font, size, "Mg9", NULL, &probe_h_t, NULL, 0) != 0) {
+        probe_h_t = (int)(size * 1.2 * chart_dpi_scale(chart, t));
+    }
+    int label_y;
+    fastchart_align align;
+    if (angle == 0) {
+        label_y = plot->y1 + TICK_MARK_LEN(chart, t) + probe_h_t
+                + (int)(4 * chart_dpi_scale(chart, t));
+        align = FASTCHART_ALIGN_CENTER;
+    } else {
+        label_y = plot->y1 + TICK_MARK_LEN(chart, t) + probe_h_t;
+        align = FASTCHART_ALIGN_RIGHT;
+    }
+
+    /* Calendar-aware stride: emit ticks at unit boundaries (week
+     * starts, month starts, etc.) instead of evenly-spaced dividers
+     * across the range. Reverts to auto-density when every == 0.
+     * fc_gmtime fails when t_min's year overflows struct tm — candle
+     * timestamps arrive unclamped from setOhlcv, so reading tm_buf
+     * after a failed break-down would be UB. Fall through to the
+     * numeric auto-density path below in that case. */
+    struct tm tm_buf;
+    if (chart->date_axis_every > 0 && fc_gmtime((time_t)t_min, &tm_buf)) {
+        zend_long every = chart->date_axis_every;
+        switch (chart->date_axis_unit) {
+            case FASTCHART_DATE_DAY:
+                tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+                break;
+            case FASTCHART_DATE_WEEK:
+                /* Snap to Monday (tm_wday: Sun=0..Sat=6). */
+                tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+                {
+                    int dow = tm_buf.tm_wday == 0 ? 6 : tm_buf.tm_wday - 1;
+                    tm_buf.tm_mday -= dow;
+                }
+                break;
+            case FASTCHART_DATE_MONTH:
+                tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+                tm_buf.tm_mday = 1;
+                break;
+            case FASTCHART_DATE_QUARTER:
+                tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+                tm_buf.tm_mday = 1;
+                tm_buf.tm_mon -= tm_buf.tm_mon % 3;
+                break;
+            case FASTCHART_DATE_YEAR:
+                tm_buf.tm_hour = 0; tm_buf.tm_min = 0; tm_buf.tm_sec = 0;
+                tm_buf.tm_mday = 1;
+                tm_buf.tm_mon = 0;
+                break;
+        }
+        time_t cur = fc_timegm(&tm_buf);
+        if (cur < t_min) {
+            /* Advance one unit so we always start inside the range. */
+            switch (chart->date_axis_unit) {
+                case FASTCHART_DATE_DAY:     tm_buf.tm_mday += 1; break;
+                case FASTCHART_DATE_WEEK:    tm_buf.tm_mday += 7; break;
+                case FASTCHART_DATE_MONTH:   tm_buf.tm_mon  += 1; break;
+                case FASTCHART_DATE_QUARTER: tm_buf.tm_mon  += 3; break;
+                case FASTCHART_DATE_YEAR:    tm_buf.tm_year += 1; break;
+            }
+            cur = fc_timegm(&tm_buf);
+        }
+
+        int n_emitted = 0;
+        while (cur <= t_max && n_emitted < 64) {
+            int x = fastchart_x_time_to_pixel(plot, (zend_long)cur, t_min, t_max);
+            if (draw_points) {
+                fastchart_target_line(t, x, plot->y1 + 1,
+                                      x, plot->y1 + TICK_MARK_LEN(chart, t),
+                                      pal->axis, 1, FASTCHART_DASH_SOLID);
+            }
+            if (draw_labels) {
+                char buf[64];
+                if (chart->x_axis_label_format) {
+                    fastchart_format_tick_label_user((double)cur, chart->x_axis_label_format,
+                                           buf, sizeof(buf));
+                } else {
+                    struct tm tm_lbl;
+                    if (!fc_gmtime(cur, &tm_lbl)) {
+                        snprintf(buf, sizeof(buf), "%lld", (long long)cur);
+                    } else if (chart->date_axis_unit == FASTCHART_DATE_QUARTER) {
+                        snprintf(buf, sizeof(buf), "%d-Q%d",
+                                 tm_lbl.tm_year + 1900,
+                                 (tm_lbl.tm_mon / 3) + 1);
+                    } else {
+                        const char *fmt;
+                        switch (chart->date_axis_unit) {
+                            case FASTCHART_DATE_YEAR:  fmt = "%Y";       break;
+                            case FASTCHART_DATE_MONTH: fmt = "%Y-%m";    break;
+                            default:                   fmt = "%Y-%m-%d"; break;
+                        }
+                        strftime(buf, sizeof(buf), fmt, &tm_lbl);
+                    }
+                }
+                if (angle == 0) {
+                    fastchart_text_draw(t, font, size, label_color,
+                                        x, label_y, align, buf, NULL, 0);
+                } else {
+                    fastchart_text_draw_rotated(t, font, size, label_color,
+                                                x, label_y, align, (double)angle,
+                                                buf, NULL, 0);
+                }
+            }
+            for (zend_long e = 0; e < every; e++) {
+                switch (chart->date_axis_unit) {
+                    case FASTCHART_DATE_DAY:     tm_buf.tm_mday += 1; break;
+                    case FASTCHART_DATE_WEEK:    tm_buf.tm_mday += 7; break;
+                    case FASTCHART_DATE_MONTH:   tm_buf.tm_mon  += 1; break;
+                    case FASTCHART_DATE_QUARTER: tm_buf.tm_mon  += 3; break;
+                    case FASTCHART_DATE_YEAR:    tm_buf.tm_year += 1; break;
+                }
+            }
+            cur = fc_timegm(&tm_buf);
+            n_emitted++;
+        }
+        return;
+    }
+
+    /* Rotated labels are narrower so they can pack more densely. */
+    const int N = (angle == 0) ? 5 : 8;
+    for (int i = 0; i < N; i++) {
+        /* Cast each side to double before subtracting — see comment
+         * in fastchart_x_time_to_pixel. The intermediate is clamped
+         * to zend_long range before the final cast so an extreme
+         * span doesn't UB the double->zend_long conversion either. */
+        double dt = (double)t_max - (double)t_min;
+        double ts_d = (double)t_min + dt * (double)i / (double)(N - 1);
+        if (ts_d < (double)ZEND_LONG_MIN) ts_d = (double)ZEND_LONG_MIN;
+        else if (ts_d > FASTCHART_LONG_MAX_AS_DOUBLE) ts_d = FASTCHART_LONG_MAX_AS_DOUBLE;
+        zend_long ts = (zend_long)ts_d;
+        int x = fastchart_x_time_to_pixel(plot, ts, t_min, t_max);
+        if (draw_points) {
+            fastchart_target_line(t, x, plot->y1 + 1,
+                                  x, plot->y1 + TICK_MARK_LEN(chart, t),
+                                  pal->axis, 1, FASTCHART_DASH_SOLID);
+        }
+        if (!draw_labels) continue;
+
+        char buf[64];
+        if (chart->x_axis_label_format) {
+            /* Numeric format expects a double; pass the timestamp. */
+            fastchart_format_tick_label_user((double)ts, chart->x_axis_label_format,
+                                   buf, sizeof(buf));
+        } else {
+            struct tm tm_buf;
+            if (fc_gmtime((time_t)ts, &tm_buf)) {
+                strftime(buf, sizeof(buf), "%Y-%m-%d", &tm_buf);
+            } else {
+                snprintf(buf, sizeof(buf), "%lld", (long long)ts);
+            }
+        }
+
+        if (angle == 0) {
+            fastchart_text_draw(t, font, size, label_color,
+                                x, label_y, align, buf, NULL, 0);
+        } else {
+            fastchart_text_draw_rotated(t, font, size, label_color,
+                                        x, label_y, align, (double)angle,
+                                        buf, NULL, 0);
+        }
+    }
+}

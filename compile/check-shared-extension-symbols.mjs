@@ -115,7 +115,11 @@ async function checkOnePackage(phpLoaderModule, pkgName, phpVersion) {
 			const soDest = `${EXTENSIONS_DIR}/${entry.name}.so`;
 			Module.FS.writeFile(soDest, soBytes);
 			const iniName = `${String(i).padStart(2, '0')}-${entry.name}.ini`;
-			Module.FS.writeFile(`${EXTENSIONS_DIR}/${iniName}`, `extension=${soDest}\n`);
+			const iniLines = [`extension=${soDest}`];
+			for (const [key, value] of Object.entries(entry.iniEntries ?? {})) {
+				iniLines.push(`${key}=${value}`);
+			}
+			Module.FS.writeFile(`${EXTENSIONS_DIR}/${iniName}`, iniLines.join('\n') + '\n');
 		});
 	};
 
