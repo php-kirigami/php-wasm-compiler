@@ -1,7 +1,7 @@
 # Provenance
 
-Vendored as-is from the `PHP-8.5.10` tag of `php/php-src`
-(https://github.com/php/php-src/tree/PHP-8.5.10/ext/posix) — unmodified
+Vendored as-is from the `PHP-8.5.11` tag of `php/php-src`
+(https://github.com/php/php-src/tree/PHP-8.5.11/ext/posix) — unmodified
 source, no patches. Complete file listing verified against the real git
 tree; `CREDITS` and `tests/` are the only entries not vendored here.
 

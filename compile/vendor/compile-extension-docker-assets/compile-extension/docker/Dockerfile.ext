@@ -74,7 +74,7 @@ RUN if ! grep -Fqx '#undef HAVE_BUILTIN_CONSTANT_P' \
 	grep -Fqx '#undef HAVE_BUILTIN_CONSTANT_P' \
 		/usr/local/include/php/Zend/zend_alloc.h
 
-RUN mkdir -p /usr/local/include/php/ext/standard && \
+RUN mkdir -p /usr/local/include/php/ext/standard /usr/local/include/php/ext/libxml && \
 	if [ -f /root/php-src/ext/standard/php_smart_string.h ]; then \
 		cp /root/php-src/ext/standard/*.h /usr/local/include/php/ext/standard/; \
 	else \
@@ -82,6 +82,9 @@ RUN mkdir -p /usr/local/include/php/ext/standard && \
 	fi && \
 	if [ -d /root/php-src/ext/random ]; then \
 		cp /root/php-src/ext/random/*.h /usr/local/include/php/ext/standard/; \
+	fi && \
+	if [ -d /root/php-src/ext/libxml ]; then \
+		cp /root/php-src/ext/libxml/*.h /usr/local/include/php/ext/libxml/; \
 	fi
 
 COPY ./compile-extension/scripts/build-in-docker.sh /usr/local/bin/build-php-wasm-extension

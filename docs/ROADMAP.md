@@ -36,3 +36,13 @@ Larger, not-yet-scheduled initiatives. For the concrete next actions, see [TODO.
   a stored value round-tripping through it) hasn't been checked yet — only
   `norm`/`navicat`/`jsonk`/`mdhtml` were smoke-tested that session (see
   STATUS.md).
+- **Floated (2026-09-23), not scoped**: let a shared extension load a
+  further WASM side module through `dlopen()`, from the VM filesystem.
+  Three extensions are only half-useful without it, all for the same
+  reason (decisions 57/58): `odbc`/`pdo_odbc` have a driver manager but no
+  database driver (candidates: FreeTDS's own `src/odbc` driver, psqlODBC,
+  sqliteodbc), and `enchant` has no spell-checking provider (Hunspell,
+  which enchant loads with `g_module_open()`). `dlopen`/`dlerror` are
+  already exported by the core. What's missing is a driver or provider
+  actually built as a side module, and proof that a runtime `dlopen()` of
+  it from inside another side module works under JSPI.

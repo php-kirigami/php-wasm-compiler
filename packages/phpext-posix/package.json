@@ -1,6 +1,6 @@
 {
 	"name": "@kirigami/phpext-posix",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Kirigami PHP.wasm shared extension: posix (JSPI side module, see @kirigami/php-wasm)",
 	"keywords": [
 		"php-wasm",
@@ -39,7 +39,7 @@
 		"phpVersions": [
 			"8.5"
 		],
-		"minVersion": "8.5.10",
-		"buildHash": "d0210ee9e497da22da7981f45b676fbbcefc74cb0f9a294b689cea4cda7933cf"
+		"minVersion": "8.5.11",
+		"buildHash": "5c29ddaf88920163685d3397508896bd2b1bd1abe2cff1054b8dbfaefda173b8"
 	}
 }

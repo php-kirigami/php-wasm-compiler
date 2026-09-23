@@ -1,0 +1,49 @@
+{
+	"name": "@kirigami/phpext-pdo_firebird",
+	"version": "0.1.1",
+	"description": "Kirigami PHP.wasm shared extension: pdo_firebird (JSPI side module, see @kirigami/php-wasm)",
+	"keywords": [
+		"php-wasm",
+		"php",
+		"wasm",
+		"webassembly",
+		"kirigami",
+		"pdo_firebird"
+	],
+	"homepage": "https://php-kirigami.github.io",
+	"bugs": {
+		"url": "https://github.com/php-kirigami/php-wasm-compiler/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/php-kirigami/php-wasm-compiler.git"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"license": "GPL-2.0-or-later",
+	"author": "Maxime Larrivée-Roy",
+	"type": "module",
+	"main": "index.js",
+	"types": "index.d.ts",
+	"files": [
+		"manifest.json",
+		"manifest-*.json",
+		"*.so",
+		"index.js",
+		"index.d.ts",
+		"README.md"
+	],
+	"kirigami": {
+		"type": "extension",
+		"phpVersions": [
+			"8.5"
+		],
+		"minVersion": "8.5.11",
+		"vendorLib": {
+			"name": "firebird",
+			"version": "5.0.4.1812"
+		},
+		"buildHash": "7f7bb20b96d9bb1223cc9c494e20a8e6cae4c0c00d7da40c15242d97e7183885"
+	}
+}

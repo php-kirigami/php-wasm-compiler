@@ -23,6 +23,7 @@ import { hideBin } from 'yargs/helpers';
 
 import { updatePHPVersions } from './update-php-versions.mjs';
 import { updateLibVersions } from './update-lib-versions.mjs';
+import { checkVendoredExtensions } from './check-vendored-extensions.mjs';
 import { getMatrixVersion, getMatrixExtensionVersion } from './matrix-version.mjs';
 import { prepareCompileExtensionCache } from './setup-compile-extension-cache.mjs';
 import { patchCompileExtensionTags } from './patch-compile-extension-tags.mjs';
@@ -239,6 +240,7 @@ const IMPLEMENTED_EXTENSIONS = {
 	navicat: 'WITH_NAVICAT',
 	igbinary: 'WITH_IGBINARY',
 	norm: 'WITH_NORM',
+	bz2: 'WITH_BZ2',
 };
 
 // These have no independent Dockerfile flag of their own: compile/php/Dockerfile
@@ -283,6 +285,10 @@ const LIB_TARGETS_BY_EXTENSION = {
 	imagick: ['libImageMagick_jspi'],
 	yaml: ['libyaml_jspi'],
 	mdhtml: ['libcmark-gfm_jspi'],
+	// Was missing here until 2026-09-17 -- a real gap: `node cli.mjs --quiet`
+	// never ran `make libbz2_jspi` on its own, only worked because decision
+	// 53's session had already built it manually first.
+	bz2: ['libbz2_jspi'],
 };
 
 /** Union of Makefile targets needed by every extension currently set to "static". */
@@ -465,6 +471,16 @@ async function runUpdateVersionsCommand(argv) {
 
 	console.log('\n=== Third-party libraries (matrix.json) ===');
 	await updateLibVersions({ write: argv.write });
+
+	console.log('\n=== php-src-bundled extensions (compile/extensions/*/PROVENANCE.md) ===');
+	const { hasDrift } = await checkVendoredExtensions();
+	if (hasDrift) {
+		console.log(
+			'\nSome vendored extensions are behind the PHP tag above with real upstream ' +
+				'changes — re-vendor them by hand (see each one\'s own PROVENANCE.md ' +
+				'"Regenerating" line) before the next release.'
+		);
+	}
 }
 
 /**
@@ -772,8 +788,9 @@ function vendorLibFlags(lib) {
 				.filter((name) => name.endsWith('.a'))
 				.sort()
 		: [`${lib}.a`];
+	const includeDir = lib === 'libxml2' ? `include/${lib}` : 'include';
 	return {
-		cflags: `-I/build/vendor/${lib}/include`,
+		cflags: `-I/build/vendor/${lib}/${includeDir}`,
 		ldflags: archives.map((name) => `/build/vendor/${lib}/lib/${name}`).join(' '),
 	};
 }

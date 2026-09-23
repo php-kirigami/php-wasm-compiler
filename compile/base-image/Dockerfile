@@ -59,6 +59,11 @@ RUN bash -euxo pipefail <<'EOF'
     EMSDK_NOTTY=1 /root/emsdk/emsdk activate --notty 4.0.19
 EOF
 
+# Patches a real bug in Emscripten's own dynamic-linker JS generation --
+# see patch-libdylink-emjs-multiptr.mjs for the full "why".
+COPY ./patch-libdylink-emjs-multiptr.mjs /root/patch-libdylink-emjs-multiptr.mjs
+RUN source /root/emsdk/emsdk_env.sh && node /root/patch-libdylink-emjs-multiptr.mjs
+
 RUN mkdir -p /root/lib/lib /root/lib/include /root/lib/share /root/lib/bin
 
 # Create a script to capture libraries build in other steps

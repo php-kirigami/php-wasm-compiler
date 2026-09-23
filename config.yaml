@@ -27,6 +27,16 @@ php:
 # (no web build, no Asyncify). Not configurable here.
 
 extensions:
+
+  # --- WASM-side networking proxy (-lwebsocket.js / wasm_recv & co) is not
+  # what @kirigami/php-wasm uses for networking — its own runtime.js
+  # implements a Node-side SOCKFS proxy instead (getPHPRuntimeWithNetwork()).
+  # Also: enabling it hits a real bug (wasm_recv gets dropped from the
+  # final build, likely dead-code-eliminated) — see CLAUDE.md decision 22. ---
+  ws_networking_proxy: { mode: 'off' }
+  mysql: { mode: 'off' }
+
+
   # --- wired into compile/php/Dockerfile, static mode functional.
   # Set to match the exact extension set of the existing, known-working
   # @kirigami/php-wasm build (../kirigami/packages/php-wasm/README.md's
@@ -99,20 +109,15 @@ extensions:
   norm: { mode: static }
 
   # --- OFF to match the reference build's Configure Command, which shows
-  # --disable-opcache / --disable-soap / --disable-fileinfo /
-  # --disable-mbregex, and no mysql/mysqli/pdo_mysql flag at all. ---
-  soap: { mode: 'off' }
-  mbregex: { mode: 'off' }
-  opcache: { mode: 'off' }
-  mysql: { mode: 'off' }
-  fileinfo: { mode: 'off' }
+  # --disable-opcache / --disable-fileinfo / --disable-mbregex, and no
+  # mysql/mysqli/pdo_mysql flag at all. Soap and gettext are kept under
+  # mode: shared below so they can be loaded separately without rebuilding
+  # the core. ---
+  mbregex: { mode: static }
+  opcache: { mode: static }
+  bz2: { mode: static }
 
-  # --- WASM-side networking proxy (-lwebsocket.js / wasm_recv & co) is not
-  # what @kirigami/php-wasm uses for networking — its own runtime.js
-  # implements a Node-side SOCKFS proxy instead (getPHPRuntimeWithNetwork()).
-  # Also: enabling it hits a real bug (wasm_recv gets dropped from the
-  # final build, likely dead-code-eliminated) — see CLAUDE.md decision 22. ---
-  ws_networking_proxy: { mode: 'off' }
+
 
   # --- no Dockerfile flag of their own: compile/php/Dockerfile turns these
   # on together with "libxml" (--enable-dom --enable-simplexml
@@ -138,16 +143,12 @@ extensions:
   # ~109 extensions including many PECL ones) is the point — even though
   # the current build matches a narrower reference build, the ambition is
   # every extension in this list eventually being toggleable. ---
-  pdo_pgsql: { mode: 'off' }
-  pgsql: { mode: 'off' }
-  gettext: { mode: 'off' }
-  gmp: { mode: 'off' }
-  ldap: { mode: 'off' }
-  enchant: { mode: 'off' }
-  tidy: { mode: 'off' }
-  odbc: { mode: 'off' }
   intl: { mode: 'off' } # requires icu.dat (30MB), see NOTICE.md
-
+  fileinfo: { mode: 'off' }
+  ffi: { mode: 'off' }
+  snmp: { mode: 'off' }
+  xsl: { mode: 'off' }
+  
   # --- mode: shared — compiled independently via @php-wasm/compile-extension
   # into a standalone WASM side module, loadable at runtime without
   # rebuilding php.wasm (CLAUDE.md decisions 5, 30, 31). Each entry needs a
@@ -179,6 +180,48 @@ extensions:
   ftp:
     mode: shared
     source: compile/extensions/ftp
+
+  # GNU gettext under musl/libc's own sysroot, built as a standalone side
+  # module with no vendored external library required; the source is the PHP
+  # bundled gettext extension itself.
+  #
+  # ac_cv_lib_*: config.m4's AC_CHECK_LIB probes for bindtextdomain and the
+  # ngettext family come back negative in this side-module environment, which
+  # (with the unmodified upstream config.m4) is a hard configure error, and
+  # with an earlier locally-patched one silently dropped ngettext()/
+  # dngettext()/dcngettext()/bind_textdomain_codeset(). Every one of these is
+  # genuinely present in Emscripten's musl libc.a (verified with llvm-nm), so
+  # pre-seed autoconf's cache the same way pgsql does -- the core exports them
+  # through .JS_ABI_EXPORTS (compile/php/Dockerfile).
+  gettext:
+    mode: shared
+    source: compile/extensions/gettext
+    configArgs: >-
+      ac_cv_lib_intl_bindtextdomain=no
+      ac_cv_lib_c_bindtextdomain=yes
+      ac_cv_lib_c_ngettext=yes
+      ac_cv_lib_c_dngettext=yes
+      ac_cv_lib_c_dcngettext=yes
+      ac_cv_lib_c_bind_textdomain_codeset=yes
+      --with-gettext=/root/emsdk/upstream/emscripten/cache/sysroot
+  
+  # TODO: METTRE DES COMMENTAIRES 
+  gmp:
+    mode: shared
+    source: compile/extensions/gmp
+    vendorLib: libgmp
+    pkgConfigVar: GMP
+    configArgs: '--with-gmp'
+
+  # PHP's bundled SOAP extension, compiled as its own side module so it can be
+  # loaded without rebuilding the core; it depends on libxml and otherwise uses
+  # only php-src's built-in sources.
+  soap:
+    mode: shared
+    source: compile/extensions/soap
+    vendorLib: libxml2
+    pkgConfigVar: LIBXML
+    extraCflags: -DHAVE_LIBXML=1 -I/root/php-src -I/root/php-src/ext/libxml
 
   # The first pair of mode:shared extensions where one depends on the other
   # being loaded first (CLAUDE.md decision 42) — mysqli needs mysqlnd's Zend
@@ -281,6 +324,211 @@ extensions:
   posix:
     mode: shared
     source: compile/extensions/posix
+
+  # PostgreSQL support (CLAUDE.md decision, 2026-09-22), the first pair of
+  # mode:shared extensions built against a newly-vendored external C library
+  # since sodium/gmp -- libpq (compile/libpq/Dockerfile). Both pgsql and
+  # pdo_pgsql link libpq directly (unlike mysqli/pdo_mysql, there's no
+  # mysqlnd-style shared Zend-module dependency between them -- see
+  # compile/extensions/pdo_pgsql/PROVENANCE.md). configArgs is required for
+  # both: their config.m4 declares itself via PHP_ARG_WITH (not
+  # PHP_ARG_ENABLE), same gap decision 47 already found for pdo_mysql/gmp --
+  # @php-wasm/compile-extension's own default --enable-<name> is silently
+  # ignored, leaving the extension off. pkgConfigVar: PGSQL matches
+  # PHP_SETUP_PGSQL's own PKG_CHECK_MODULES([PGSQL], [libpq >= 10.0], ...)
+  # probe (build/php.m4) -- both extensions call this same shared macro, so
+  # both get the same auto-generated PGSQL_CFLAGS/PGSQL_LIBS override (the
+  # vendorLib mechanism's default raw archive-path form -- same as gmp/
+  # sodium, deliberately NOT overridden to an -L/-l pair here, see below).
+  #
+  # ac_cv_lib_pq_<function>=yes/no: PHP_SETUP_PGSQL and pgsql's/pdo_pgsql's
+  # own config.m4 each run extra PHP_CHECK_LIBRARY (= bare AC_CHECK_LIB)
+  # probes on top of the PKG_CHECK_MODULES probe above -- and AC_CHECK_LIB
+  # is fundamentally unreliable in this build environment: it unconditionally
+  # appends a plain "-lpq" to its test link line (which the raw archive-path
+  # form of PGSQL_LIBS can't satisfy -- real failure: "wasm-ld: error:
+  # unable to find library -lpq"), AND, even with a -L/-l form that does
+  # satisfy it, side-module WASM linking (--unresolved-symbols=import-
+  # dynamic) doesn't fail on a genuinely-undefined symbol the way a normal
+  # static link would -- so it reports "found" whether or not the function
+  # actually exists. Concretely caught: HAVE_PG_SERVICE (PQservice) got
+  # wrongly defined this way even though PQservice doesn't exist anywhere in
+  # real libpq 18.6 (absent from both libpq-fe.h and the built libpq.a's
+  # symbol table -- config.m4's own "PostgreSQL 18 or later" comment looks
+  # ahead to an unreleased version, v19beta3 as of this writing), tripping a
+  # hard "undeclared function" compile error in pgsql.c. Pre-seeding
+  # autoconf's own result cache variables (`ac_cv_lib_<lib>_<func>`) instead
+  # short-circuits every one of these probes without patching the vendored
+  # config.m4/pgsql.c -- each is otherwise genuinely present in libpq 18.6
+  # (all require PG 10-17, comfortably below 18.6) except PQservice, forced
+  # to "no". See compile/extensions/pgsql/PROVENANCE.md.
+  pgsql:
+    mode: shared
+    source: compile/extensions/pgsql
+    vendorLib: libpq
+    pkgConfigVar: PGSQL
+    configArgs: >-
+      ac_cv_lib_pq_PQencryptPasswordConn=yes
+      ac_cv_lib_pq_PQresultMemorySize=yes
+      ac_cv_lib_pq_PQchangePassword=yes
+      ac_cv_lib_pq_PQsocketPoll=yes
+      ac_cv_lib_pq_PQclosePrepared=yes
+      ac_cv_lib_pq_PQsetChunkedRowsMode=yes
+      ac_cv_lib_pq_PQservice=no
+      --with-pgsql
+
+  pdo_pgsql:
+    mode: shared
+    source: compile/extensions/pdo_pgsql
+    vendorLib: libpq
+    pkgConfigVar: PGSQL
+    configArgs: >-
+      ac_cv_lib_pq_PQencryptPasswordConn=yes
+      ac_cv_lib_pq_PQresultMemorySize=yes
+      ac_cv_lib_pq_PQclosePrepared=yes
+      --with-pdo-pgsql
+
+  # HTML Tidy (htacg/tidy-html5), vendored as libtidy (compile/libtidy/
+  # Dockerfile, mode: static's original plan per matrix.json's own libtidy
+  # note -- picked up here as mode: shared instead, same as gmp). Unlike
+  # gmp/pgsql, config.m4 does its own manual directory search (test -f
+  # .../include/tidy/tidy.h or .../include/tidy.h) rather than
+  # PKG_CHECK_MODULES, so configArgs points --with-tidy directly at the
+  # vendorLib staging path instead of a pkgConfigVar env override -- no
+  # pkgConfigVar needed here at all.
+  #
+  # extraCflags: -DHAS_FUTIME=0 works around a real build failure --
+  # tidyplatform.h's own platform auto-detection (HAS_FUTIME, gated on
+  # CYGWIN_OS/LINUX_OS/__GLIBC__/etc., none of which Emscripten defines)
+  # defaults to 1 for an unrecognized platform and #includes <sys/utime.h>,
+  # which doesn't exist in Emscripten's sysroot (only the portable
+  # <utime.h>, the HAS_FUTIME=0 branch). Forcing the macro (the header's own
+  # `#ifndef HAS_FUTIME` guard allows overriding it this way) needs no patch
+  # to the vendored header at all.
+  tidy:
+    mode: shared
+    source: compile/extensions/tidy
+    vendorLib: libtidy
+    configArgs: '--with-tidy=/build/vendor/libtidy'
+    extraCflags: -DHAS_FUTIME=0
+
+  # OpenLDAP client libraries (liblber/libldap), vendored as openldap
+  # (compile/libopenldap/Dockerfile -- client libs only, --disable-slapd,
+  # no SASL/TLS yet). Unlike tidy, config.m4 tries PKG_CHECK_MODULES([LDAP],
+  # [lber ldap], ...) FIRST -- pkgConfigVar's env override short-circuits
+  # that probe the same way it does for gmp/pgsql, which steers config.m4
+  # down its PHP_EVAL_LIBLINE branch (raw-archive-path friendly) instead of
+  # its other, PHP_ADD_LIBRARY_WITH_PATH-based manual-search branch (which
+  # would hit the same libtool bug bz2/tidy did) -- no config.m4 patch
+  # needed here at all. --with-ldap is still required explicitly, same gap
+  # as gmp/pgsql/pdo_mysql (PHP_ARG_WITH with no default, --enable-ldap
+  # silently ignored). See compile/extensions/ldap/PROVENANCE.md.
+  ldap:
+    mode: shared
+    source: compile/extensions/ldap
+    vendorLib: openldap
+    pkgConfigVar: LDAP
+    configArgs: '--with-ldap'
+
+  # Enchant spell-checking (CLAUDE.md decision, 2026-09-22). config.m4 has a
+  # single PKG_CHECK_MODULES([ENCHANT2], [enchant-2], ...) probe --
+  # pkgConfigVar's env override short-circuits it the same way as gmp/pgsql,
+  # so this needed no config.m4 patch. vendorLib: libenchant2 supplies
+  # ENCHANT2_LIBS automatically (its own vendored lib/ directory bundles
+  # libenchant-2.a alongside libglib-2.0.a/libgmodule-2.0.a/libffi.a/libz.a
+  # -- see compile/libenchant2/Dockerfile and matrix.json's own libenchant2
+  # note for why: config.m4 only has the one PKG_CHECK_MODULES call to
+  # override, so every transitive dependency has to already live in that
+  # one vendored archive set).
+  #
+  # ENCHANT2_CFLAGS is re-overridden (same "later configArgs wins" ordering
+  # as pgsql's own PGSQL_LIBS override) to point one level deeper than the
+  # vendorLib mechanism's default: enchant.c does `#include <enchant.h>`
+  # (bare, matching real enchant-2.pc's own Cflags: -I.../enchant-2), but
+  # our headers are staged at include/enchant-2/enchant.h -- the default
+  # `-I.../include` isn't enough on its own.
+  enchant:
+    mode: shared
+    source: compile/extensions/enchant
+    vendorLib: libenchant2
+    pkgConfigVar: ENCHANT2
+    configArgs: 'ENCHANT2_CFLAGS="-I/build/vendor/libenchant2/include/enchant-2" --with-enchant'
+
+  # ODBC via the unixODBC driver manager (compile/unixodbc/Dockerfile --
+  # libodbc only, no bundled drivers). config.m4 offers several mutually
+  # exclusive backends (ibm-db2, custom-odbc, iodbc, unixODBC), none on by
+  # default, and declares each via PHP_ARG_WITH -- so the compile-extension
+  # default --enable-odbc is silently ignored, same gap as gmp/pgsql/ldap.
+  # But no --with-* flag can pick the backend under phpize: build/php.m4's
+  # php_always_shared forces every PHP_ARG_WITH that evaluates to "no" to
+  # "yes, shared", so config.m4's first backend block (ibm-db2) always wins
+  # and hard-fails looking for /home/db2inst1/sqllib/include/sqlcli1.h,
+  # even with --without-ibm-db2. Pre-setting ODBC_TYPE=unixODBC skips all
+  # four backend blocks (each is guarded by AS_VAR_IF([ODBC_TYPE],, ...))
+  # and goes straight to the common "Extension setup" block, which defines
+  # HAVE_UODBC/PHP_ODBC_TYPE and links $ODBC_LIBS -- supplied by
+  # pkgConfigVar's ODBC_CFLAGS/ODBC_LIBS, same as ldap. The one define the
+  # skipped unixODBC block would have set, HAVE_UNIXODBC (selects the
+  # sql.h/sqlext.h includes in php_odbc_includes.h), comes from
+  # extraCflags. No config.m4 patch needed. See
+  # compile/extensions/odbc/PROVENANCE.md, including why an actual database
+  # connection needs a driver this package does not ship.
+  odbc:
+    mode: shared
+    source: compile/extensions/odbc
+    vendorLib: unixodbc
+    pkgConfigVar: ODBC
+    configArgs: 'ODBC_TYPE=unixODBC ext_shared=yes'
+    extraCflags: -DHAVE_UNIXODBC=1
+
+  # PDO driver over the same unixODBC driver manager (vendorLib: unixodbc,
+  # linked independently -- no Zend-module dependency on ext/odbc, unlike
+  # pdo_mysql -> mysqlnd). Single PHP_ARG_WITH, so none of odbc's phpize
+  # backend-selection trouble: the "flavour" in --with-pdo-odbc=unixODBC
+  # picks config.m4's PKG_CHECK_MODULES([PDO_ODBC], [odbc]) branch, which
+  # pkgConfigVar's env override short-circuits. `pdo` itself is mode: static
+  # (headers only at compile time, same as pdo_mysql/pdo_pgsql). See
+  # compile/extensions/pdo_odbc/PROVENANCE.md.
+  pdo_odbc:
+    mode: shared
+    source: compile/extensions/pdo_odbc
+    vendorLib: unixodbc
+    pkgConfigVar: PDO_ODBC
+    configArgs: '--with-pdo-odbc=unixODBC'
+
+  # PDO driver for Microsoft SQL Server / Sybase over FreeTDS's db-lib
+  # (compile/freetds/Dockerfile -- libsybdb only, no TLS yet). config.m4 has
+  # no pkg-config branch: --with-pdo-dblib=DIR checks DIR/include/sybdb.h
+  # and DIR/lib/libsybdb.a itself, so it points straight at the vendorLib
+  # staging path (same shape as tidy, no pkgConfigVar). Its
+  # PHP_ADD_LIBRARY_WITH_PATH call is removed from the vendored config.m4,
+  # same libtool fix as tidy/bz2. See
+  # compile/extensions/pdo_dblib/PROVENANCE.md.
+  pdo_dblib:
+    mode: shared
+    source: compile/extensions/pdo_dblib
+    vendorLib: freetds
+    configArgs: '--with-pdo-dblib=/build/vendor/freetds'
+
+  # PDO driver for Firebird, over Firebird 5's own client library
+  # (compile/firebird/Dockerfile -- libfbclient built from the server source
+  # with --enable-client-only, plus its static deps: libfbcommon, tommath,
+  # tomcrypt, decFloat, re2). Same shape as pdo_dblib: no fb_config in the
+  # build container, so --with-pdo-firebird=DIR takes config.m4's directory
+  # branch, pointed at the vendorLib staging path; its
+  # PHP_ADD_LIBRARY_WITH_PATH call is removed from the vendored config.m4
+  # (same libtool fix as tidy/bz2/pdo_dblib). Its PHP_CHECK_LIBRARY
+  # (AC_CHECK_LIB) probe is answered with ac_cv_lib_fbclient_* instead of
+  # run, same reason as pgsql's. Also the first C++ mode:shared extension
+  # (pdo_firebird_utils.cpp, and libfbclient itself is C++). See
+  # compile/extensions/pdo_firebird/PROVENANCE.md.
+  pdo_firebird:
+    mode: shared
+    source: compile/extensions/pdo_firebird
+    vendorLib: firebird
+    configArgs: >-
+      ac_cv_lib_fbclient_fb_get_master_interface=yes
+      --with-pdo-firebird=/build/vendor/firebird
 
 # Version of each third-party library to use (see matrix.json for known
 # versions + their source). "latest" = the newest entry known to

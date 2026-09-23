@@ -1,9 +1,9 @@
 # Provenance
 
-This directory vendors `ext/pdo_mysql` as-is from the `PHP-8.5.10` tag of
-`php/php-src` (https://github.com/php/php-src/tree/PHP-8.5.10/ext/pdo_mysql)
+This directory vendors `ext/pdo_mysql` as-is from the `PHP-8.5.11` tag of
+`php/php-src` (https://github.com/php/php-src/tree/PHP-8.5.11/ext/pdo_mysql)
 — unmodified source, no patches. Complete file listing verified against the
-real git tree (`gh api repos/php/php-src/contents/ext/pdo_mysql?ref=PHP-8.5.10`)
+real git tree (`gh api repos/php/php-src/contents/ext/pdo_mysql?ref=PHP-8.5.11`)
 before vendoring — `CREDITS`, `config.w32` (Windows build) and `tests/` are
 the only entries in the real extension not vendored here.
 

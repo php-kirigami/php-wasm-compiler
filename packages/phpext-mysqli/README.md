@@ -21,7 +21,7 @@ Built for the **[Kirigami](https://github.com/php-kirigami)** static site genera
 ## Overview
 
 `@kirigami/phpext-mysqli` is PHP's own `ext/mysqli` — unmodified upstream
-source, straight from the `PHP-8.5.10` tag — compiled independently of the
+source, straight from the `PHP-8.5.11` tag — compiled independently of the
 core `php.wasm` into a **JSPI WASM side module** (Kirigami's `mode: shared`
 extension model). Install it and `@kirigami/php-wasm` picks it up
 automatically at startup — no manual wiring, no core rebuild.
@@ -101,7 +101,7 @@ $result = $mysqli->query('SELECT 1');
 
 | | |
 | --- | --- |
-| PHP extensions | `ext/mysqli` + `ext/mysqlnd`, both unmodified, from the `PHP-8.5.10` tag |
+| PHP extensions | `ext/mysqli` + `ext/mysqlnd`, both unmodified, from the `PHP-8.5.11` tag |
 | PHP version(s) shipped | 8.5 |
 | Native library | None for either — pure php-src bundled code |
 | Build mode | `mode: shared` (two JSPI side modules, one package) — see `@kirigami/php-wasm`'s `mode: static` core for the always-on extension set instead |

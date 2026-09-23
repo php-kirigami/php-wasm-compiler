@@ -264,6 +264,118 @@ libsodium/jspi/dist/root/lib/lib/libsodium.a: base-image
 	CID=$$(docker create kirigami-php-wasm:libsodium) && docker cp $$CID:/root/install/include ./libsodium/jspi/dist/root/lib && docker rm $$CID
 	$(call STRIP_SO,./libsodium/jspi/dist/root/lib)
 
+LIBBZIP2_VERSION := $(call MATRIX_VERSION,libbz2)
+
+libbz2_jspi: libbz2/jspi/dist/root/lib/lib/libbz2.a
+libbz2/jspi/dist/root/lib/lib/libbz2.a: base-image
+	mkdir -p ./libbz2/jspi/dist/root/lib
+	docker build -f ./libbz2/Dockerfile -t kirigami-php-wasm:libbz2 . --build-arg JSPI=1 --build-arg LIBBZIP2_VERSION=$(LIBBZIP2_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libbz2) && docker cp $$CID:/root/install/lib ./libbz2/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libbz2) && docker cp $$CID:/root/install/include ./libbz2/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libbz2/jspi/dist/root/lib)
+
+LIBGMP_VERSION := $(call MATRIX_VERSION,libgmp)
+
+libgmp_jspi: libgmp/jspi/dist/root/lib/lib/libgmp.a
+libgmp/jspi/dist/root/lib/lib/libgmp.a: base-image
+	mkdir -p ./libgmp/jspi/dist/root/lib
+	docker build -f ./libgmp/Dockerfile -t kirigami-php-wasm:libgmp . --build-arg JSPI=1 --build-arg LIBGMP_VERSION=$(LIBGMP_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libgmp) && docker cp $$CID:/root/install/lib ./libgmp/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libgmp) && docker cp $$CID:/root/install/include ./libgmp/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libgmp/jspi/dist/root/lib)
+
+LIBTIDY_VERSION := $(call MATRIX_VERSION,libtidy)
+
+libtidy_jspi: libtidy/jspi/dist/root/lib/lib/libtidy.a
+libtidy/jspi/dist/root/lib/lib/libtidy.a: base-image
+	mkdir -p ./libtidy/jspi/dist/root/lib
+	docker build -f ./libtidy/Dockerfile -t kirigami-php-wasm:libtidy . --build-arg JSPI=1 --build-arg LIBTIDY_VERSION=$(LIBTIDY_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libtidy) && docker cp $$CID:/root/install/lib ./libtidy/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libtidy) && docker cp $$CID:/root/install/include ./libtidy/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libtidy/jspi/dist/root/lib)
+
+LIBPQ_VERSION := $(call MATRIX_VERSION,libpq)
+
+libpq_jspi: libpq/jspi/dist/root/lib/lib/libpq.a
+libpq/jspi/dist/root/lib/lib/libpq.a: base-image
+	mkdir -p ./libpq/jspi/dist/root/lib
+	docker build -f ./libpq/Dockerfile -t kirigami-php-wasm:libpq . --build-arg JSPI=1 --build-arg LIBPQ_VERSION=$(LIBPQ_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libpq) && docker cp $$CID:/root/install/lib ./libpq/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libpq) && docker cp $$CID:/root/install/include ./libpq/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libpq/jspi/dist/root/lib)
+
+LIBOPENLDAP_VERSION := $(call MATRIX_VERSION,openldap)
+
+libopenldap_jspi: openldap/jspi/dist/root/lib/lib/libldap.a
+openldap/jspi/dist/root/lib/lib/libldap.a: base-image
+	mkdir -p ./openldap/jspi/dist/root/lib
+	docker build -f ./openldap/Dockerfile -t kirigami-php-wasm:libopenldap . --build-arg JSPI=1 --build-arg LIBOPENLDAP_VERSION=$(LIBOPENLDAP_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libopenldap) && docker cp $$CID:/root/install/lib ./openldap/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libopenldap) && docker cp $$CID:/root/install/include ./openldap/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./openldap/jspi/dist/root/lib)
+
+UNIXODBC_VERSION := $(call MATRIX_VERSION,unixodbc)
+
+unixodbc_jspi: unixodbc/jspi/dist/root/lib/lib/libodbc.a
+unixodbc/jspi/dist/root/lib/lib/libodbc.a: base-image
+	mkdir -p ./unixodbc/jspi/dist/root/lib
+	docker build -f ./unixodbc/Dockerfile -t kirigami-php-wasm:unixodbc . --build-arg JSPI=1 --build-arg UNIXODBC_VERSION=$(UNIXODBC_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:unixodbc) && docker cp $$CID:/root/install/lib ./unixodbc/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:unixodbc) && docker cp $$CID:/root/install/include ./unixodbc/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./unixodbc/jspi/dist/root/lib)
+
+FREETDS_VERSION := $(call MATRIX_VERSION,freetds)
+
+freetds_jspi: freetds/jspi/dist/root/lib/lib/libsybdb.a
+freetds/jspi/dist/root/lib/lib/libsybdb.a: base-image
+	mkdir -p ./freetds/jspi/dist/root/lib
+	docker build -f ./freetds/Dockerfile -t kirigami-php-wasm:freetds . --build-arg JSPI=1 --build-arg FREETDS_VERSION=$(FREETDS_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:freetds) && docker cp $$CID:/root/install/lib ./freetds/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:freetds) && docker cp $$CID:/root/install/include ./freetds/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./freetds/jspi/dist/root/lib)
+
+FIREBIRD_VERSION := $(call MATRIX_VERSION,firebird)
+# ICU headers only (Firebird's configure requires them; nothing links ICU).
+FIREBIRD_ICU_VERSION := 78.3
+
+firebird_jspi: firebird/jspi/dist/root/lib/lib/libfbclient.a
+firebird/jspi/dist/root/lib/lib/libfbclient.a: base-image
+	mkdir -p ./firebird/jspi/dist/root/lib
+	docker build -f ./firebird/Dockerfile -t kirigami-php-wasm:firebird . --build-arg JSPI=1 --build-arg FIREBIRD_VERSION=$(FIREBIRD_VERSION) --build-arg ICU_VERSION=$(FIREBIRD_ICU_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:firebird) && docker cp $$CID:/root/install/lib ./firebird/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:firebird) && docker cp $$CID:/root/install/include ./firebird/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./firebird/jspi/dist/root/lib)
+
+LIBFFI_VERSION := $(call MATRIX_VERSION,libffi)
+
+libffi_jspi: libffi/jspi/dist/root/lib/lib/libffi.a
+libffi/jspi/dist/root/lib/lib/libffi.a: base-image
+	mkdir -p ./libffi/jspi/dist/root/lib
+	docker build -f ./libffi/Dockerfile -t kirigami-php-wasm:libffi . --build-arg JSPI=1 --build-arg LIBFFI_VERSION=$(LIBFFI_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libffi) && docker cp $$CID:/root/install/lib ./libffi/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libffi) && docker cp $$CID:/root/install/include ./libffi/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libffi/jspi/dist/root/lib)
+
+LIBGLIB_VERSION := $(call MATRIX_VERSION,libglib)
+
+libglib_jspi: libglib/jspi/dist/root/lib/lib/libglib-2.0.a
+libglib/jspi/dist/root/lib/lib/libglib-2.0.a: base-image libz_jspi libffi_jspi
+	mkdir -p ./libglib/jspi/dist/root/lib
+	docker build -f ./libglib/Dockerfile -t kirigami-php-wasm:libglib . --build-arg JSPI=1 --build-arg LIBGLIB_VERSION=$(LIBGLIB_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libglib) && docker cp $$CID:/root/install/lib ./libglib/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libglib) && docker cp $$CID:/root/install/include ./libglib/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libglib/jspi/dist/root/lib)
+
+LIBENCHANT2_VERSION := $(call MATRIX_VERSION,libenchant2)
+
+libenchant2_jspi: libenchant2/jspi/dist/root/lib/lib/libenchant-2.a
+libenchant2/jspi/dist/root/lib/lib/libenchant-2.a: base-image libglib_jspi libffi_jspi libz_jspi
+	mkdir -p ./libenchant2/jspi/dist/root/lib
+	docker build -f ./libenchant2/Dockerfile -t kirigami-php-wasm:libenchant2 . --build-arg JSPI=1 --build-arg LIBENCHANT_VERSION=$(LIBENCHANT2_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libenchant2) && docker cp $$CID:/root/install/lib ./libenchant2/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libenchant2) && docker cp $$CID:/root/install/include ./libenchant2/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libenchant2/jspi/dist/root/lib)
+
 LIBCMARKGFM_VERSION := $(call MATRIX_VERSION,libcmark-gfm)
 
 libcmark-gfm_jspi: libcmark-gfm/jspi/dist/root/lib/lib/libcmark-gfm.a
@@ -299,7 +411,7 @@ libImageMagick/jspi/dist/root/lib/lib/libMagickCore-7.Q16HDRI.a: base-image libz
 	$(call STRIP_SO,./libImageMagick/jspi/dist/root/lib)
 
 all: all_jspi
-all_jspi: libz_jspi libzip_jspi libpng16_jspi libjpeg_jspi libwebp_jspi libaom_jspi libavif_jspi libfreetype_jspi libgd_jspi libxml2_jspi libopenssl_jspi libsqlite3_jspi libiconv_jspi oniguruma_jspi libssh2_jspi nghttp2_jspi libcurl_jspi libImageMagick_jspi libsodium_jspi libyaml_jspi libcmark-gfm_jspi
+all_jspi: libz_jspi libzip_jspi libpng16_jspi libjpeg_jspi libwebp_jspi libaom_jspi libavif_jspi libfreetype_jspi libgd_jspi libxml2_jspi libopenssl_jspi libsqlite3_jspi libiconv_jspi oniguruma_jspi libssh2_jspi nghttp2_jspi libcurl_jspi libImageMagick_jspi libsodium_jspi libyaml_jspi libcmark-gfm_jspi libbz2_jspi libgmp_jspi libtidy_jspi libpq_jspi libopenldap_jspi libffi_jspi libglib_jspi libenchant2_jspi unixodbc_jspi freetds_jspi firebird_jspi
 
 clean:
 	rm -rf ./libz/jspi/dist
@@ -323,6 +435,9 @@ clean:
 	rm -rf ./libsodium/jspi/dist
 	rm -rf ./libyaml/jspi/dist
 	rm -rf ./libcmark-gfm/jspi/dist
+	rm -rf ./libbz2/jspi/dist
+	rm -rf ./libgmp/jspi/dist
+	rm -rf ./libtidy/jspi/dist
 
 # Targeted cleanup of a single lib (e.g. `make clean-libzip && make libzip_jspi`),
 # to force a rebuild without starting over from scratch like `clean` does.
@@ -364,7 +479,29 @@ clean-libImageMagick:
 	rm -rf ./libImageMagick/jspi/dist
 clean-libsodium:
 	rm -rf ./libsodium/jspi/dist
+clean-libbz2:
+	rm -rf ./libbz2/jspi/dist
 clean-libyaml:
 	rm -rf ./libyaml/jspi/dist
 clean-libcmark-gfm:
 	rm -rf ./libcmark-gfm/jspi/dist
+clean-libgmp:
+	rm -rf ./libgmp/jspi/dist
+clean-libtidy:
+	rm -rf ./libtidy/jspi/dist
+clean-libpq:
+	rm -rf ./libpq/jspi/dist
+clean-libopenldap:
+	rm -rf ./openldap/jspi/dist
+clean-unixodbc:
+	rm -rf ./unixodbc/jspi/dist
+clean-freetds:
+	rm -rf ./freetds/jspi/dist
+clean-firebird:
+	rm -rf ./firebird/jspi/dist
+clean-libffi:
+	rm -rf ./libffi/jspi/dist
+clean-libglib:
+	rm -rf ./libglib/jspi/dist
+clean-libenchant2:
+	rm -rf ./libenchant2/jspi/dist

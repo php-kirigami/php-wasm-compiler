@@ -3285,3 +3285,397 @@ unless explicitly revisited:
       revert on a real build failure" policy already used for
       libcurl/libjpeg/libpng16/etc. above once a real build is run.
 
+53. **`bz2` added as `mode: static`, giving `phar` its optional
+    `.tar.bz2` archive support (2026-09-17).** Started as "try another
+    batch of mode:shared, php-src-bundled extensions" (continuing decision
+    49's sequence) — first re-verified `phar` really is already part of
+    the static core (the user caught a real mistake mid-session: an
+    earlier read of `compile/php/Dockerfile` had stopped at the
+    unconditional `--disable-phar` in the main `configure` call without
+    noticing `cli_sapi`'s own block appends `--enable-phar` *after* it in
+    the same invocation — the later flag on the same autoconf command line
+    wins, so phar was static all along). Checked every remaining
+    no-external-lib, php-src-bundled extension not yet wired in
+    (`bcmath`/`calendar`/`ctype`/`filter`/`tokenizer`): all five turned out
+    to already be hardcoded `--enable-x` in the same static `configure`
+    call (inherited from the original php-wasm-builder fork, never
+    surfaced in `config.yaml` at all) — converting any of them to
+    `mode: shared` would mean first removing them from the static core,
+    which regresses decision 22's interface-parity guarantee with no
+    auto-load mechanism yet to compensate (`STATUS.md`'s own "not started"
+    note). `bz2` was the one genuine gap: entirely unwired anywhere in the
+    pipeline, needing a new vendored C library (unlike posix/ftp/dba).
+    - **First built as `mode: shared`, successfully, matching decision
+      32's libsodium pattern**: vendored `libbz2` (`compile/libbz2/
+      Dockerfile` — bzip2 upstream ships a plain, hand-written `Makefile`
+      with no `./configure`/autoconf step at all, cross-compiled via
+      `emmake make libbz2.a CC=emcc AR=emar RANLIB=emranlib`, sourced from
+      `sourceware.org` — the only release since 1.0.8/2019, no GitHub
+      release to source from instead), then vendored `ext/bz2` from the
+      `PHP-8.5.10` tag. Hit and fixed a real, previously-undocumented
+      libtool bug along the way: `bz2`'s own `config.m4` uses
+      `PHP_CHECK_LIBRARY`/`PHP_ADD_LIBRARY_WITH_PATH` (not
+      `PKG_CHECK_MODULES` like sodium's), which generates a `-L... -lbz2`
+      link flag libtool's shared-link mode can't resolve against a
+      static-only archive with no `.la` sidecar — confirmed with a real
+      build attempt (`*** Warning: linker path does not have real file for
+      library -lbz2`), which silently produced a static-only module
+      instead of the expected `.so`. Fixed by patching that block out of
+      the vendored `config.m4` and relying entirely on this pipeline's
+      generic `vendorLib` mechanism (`compile/cli.mjs`'s `--extra-ldflags`
+      → `EMCC_STATIC_ARCHIVES` → a libtool `archive_cmds` patch injecting
+      `--whole-archive`) to supply the archive — the same underlying
+      mechanism sodium's own config.m4 already relies on, confirmed by
+      reading php-src's `build/php.m4`: `PHP_EVAL_LIBLINE` only handles
+      `-l`/`-L`-prefixed tokens, so a bare archive path (what
+      `vendorLibFlags()` actually produces) is a no-op there too — sodium
+      was never really linking through `SODIUM_SHARED_LIBADD` at all.
+      Built and smoke-tested end-to-end (`bzcompress`/`bzdecompress`
+      round-trip); `check-shared-extension-symbols.mjs` then found one
+      real missing ABI export, `stdout` (libbz2's `bzlib.c` file-stream API
+      references it even though `ext/bz2` itself never calls those entry
+      points) — the exact case `compile/php/Dockerfile`'s own comment
+      predicted ("stdout was never observed missing... added only if a
+      real failure ever names it").
+    - **Abandoned `mode: shared` once the phar dependency surfaced**: the
+      user's own call, once told that giving `phar` bzip2 support requires
+      compiling `ext/bz2` into the *same* static build regardless (its
+      `#if HAVE_BZ2` gate in `util.c`/`phar_object.c` only becomes true
+      within that one `configure` invocation) — registering `bz2` both
+      statically and as a separate shared package would be redundant, so
+      switched to static-only and removed the shared package/vendor tree
+      (`packages/phpext-bz2/`, `compile/extensions/bz2/`) again. The
+      vendored `libbz2` C library stays (now consumed by the static
+      Dockerfile's own `--with-bz2=/root/lib` block instead), and the
+      `_stdout` ABI export addition was kept in `compile/php/Dockerfile`
+      regardless (harmless, may save a future extension the same
+      discovery).
+    - **✅ Full rebuild + real runtime verification**: `node compile/cli.mjs
+      --quiet` exits 0 with `checking for BZip2 support... yes` /
+      `checking for BZip2... found in /root/lib` in the real configure
+      log, and `--enable-phar --enable-cli=static` + `--with-bz2=/root/lib`
+      both present in the same resolved `configure` invocation. A
+      throwaway runtime script (not committed, same shape as earlier
+      sessions' smoke tests) confirms `get_loaded_extensions()` lists both
+      `bz2` and `Phar`, `bzcompress()`/`bzdecompress()` round-trip real
+      data, and — the actual point of this whole decision —
+      `(new PharData(...))->compress(Phar::BZ2)` produces a real
+      `.tar.bz2` file that reopens and reads back its entry correctly.
+      `check-shared-extension-symbols.mjs` re-run clean afterward (no
+      missing exports for the remaining shared extensions:
+      sodium/ftp/mysqli/pdo_mysql/dba/posix).
+
+54. **`pgsql`/`pdo_pgsql` added as `mode: shared`, the first pair built
+    against a newly-vendored external C library since sodium/gmp
+    (2026-09-22).** `libpq` (`compile/libpq/Dockerfile`) is the full
+    PostgreSQL server source tarball (there's no separate libpq-only
+    release; `matrix.json`'s own `libpq` note already flagged this) —
+    autotools-based, needing `--with-template=linux` (configure's own
+    platform-detection table has no `emscripten` entry, a hard error unlike
+    GMP's graceful generic-C fallback for an unrecognized CPU) and
+    `--without-icu` (default-on since PG16; this repo deliberately never
+    vendors ICU, see `config.yaml`'s `intl` note). Only `all-static-lib`/
+    `install-lib-static` are built (not the default `all`/`install`, whose
+    `.so` link fails outright under wasm-ld: `unknown argument:
+    --enable-new-dtags`, from `Makefile.shlib`'s own rpath flags on the
+    linux template).
+    - **`libpq.a` alone isn't self-contained**: configure's own generated
+      `VAL_LIBS` metadata says a static `-lpq` also needs `-lpgcommon
+      -lpgport -lm`. Confirmed the hard way — without vendoring
+      `libpgport_shlib.a`/`libpgcommon_shlib.a` too, `pg_vsnprintf`
+      (Postgres's own portable `vsnprintf`, from `src/port/snprintf.c` —
+      not a real libc function the main module could ever export) came up
+      as a genuinely missing symbol at PHP runtime, only once a real
+      connection attempt actually reached that code path.
+    - **`AC_CHECK_LIB`-based feature probes are unreliable in this build
+      environment, found via a real false positive**: `PHP_SETUP_PGSQL`
+      (`build/php.m4`, shared by both extensions) and `pgsql`'s own
+      `config.m4` each run several `PHP_CHECK_LIBRARY([pq], [<fn>], ...)`
+      calls (a thin `AC_CHECK_LIB` wrapper) gating PG12-18 feature
+      `#define`s. Two compounding problems: (1) `AC_CHECK_LIB` always
+      appends a bare `-lpq` to its own test link line, which the vendored
+      archive's raw path can't satisfy (`wasm-ld: error: unable to find
+      library -lpq`); (2) even given a `-L`/`-l` pair that does resolve,
+      side-module WASM linking (`--unresolved-symbols=import-dynamic`)
+      doesn't fail on a genuinely undefined symbol the way a normal static
+      link would, so the probe reports "found" regardless of the real
+      answer. Concretely caught: `HAVE_PG_SERVICE` (`PQservice`) got
+      defined even though `PQservice` doesn't exist anywhere in real libpq
+      18.6 (absent from both `libpq-fe.h` and the built `libpq.a`'s symbol
+      table — `config.m4`'s own "PostgreSQL 18 or later" comment looks
+      ahead to an unreleased version, `v19beta3` as of this writing),
+      tripping a hard "undeclared function" compile error in `pgsql.c`.
+      Fixed without patching the vendored `config.m4`/`pgsql.c`: pre-seed
+      autoconf's own result cache variables (`ac_cv_lib_pq_<function>`) in
+      `config.yaml`'s `configArgs`, short-circuiting each probe entirely —
+      every function forced to `yes` except `PQservice` (`no`), each
+      genuinely verified against libpq 18.6 first (all real PG10-17
+      features, comfortably below 18.6).
+    - **No `mysqlnd`-style runtime dependency between the two**: unlike
+      `mysqli`/`pdo_mysql` (decision 42), `pdo_pgsql` links `libpq` directly
+      and independently — no `PHP_ADD_EXTENSION_DEP(pdo_pgsql, pgsql)` in
+      its `config.m4`, so no `bundleExtensions` needed.
+    - **`smoke-test.php` connects to a closed local port, not a real
+      server**: no real PostgreSQL server is available in
+      `check-shared-extension-symbols.mjs`'s isolated runtime boot, so both
+      extensions' smoke tests connect to `127.0.0.1:1` (guaranteed closed,
+      refuses immediately, no hang) — enough to run `fe-connect.c`'s real
+      connection-establishment code path. This found six more genuinely
+      missing libc ABI exports in one pass (`memchr`/`strstr`/`strncmp`/
+      `strdup`/`strchrnul`/`strcpy`), then three more one layer deeper once
+      those stopped aborting the attempt early (`getenv`/`geteuid`/
+      `getpwuid_r` — `PGPASSWORD`/`PGUSER` env lookups, then falling back to
+      the OS user via `getpwuid_r`), same "found one layer at a time" shape
+      as decision 43/48's SysV IPC discovery. The same
+      `check-shared-extension-symbols.mjs` run also happened to catch
+      gmp's/soap's own previously-undiscovered missing exports
+      (`vfprintf`/`fscanf`/`fgetc`/`ungetc`, `realloc`/`__cxa_atexit`), all
+      added to `compile/php/Dockerfile`'s `.JS_ABI_EXPORTS` in the same two
+      core rebuilds.
+    - **Also found and fixed in passing**: `compile/extensions/soap/` had
+      been vendored as a raw copy of the whole real `ext/soap` directory,
+      including its 729-file `tests/` suite (`CREDITS`/`config.w32` too) —
+      not the minimal "only what's needed to build" selection every other
+      vendored extension in this repo follows. Trimmed to match, with a new
+      `PROVENANCE.md` (it had none).
+    - **✅ Full core rebuild + real runtime verification**: both
+      `pgsql-php8.5-jspi.so` and `pdo_pgsql-php8.5-jspi.so` build clean
+      through the real `@php-wasm/compile-extension` pipeline;
+      `check-shared-extension-symbols.mjs` re-run clean afterward for every
+      shared extension (dba/ftp/mysqli/pdo_mysql/posix/sodium via their own
+      smoke tests, gettext/gmp/soap load-only, pgsql/pdo_pgsql via their new
+      smoke tests) — no missing ABI exports left. Not yet tested against a
+      real PostgreSQL server (no SSL support yet either, `--without-openssl`
+      — a possible follow-up, same shape as mysqlnd's own SSL addition,
+      decision 45's follow-up).
+
+55. **`tidy` added as `mode: shared` (2026-09-22), continuing the same
+    session as decision 54.** `ext/tidy` and `libtidy` (`compile/libtidy/
+    Dockerfile`) had already been vendored/built in an earlier session
+    (matrix.json's own `libtidy` note originally planned `mode: static`,
+    same batch as `bz2`) but never wired into `config.yaml` — picked up
+    here as `mode: shared` instead, matching gmp's own precedent (no other
+    extension depends on tidy the way `phar` forced `bz2` static).
+    - **Hit the exact same libtool bug `bz2` did (decision 53), same root
+      cause, same fix**: `config.m4` uses `PHP_ADD_LIBRARY_WITH_PATH`
+      (unlike gmp/pgsql's `PKG_CHECK_MODULES`-based detection), generating a
+      bare `-L$TIDY_LIBDIR -ltidy` link flag libtool's shared-link mode
+      can't resolve against a static-only archive — confirmed with a real
+      build attempt (`*** Warning: linker path does not have real file for
+      library -ltidy`), silently downgrading to a static-only module.
+      Fixed the same way: removed the `PHP_ADD_LIBRARY_WITH_PATH` call from
+      the vendored `config.m4` (the only patch), relying entirely on
+      `vendorLib`'s own `--extra-ldflags` mechanism to supply the real
+      archive.
+    - **New failure mode, not seen before**: `tidyplatform.h`'s own
+      platform auto-detection (`HAS_FUTIME`, gated on a list of OS macros
+      Emscripten defines none of) defaults to including `<sys/utime.h>`,
+      which doesn't exist in Emscripten's sysroot (only the portable
+      `<utime.h>`). Fixed without touching the vendored header at all:
+      `extraCflags: -DHAS_FUTIME=0` in `config.yaml` (the header's own
+      `#ifndef HAS_FUTIME` guard allows the override).
+    - **✅ Full core rebuild + real runtime verification**: `tidy-
+      php8.5-jspi.so` builds clean; a real `tidy_parse_string()`/
+      `cleanRepair()` round-trip on malformed HTML (`smoke-test.php`, not
+      just loading the module) found one genuinely missing libc ABI export
+      (`vsnprintf`, libtidy's own message-formatting code), added to
+      `compile/php/Dockerfile`'s `.JS_ABI_EXPORTS`.
+      `check-shared-extension-symbols.mjs` re-run clean afterward for every
+      shared extension, `tidy` included.
+
+56. **`ldap` added as `mode: shared` (2026-09-22), continuing the same
+    session as decisions 54/55.** `openldap` (`compile/openldap/
+    Dockerfile`) vendors OpenLDAP's client libraries only
+    (`--disable-slapd`, no standalone LDAP server built) — kept
+    dependency-free for this first pass (`--without-cyrus-sasl`,
+    `--without-tls`; SASL is opt-in on the `ext/ldap` side too, via
+    `--with-ldap-sasl`, defaulting to off, so this loses nothing yet; TLS is
+    a possible follow-up, same shape as mysqlnd's own SSL addition, decision
+    45's follow-up).
+    - **`config.m4` needed no patch at all, unlike `bz2`/`tidy`**: it tries
+      `PKG_CHECK_MODULES([LDAP], [lber ldap], ...)` *first*, and `pkgConfigVar:
+      LDAP`'s env-override short-circuit steers it down the `PHP_EVAL_
+      LIBLINE`-based success branch — not the `PHP_LDAP_CHECKS`/
+      `PHP_ADD_LIBRARY_WITH_PATH` manual-search fallback, which would have
+      hit the exact same libtool bug `bz2`/`tidy` did. First real
+      confirmation that steering a `config.m4` toward its pkg-config branch
+      (when it tries one at all) sidesteps that whole class of bug, rather
+      than needing a patch every time.
+    - **`openldap`'s own build needed three real fixes**, none related to
+      PHP at all: (1) `configure: error: crossing compiling: use
+      --with-yielding_select=yes|no|manual` — OpenLDAP's own configure
+      can't probe this cross-compiling, fixed with `--with-yielding_select=
+      yes`. (2) `make -C libraries` (bypassing the top-level Makefile) skips
+      a real prerequisite, `include/ldap_config.h` (generated by the
+      top-level `make depend`, not by `./configure` itself) — fixed by
+      running `make depend` at the top level first. (3) Both `liblber`'s and
+      `libldap`'s own default `make` targets also build a diagnostic-only
+      test binary (`dtest`, `apitest`) that fails outright under this
+      toolchain: each links `liblber.a` in twice (once via a relative path,
+      once absolute, both the same real file), and Emscripten's
+      `SIDE_MODULE` linking wraps every static archive in `--whole-archive`,
+      so the same archive linked in twice is a duplicate-symbol error —
+      fixed by targeting each subdirectory's own library file by explicit
+      name (`liblutil.a`, `liblber.la`, `libldap.la`) instead of the bare
+      default target.
+    - **Missing header found the same way `libpq`'s `libpq/libpq-fs.h` gap
+      was**: `lber_types.h` (included by `lber.h`, included by `ldap.h`)
+      itself includes `<ldap_cdefs.h>` — not obvious from `ldap.h` alone,
+      only found from a real "file not found" build failure.
+    - **`smoke-test.php` found a real hang risk, not just missing
+      symbols**: a real `ldap_bind()` attempt against a closed local port
+      (matching `pgsql`'s/`pdo_pgsql`'s own approach) found 21 genuinely
+      missing libc ABI exports across three "peel the onion" layers
+      (`wctomb`/`wcstombs`/`mbtowc`/`mbstowcs`/`strchr`/`fopen`/`getuid`/
+      `siprintf`/`snprintf`/`gai_strerror`, then `strtol`/`socket`/`fcntl`/
+      `setsockopt`/`inet_ntop`/`connect`/`freeaddrinfo`/`time`, then
+      `poll`/`shutdown`/`close`) — but once `connect`/`socket`/`poll` were
+      all genuinely exported, the *same* smoke test started hanging
+      `check-shared-extension-symbols.mjs` indefinitely instead of failing
+      fast: this check's own minimal runtime boot has no SOCKFS/Node-side
+      networking proxy wired in (unlike the full `@kirigami/php-wasm`
+      `runtime.js`), so the real blocking `connect()` syscall never
+      resolves — and PHP-level `LDAP_OPT_NETWORK_TIMEOUT` can't help either,
+      since the timeout mechanism itself needs a working event loop to fire,
+      which also never happens. Fixed by reverting `smoke-test.php` to only
+      `ldap_connect()` (lazy, never opens a real socket) once the real bind
+      attempt had already done its job and the discovered exports were
+      safely baked into `compile/php/Dockerfile` — re-triggering the real
+      attempt on every future check run wasn't worth the hang risk.
+    - **✅ Full core rebuild (four rounds, one per symbol-discovery layer) +
+      real runtime verification**: `ldap-php8.5-jspi.so` builds clean
+      through the real `@php-wasm/compile-extension` pipeline;
+      `check-shared-extension-symbols.mjs` re-runs clean afterward for
+      every shared extension. Not yet tested against a real LDAP server (no
+      SASL/TLS support yet either).
+
+
+57. **`odbc` and `pdo_odbc` added as `mode: shared` (2026-09-22), continuing
+    the same session as decisions 54–56.** `unixodbc` (`compile/unixodbc/
+    Dockerfile`) vendors the unixODBC 2.3.14 driver manager only: `libodbc`,
+    no bundled drivers, and `--disable-threads`/`--disable-iconv`/
+    `--disable-readline` to stay dependency-free. It's picked over iODBC
+    because it's what `ext/odbc`'s own docs and most Linux distros default
+    to.
+    - **The `unixodbc` build**: each library directory (`extras log lst ini
+      libltdl odbcinst DriverManager`, in top-level `SUBDIRS` order) is
+      built by name, never the top-level `all`, which would also build the
+      `exe/` CLI tools. Only `libodbc.a` is installed: it already embeds
+      every `odbcinst`/`ini`/`log`/`lst`/`libltdl` object, and shipping
+      `libodbcinst.a` next to it would be a duplicate-symbol error under
+      `vendorLibFlags()`'s `--whole-archive` of every `*.a`. `unixodbc.h`
+      (included by `sqltypes.h`) is only installed by the top-level
+      Makefile, so it's copied by hand.
+    - **`ext/odbc`'s backend can't be selected with a `--with-*` flag under
+      phpize.** `build/php.m4`'s `php_always_shared=yes` forces every
+      `PHP_ARG_*` that evaluates to `no` to `yes, shared`. So the first of
+      `config.m4`'s four `AS_VAR_IF([ODBC_TYPE],, ...)`-guarded backend
+      blocks (ibm-db2) always wins, even with `--without-ibm-db2`. It then
+      hard-fails on `/home/db2inst1/sqllib/include/sqlcli1.h`. The fix
+      needs no patch: pre-set `ODBC_TYPE=unixODBC` (skips all four blocks)
+      plus `ext_shared=yes` (otherwise set only by the skipped
+      `PHP_ARG_*` analysis; without it the build silently goes static and
+      no `.so` comes out), and pass `-DHAVE_UNIXODBC=1` via `extraCflags`
+      (the one define the skipped block would have set). This is a general
+      lesson for any multi-backend `config.m4` built via phpize.
+    - **`pdo_odbc` needed nothing special**: it has a single `PHP_ARG_WITH`
+      whose value is a "flavour", and `--with-pdo-odbc=unixODBC` plus
+      `pkgConfigVar: PDO_ODBC` is enough. It links `libodbc` independently,
+      with no Zend-module dependency on `ext/odbc`.
+    - **Missing ABI exports, three layers** (each found once the previous
+      layer stopped aborting the attempt): `toupper`/`getpwuid`/`strncat`
+      (DSN lookup), then `strrchr`/`access` (driver path probing), then
+      `strlcpy`/`dlopen`/`dlerror` (libltdl loading the driver). Three core
+      rebuilds. unixODBC reports a driver it can't load as SQLSTATE `01000`
+      ("Can't open lib"), not the spec's `IM003`. Both smoke tests expect
+      that.
+    - **Not done: an actual ODBC driver.** Connections can only fail
+      cleanly today. A real one needs a database driver (psqlODBC, MariaDB
+      Connector/ODBC, sqliteodbc, ...) cross-compiled as its own side
+      module that the driver manager can `dlopen()` from the VM filesystem.
+      It's a possible follow-up; `dlopen`/`dlerror` are already exported
+      for it.
+
+58. **`pdo_dblib` added as `mode: shared` (2026-09-23), plus `enchant`'s
+    failing smoke test explained.**
+    - **`freetds`** (`compile/freetds/Dockerfile`) vendors FreeTDS 1.5.19's
+      db-lib only (`libsybdb.a`, which embeds the `tds`/`replacements`/
+      `utils` convenience libraries). The release source is freetds.org's
+      `stable/` directory, since GitHub releases lag behind (1.5.16).
+      `--disable-odbc/apps/server/pool`, no TLS (so no Azure SQL yet), no
+      Kerberos, and charset conversion through musl's `iconv` (already
+      exported by the core). `--disable-threadsafe` forces
+      `--disable-mars`: MARS code needs thread condition variables, and
+      `include/freetds/thread.h` deliberately plants a compile error
+      (`FreeTDS_Condition_not_compiled`) otherwise. `tds_sysdep_public.h`
+      (generated, `#include`d by `sybdb.h`) must be installed along with
+      the public headers.
+    - **`ext/pdo_dblib`'s `config.m4`** has no pkg-config branch.
+      `--with-pdo-dblib=/build/vendor/freetds` points it at the vendorLib
+      staging path (same shape as `tidy`), and its
+      `PHP_ADD_LIBRARY_WITH_PATH` call is commented out (the same libtool
+      static-archive bug as `tidy`/`bz2`, decision 53).
+    - **Missing ABI exports**: `socketpair`, `gethostname`, `strerror`,
+      `asprintf`, found by a real connection attempt to a closed local
+      port. Unlike ldap's real bind (decision 56), this doesn't hang the
+      check's minimal runtime, so `smoke-test.php` keeps the real
+      connection attempt.
+    - **FreeTDS also ships an ODBC driver** (`src/odbc`, not built). It's
+      the natural first real driver for `odbc`/`pdo_odbc` (decision 57)
+      if loading a side module through `dlopen()` gets tackled.
+    - **`enchant`'s smoke test was wrong, not the build**: it expected
+      `enchant_dict_suggest()` on a PWL-only dictionary to suggest `hello`
+      for `helo`. libenchant 2.5.0 removed its own PWL suggestion engine
+      (NEWS: "Enchant's mechanism for generating suggestions from personal
+      wordlists is removed"). Suggestions now only come from a provider,
+      and a PWL-only dictionary has `dict->suggest == NULL`, so the result
+      is always empty, natively too. The smoke test now only checks the
+      call returns an array. A real provider (Hunspell) is loaded by
+      enchant with `g_module_open()` (`dlopen()`), the same obstacle as
+      ODBC drivers.
+
+59. **`pdo_firebird` added as `mode: shared` (2026-09-23), the first C++
+    side module.**
+    - **`firebird`** (`compile/firebird/Dockerfile`) vendors Firebird
+      5.0.4's client library only (`libfbclient`, `--enable-client-only`)
+      plus its static dependencies (`libfbcommon`, tommath, tomcrypt,
+      decFloat, re2). It follows Firebird's own cross-compiling sequence
+      rather than its top-level make. It needs a native `cloop` and a
+      native `build_file` (for `iberror_c.h`), ICU headers only (ICU is
+      `dlopen()`ed at runtime), and a few `sed` fixes (`AC_RUN_IFELSE`
+      without a cross branch, `SYS_gettid`). No wire compression, no chacha
+      plugin, and no `firebird.msg` yet (errors carry codes, not text).
+    - **`ext/pdo_firebird`'s `config.m4`**: directory branch pointed at the
+      vendorLib staging path, `PHP_ADD_LIBRARY_WITH_PATH` commented out
+      (decision 53's libtool bug), and the `PHP_CHECK_LIBRARY` probe
+      answered with `ac_cv_lib_fbclient_fb_get_master_interface=yes`.
+    - **The C++ runtime is linked into the `.so`, not exported by the
+      core.** The core is a C-only `MAIN_MODULE=2` link with no libc++/
+      libc++abi/libunwind, so no `__cpp_exception` Wasm EH tag (libc++abi's
+      `__cpp_exception.S`). A side module importing that tag can't be
+      instantiated (`LinkError: ... tag import requires a
+      WebAssembly.Tag`): the dynamic linker only has a JS function stub to
+      offer for it. `compile/firebird/Dockerfile` builds PIC
+      `libc++`/`libc++abi`/`libunwind` (`embuilder --pic build
+      *-legacyexcept`, matching `-fwasm-exceptions` with Emscripten's
+      default legacy Wasm EH) and stages them as extra vendorLib archives.
+      The `.so` then defines the tag itself (3.1 MB -> 4.7 MB). Exporting
+      the C++ runtime from the core was rejected: it would grow `php.wasm`
+      for every user, and every new libc++ symbol a future C++ extension
+      used would need another core rebuild. Any future C++ `mode: shared`
+      extension should do the same.
+    - **Missing ABI exports**: 19 libc symbols across two layers (locale,
+      pthread, semaphore, signal, `mmap`, `fegetenv`/`fesetenv`, `setenv`,
+      `aligned_alloc`, ...), found by `smoke-test.php`'s real connection
+      attempt to a closed port. `check-shared-extension-symbols.mjs` re-runs
+      clean for all 18 shared extensions.
+    - **A cascade seen while loading every package together** (not a
+      pdo_firebird bug): Emscripten's `reportUndefinedSymbols()` walks the
+      *global* GOT on every `dlopen()`, so one side module left with an
+      unresolved GOT entry makes every later load fail on that same
+      symbol. `@kirigami/php-wasm`'s auto-loader read only `manifest.json`,
+      so `mysqli.so` was loaded without the `mysqlnd.so` bundled next to it
+      (`manifest-mysqlnd.json`), leaving `mysqlnd_global_stats` unresolved
+      and breaking every extension after it. The fix belongs to the loader
+      (use each package's `register()`, dedupe `mysqlnd`), in the
+      `kirigami` repo.

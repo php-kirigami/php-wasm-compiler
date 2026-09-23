@@ -386,6 +386,8 @@ await asyncSpawn(
 		'--build-arg',
 		getArg('WITH_NORM'),
 		'--build-arg',
+		getArg('WITH_BZ2'),
+		'--build-arg',
 		// Sourced from their own GitHub repos, not pecl.php.net (CLAUDE.md
 		// decision 34). Same "hardcoded last-resort fallback for standalone
 		// build.js use" shape as OPENSSL_VERSION above -- cli.mjs always

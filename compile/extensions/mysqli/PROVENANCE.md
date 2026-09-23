@@ -1,7 +1,7 @@
 # Provenance
 
-This directory vendors `ext/mysqli` as-is from the `PHP-8.5.10` tag of
-`php/php-src` (https://github.com/php/php-src/tree/PHP-8.5.10/ext/mysqli) —
+This directory vendors `ext/mysqli` as-is from the `PHP-8.5.11` tag of
+`php/php-src` (https://github.com/php/php-src/tree/PHP-8.5.11/ext/mysqli) —
 unmodified source, no patches. Complete file listing verified against the
 real git tree (`gh api repos/php/php-src/git/trees/<ext/mysqli sha>`) before
 vendoring — `CREDITS` and `config.w32` (Windows build) are the only files in

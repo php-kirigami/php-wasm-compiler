@@ -1,9 +1,9 @@
 # Provenance
 
-This directory vendors `ext/dba` as-is from the `PHP-8.5.10` tag of
-`php/php-src` (https://github.com/php/php-src/tree/PHP-8.5.10/ext/dba) —
+This directory vendors `ext/dba` as-is from the `PHP-8.5.11` tag of
+`php/php-src` (https://github.com/php/php-src/tree/PHP-8.5.11/ext/dba) —
 unmodified source, no patches. Complete file listing verified against the
-real git tree (`gh api "repos/php/php-src/git/trees/PHP-8.5.10?recursive=1"`,
+real git tree (`gh api "repos/php/php-src/git/trees/PHP-8.5.11?recursive=1"`,
 filtered to `ext/dba/`) before vendoring — `CREDITS`, `config.w32` (Windows
 build) and `tests/` are the only entries in the real extension not vendored
 here.

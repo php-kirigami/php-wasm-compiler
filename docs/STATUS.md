@@ -185,3 +185,86 @@ stale hardcoded release-year in its Dockerfile/sourceTemplate), and
 `mdhtml` (v0.1.3, the RINIT/RSHUTDOWN fix). Not build-tested yet — no
 Docker build run this session for the newly-bumped libraries.
 
+**✅ `bz2` added as `mode: static` (2026-09-17), see DECISIONS.md decision
+53.** Gives `phar` its optional `.tar.bz2` archive support (needed `libbz2`
+newly vendored, `compile/libbz2/Dockerfile`) plus `bzcompress()`/
+`bzdecompress()` directly. Full rebuild green (`node compile/cli.mjs
+--quiet`, exit 0) and runtime-verified for real, not just build-tested:
+`get_loaded_extensions()` lists `bz2`/`Phar`, `bzcompress`/`bzdecompress`
+round-trip real data, and `(new PharData(...))->compress(Phar::BZ2)`
+produces a real archive that reopens and reads back correctly. A
+`mode: shared` version was also built and smoke-tested successfully first
+(a genuine libtool linking bug found and fixed along the way — see the
+decision for the mechanism) before switching to static-only once the phar
+dependency made shared redundant.
+
+**✅ `pgsql`/`pdo_pgsql` added as `mode: shared` (2026-09-22), see
+DECISIONS.md decision 54.** First pair built against a newly-vendored
+external C library since sodium/gmp (`libpq`, `compile/libpq/Dockerfile` —
+static-only, no ICU/zlib/OpenSSL support yet). Both `.so`s build clean
+through the real `@php-wasm/compile-extension` pipeline and
+`check-shared-extension-symbols.mjs` re-runs clean afterward via their own
+smoke tests (connecting to a closed local port, no real PostgreSQL server
+needed) — found and fixed a real `AC_CHECK_LIB` false-positive
+(`PQservice`, which doesn't exist in real libpq 18.6 despite `config.m4`
+claiming "PostgreSQL 18 or later") and nine more genuinely missing libc ABI
+exports along the way (see the decision for the full list), plus two more
+pre-existing ones for `gmp`/`soap` caught in the same run. Not yet tested
+against a real PostgreSQL server.
+
+**✅ `tidy` added as `mode: shared` (2026-09-22), see DECISIONS.md decision
+55.** `ext/tidy`/`libtidy` had already been vendored/built in an earlier
+session but never wired into `config.yaml`. Hit and fixed the exact same
+libtool `PHP_ADD_LIBRARY_WITH_PATH` bug `bz2` found (decision 53) — same
+patch (removed from the vendored `config.m4`). `tidy-php8.5-jspi.so` builds
+clean; a real `tidy_parse_string()`/`cleanRepair()` smoke test found one
+genuinely missing libc ABI export (`vsnprintf`). `check-shared-extension-
+symbols.mjs` re-run clean afterward.
+
+**✅ `ldap` added as `mode: shared` (2026-09-22), see DECISIONS.md decision
+56.** OpenLDAP client libraries only (`openldap`, `compile/openldap/
+Dockerfile` — no slapd server, no SASL/TLS yet). Unlike `bz2`/`tidy`,
+`config.m4` needed **no patch at all**: its own `PKG_CHECK_MODULES` probe
+comes first, and `pkgConfigVar`'s env override steers it away from the
+`PHP_ADD_LIBRARY_WITH_PATH` branch that would otherwise hit the same
+libtool bug. `ldap-php8.5-jspi.so` builds clean; a real `ldap_bind()`
+smoke test (before being scaled back, see the decision) found 21 genuinely
+missing libc ABI exports across three discovery layers, plus a real hang
+risk in the check tooling itself (no real networking in its minimal
+runtime boot) now avoided. `check-shared-extension-symbols.mjs` re-runs
+clean. Not yet tested against a real LDAP server.
+
+
+**✅ `odbc` and `pdo_odbc` added as `mode: shared` (2026-09-22), see
+DECISIONS.md decision 57.** Both link the unixODBC 2.3.14 driver manager
+(`unixodbc`, `compile/unixodbc/Dockerfile`, `libodbc` only, no bundled
+drivers). `ext/odbc`'s multi-backend `config.m4` can't pick a backend under
+phpize. It's worked around with configure variables, not a patch.
+`pdo_odbc` builds unmodified. A real smoke test of both found 8 missing
+libc/dl ABI exports across three discovery layers.
+`check-shared-extension-symbols.mjs` re-runs clean for both. **No ODBC
+driver ships yet**: connections fail cleanly (`IM002`/`01000`), and a real
+database connection would need a driver built as its own side module.
+
+**✅ `pdo_dblib` added as `mode: shared` (2026-09-23), see DECISIONS.md
+decision 58.** Links FreeTDS 1.5.19's db-lib (`freetds`,
+`compile/freetds/Dockerfile`, `libsybdb` only: no TLS, no Kerberos, no
+threads/MARS). It uses the same one-line `config.m4` patch as `tidy`/`bz2`.
+A real `new PDO('dblib:...')` against a closed port (no hang) found 4
+missing ABI exports. `check-shared-extension-symbols.mjs` re-runs clean
+for all 17 shared extensions. Not yet tested against a real SQL Server.
+
+**✅ `enchant` smoke test fixed (2026-09-23), not a WASM bug.**
+`enchant_dict_suggest()` returning an empty array on a PWL-only dictionary
+is upstream behavior since libenchant 2.5.0, which removed PWL-based
+suggestions. See decision 58.
+
+**✅ `pdo_firebird` added as `mode: shared` (2026-09-23), see DECISIONS.md
+decision 59.** Links Firebird 5.0.4's `libfbclient` (`firebird`,
+`compile/firebird/Dockerfile`, client only). It's the first C++ side
+module: libc++/libc++abi/libunwind are linked into the `.so` itself, since
+the core has no C++ runtime (and no `__cpp_exception` tag). A real
+`new PDO('firebird:...')` against a closed port found 19 missing ABI
+exports over two layers. `check-shared-extension-symbols.mjs` re-runs
+clean for all 18 shared extensions. Not yet tested against a real Firebird
+server, and error messages lack their text (`firebird.msg` not shipped).

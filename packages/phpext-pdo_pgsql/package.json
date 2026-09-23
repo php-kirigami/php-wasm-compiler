@@ -1,0 +1,49 @@
+{
+	"name": "@kirigami/phpext-pdo_pgsql",
+	"version": "0.1.2",
+	"description": "Kirigami PHP.wasm shared extension: pdo_pgsql (JSPI side module, see @kirigami/php-wasm)",
+	"keywords": [
+		"php-wasm",
+		"php",
+		"wasm",
+		"webassembly",
+		"kirigami",
+		"pdo_pgsql"
+	],
+	"homepage": "https://php-kirigami.github.io",
+	"bugs": {
+		"url": "https://github.com/php-kirigami/php-wasm-compiler/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/php-kirigami/php-wasm-compiler.git"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"license": "GPL-2.0-or-later",
+	"author": "Maxime Larrivée-Roy",
+	"type": "module",
+	"main": "index.js",
+	"types": "index.d.ts",
+	"files": [
+		"manifest.json",
+		"manifest-*.json",
+		"*.so",
+		"index.js",
+		"index.d.ts",
+		"README.md"
+	],
+	"kirigami": {
+		"type": "extension",
+		"phpVersions": [
+			"8.5"
+		],
+		"minVersion": "8.5.11",
+		"vendorLib": {
+			"name": "libpq",
+			"version": "18.6"
+		},
+		"buildHash": "3e7d95f6b1a9a7a6bd75303f9ba27f174fdb930439cc1ad752b9f9bcf3be572d"
+	}
+}

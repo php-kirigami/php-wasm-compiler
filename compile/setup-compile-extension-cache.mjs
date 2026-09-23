@@ -39,6 +39,7 @@ const OWNED_FILES = [
 	['compile/base-image/emcc-for-php-wasm.sh', 'compile/base-image/emcc-for-php-wasm.sh'],
 	['compile/base-image/replace.sh', 'compile/base-image/replace.sh'],
 	['compile/base-image/replace-across-lines.sh', 'compile/base-image/replace-across-lines.sh'],
+	['compile/base-image/patch-libdylink-emjs-multiptr.mjs', 'compile/base-image/patch-libdylink-emjs-multiptr.mjs'],
 	// Only PHP 8.5 is supported by this pipeline (CLAUDE.md decision 16) —
 	// the only php*.patch compile-extension's own Dockerfile.ext ever needs.
 	['compile/php/php8.5.patch', 'compile/php/php8.5.patch'],

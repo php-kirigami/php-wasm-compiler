@@ -255,11 +255,20 @@ function templateToRegExp(filenamePart) {
  * covers GNU ftp's directory index (libiconv), zlib.net's homepage (a
  * direct `zlib-X.Y.Z.tar.gz` link), and sqlite.org's download page (whose
  * `sqlite-autoconf-NNNNNNN.tar.gz` links use `{versionCompact}`, decoded
- * back to a dotted version below).
+ * back to a dotted version below). An entry's own `checkPattern` overrides
+ * the template-derived pattern.
  */
 async function resolveTarball(entry) {
 	if (!entry.checkUrl) return null;
 	const html = await fetchText(entry.checkUrl);
+	// `checkPattern` (optional): a regex with one capture group for pages
+	// that list versions without the template's filename at all — e.g.
+	// postgresql.org/ftp/source/ only links per-version directories
+	// ("v18.6/"), the tarball itself lives one level down.
+	if (entry.checkPattern) {
+		const matches = [...html.matchAll(new RegExp(entry.checkPattern, 'g'))].map((m) => m[1]);
+		return highestVersion(matches);
+	}
 	const usesCompact = entry.sourceTemplate.includes('{versionCompact}');
 	const basename = entry.sourceTemplate.split('/').pop();
 	// A plain listing/download page (GNU ftp, zlib.net, sqlite.org) almost
@@ -312,7 +321,10 @@ const RESOLVERS = {
 function renderTemplate(sourceTemplate, version) {
 	const [maj, min = 0, pat = 0] = version.split('.').map(Number);
 	const versionCompact = String(maj * 1000000 + min * 10000 + pat * 100);
-	return sourceTemplate.replace('{version}', version).replace('{versionCompact}', versionCompact);
+	// replaceAll: most templates carry {version} twice (tag + filename, e.g.
+	// ".../v{version}/enchant-{version}.tar.gz") — a plain replace() left the
+	// second one unrendered and every such URL failed the live check.
+	return sourceTemplate.replaceAll('{version}', version).replaceAll('{versionCompact}', versionCompact);
 }
 
 /**
@@ -372,7 +384,10 @@ async function updateCollection(collection, resolveSourceType) {
 		}
 
 		if (entry.sourceTemplate) {
-			const renderedUrl = renderTemplate(entry.sourceTemplate, resolved.replace(/^v/i, ''));
+			// Check the URL the build will actually download: the build
+			// substitutes the recorded version, "v" included for entries
+			// that keep it (their sourceTemplate adds no "v" of its own).
+			const renderedUrl = renderTemplate(entry.sourceTemplate, resolved);
 			if (!(await urlResolves(renderedUrl))) {
 				console.warn(`⚠️  ${name}: resolved ${resolved} but its download URL doesn't work (${renderedUrl}) — not recording it. Check manually.`);
 				continue;

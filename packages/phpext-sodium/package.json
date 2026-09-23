@@ -1,6 +1,6 @@
 {
 	"name": "@kirigami/phpext-sodium",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Kirigami PHP.wasm shared extension: sodium (JSPI side module, see @kirigami/php-wasm)",
 	"keywords": [
 		"php-wasm",
@@ -39,11 +39,11 @@
 		"phpVersions": [
 			"8.5"
 		],
-		"minVersion": "8.5.10",
+		"minVersion": "8.5.11",
 		"vendorLib": {
 			"name": "libsodium",
 			"version": "1.0.22"
 		},
-		"buildHash": "ed838c3643f195dc21cd778dc506d737198c45f9b45f44531e2ad07ac0e4d8eb"
+		"buildHash": "516731864759720fac45d332fbe190206638a5c169f83f6653a03aa947177483"
 	}
 }

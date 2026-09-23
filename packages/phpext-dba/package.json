@@ -1,6 +1,6 @@
 {
 	"name": "@kirigami/phpext-dba",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Kirigami PHP.wasm shared extension: dba (JSPI side module, see @kirigami/php-wasm)",
 	"keywords": [
 		"php-wasm",
@@ -39,7 +39,7 @@
 		"phpVersions": [
 			"8.5"
 		],
-		"minVersion": "8.5.10",
-		"buildHash": "7ac914aca36d81ec65091c6ae1c723aa08cc88f6dd96defdf8e2e0bd27c88754"
+		"minVersion": "8.5.11",
+		"buildHash": "8ab1036c99d2d68d21b65870fe18a8e029764611f2f3c5808cb63011427d23ac"
 	}
 }

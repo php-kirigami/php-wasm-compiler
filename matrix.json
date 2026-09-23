@@ -1,6 +1,6 @@
 {
 	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. GitHub-hosted libraries (sourceType github-release/github-tag) are auto-refreshed via `node compile/cli.mjs update-versions` (compile/update-lib-versions.mjs); everything else (tarball/sourceforge/googlesource sources) still has to be checked manually via its own checkUrl.",
-	"lastChecked": "2026-09-17T06:08:37.583Z",
+	"lastChecked": "2026-09-23T04:36:39.518Z",
 	"libraries": {
 		"libcurl": {
 			"sourceType": "github-release",
@@ -89,7 +89,8 @@
 			"note": "Checked 2026-09-17: v3.15.0 is latest stable tag (v3.15.0-rc1 and older rc tags excluded), archive URL confirmed resolving, added — not yet build-tested against this pipeline.",
 			"versions": [
 				"3.13.1",
-				"3.15.0"
+				"3.15.0",
+				"3.15.1"
 			]
 		},
 		"libpng16": {
@@ -204,6 +205,107 @@
 				"0.29.0.gfm.13"
 			]
 		},
+		"libbz2": {
+			"$comment": "For ext/bz2 (mode: static, added 2026-09-17 so phar gets .tar.bz2 archive support -- see config.yaml's own bz2 note). First tried as a mode:shared vendored-C-library pilot in the same spirit as libsodium/decision 32, but the user's call was to keep bz2 static-only once phar's own dependency on it surfaced (registering the same extension both statically and as a separate shared package would be redundant). Upstream bzip2/libbzip2 has had no release since 1.0.8 (2019); its original maintainer's sourceware.org host is still the canonical distribution point (confirmed via a real directory listing, not assumed) -- no GitHub release/tag exists to source from instead. Keyed 'libbz2' (not 'libbzip2', the upstream project's own name) so compile/Makefile's MATRIX_VERSION lookup and compile/php/Dockerfile's COPY .../libbz2 stay consistent with the compile/libbz2/ directory name.",
+			"sourceType": "tarball",
+			"sourceTemplate": "https://sourceware.org/pub/bzip2/bzip2-{version}.tar.gz",
+			"checkUrl": "https://sourceware.org/pub/bzip2/",
+			"versions": [
+				"1.0.8"
+			]
+		},
+		"libgmp": {
+			"$comment": "For ext/gmp (mode: static, next batch after bz2 -- CLAUDE.md decision 53's follow-up, 2026-09-17). GNU MP, the arbitrary-precision arithmetic library ext/gmp's config.m4 requires (gmp.h + __gmpz_rootrem symbol, >= 4.2). Autotools-based like libsodium/libssh2, see compile/libgmp/Dockerfile.",
+			"sourceType": "tarball",
+			"sourceTemplate": "https://gmplib.org/download/gmp/gmp-{version}.tar.xz",
+			"checkUrl": "https://gmplib.org/download/gmp/",
+			"versions": [
+				"6.3.0"
+			]
+		},
+		"libtidy": {
+			"$comment": "For ext/tidy (mode: static, next batch after bz2 -- CLAUDE.md decision 53's follow-up, 2026-09-17). HTML Tidy (htacg/tidy-html5, the tidy-html5 fork ext/tidy's config.m4 targets via its tidybuffio.h check), CMake-based like libaom, see compile/libtidy/Dockerfile. Keyed 'libtidy' (not 'tidy-html5', the upstream repo name) for the same COPY/Makefile-target consistency reason as libbz2/libbzip2.",
+			"sourceType": "github-release",
+			"repo": "htacg/tidy-html5",
+			"sourceTemplate": "https://github.com/htacg/tidy-html5/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"5.8.0"
+			]
+		},
+		"libpq": {
+			"$comment": "For ext/pgsql, ext/pdo_pgsql (both mode: shared, 2026-09-22). Moved here from plannedLibraries once compile/libpq/Dockerfile was written and test-built. postgresql/postgres is not a real GitHub org (verified 404) -- PostgreSQL's source releases live at postgresql.org, not vendored on GitHub the same way. Full server source tarball (there's no separate libpq-only release), autotools-based; configure needs --with-template=linux (its own platform-detection has no 'emscripten' entry -- unlike GMP's generic-C fallback for an unrecognized CPU, this is a hard error without it) and --without-icu (default since PG16, and this repo deliberately doesn't vendor ICU -- see config.yaml's intl note). Only the static lib is built (`all-static-lib`/`install-lib-static` Makefile.shlib targets, not the default `all`/`install`, which also build a .so -- that link fails under wasm-ld, \"unknown argument: --enable-new-dtags\", from Makefile.shlib's own rpath flags on the linux template). No SSL support yet (--without-openssl) -- a possible follow-up, same as mysqlnd's own SSL addition (decision 45's follow-up). Also vendors libpgport_shlib.a/libpgcommon_shlib.a alongside libpq.a itself -- libpq.a alone isn't self-contained (configure's own VAL_LIBS metadata says a static -lpq also needs -lpgcommon -lpgport -lm), confirmed by a genuinely missing pg_vsnprintf symbol at PHP runtime before these were added. See compile/extensions/pgsql/PROVENANCE.md for this and the ac_cv_lib_pq_* config.yaml overrides needed to work around AC_CHECK_LIB being unreliable (false positives) in this side-module WASM linking environment.",
+			"sourceType": "tarball",
+			"sourceTemplate": "https://ftp.postgresql.org/pub/source/v{version}/postgresql-{version}.tar.gz",
+			"checkUrl": "https://www.postgresql.org/ftp/source/",
+			"checkPattern": "href=\"v(\\d+(?:\\.\\d+)+)/\"",
+			"versions": [
+				"18.6"
+			]
+		},
+		"openldap": {
+			"$comment": "For ext/ldap (mode: shared, 2026-09-22). Moved here from plannedLibraries once compile/openldap/Dockerfile was written and test-built. GitHub mirror (openldap/openldap) has no releases and non-numeric tags (development branch names) -- openldap.org's own release directory is the real source. Client libraries only (--disable-slapd, no standalone LDAP server built) and dependency-free for a first pass (--without-cyrus-sasl, --without-tls -- SASL is opt-in on the ext/ldap side too, --with-ldap-sasl defaults to off; TLS is a possible follow-up, same shape as mysqlnd's own SSL addition, decision 45's follow-up). Needs --with-yielding_select=yes explicitly (configure can't probe this cross-compiling: \"error: crossing compiling: use --with-yielding_select=yes|no|manual\"). Only liblutil.a/liblber.la/libldap.la are built, by explicit target name (not the default `make -C libraries`/`make` \"all\" targets) -- both liblber's and libldap's own default targets also build a diagnostic-only test binary (dtest, apitest) that fails outright under this toolchain (both link liblber.a in twice, once via a relative path and once absolute, and Emscripten's SIDE_MODULE linking wraps every static archive in --whole-archive, so the same archive linked in twice is a duplicate-symbol error). include/ldap_config.h (needed transitively by openldap's own .c files, generated from config.status as part of the top-level \"make depend\", not by ./configure directly) means `make depend` must run at the top level first, not scoped to libraries/ -- real failure without this: \"fatal error: 'ldap_config.h' file not found\".",
+			"sourceType": "tarball",
+			"sourceTemplate": "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-{version}.tgz",
+			"checkUrl": "https://www.openldap.org/software/download/OpenLDAP/openldap-release/",
+			"versions": [
+				"2.7.1"
+			]
+		},
+		"libffi": {
+			"$comment": "For ext/ffi (not yet wired) and GLib's own GObject closures (for ext/enchant, mode: shared, 2026-09-22). Moved here from plannedLibraries once compile/libffi/Dockerfile was written and test-built -- straightforward autotools build, no cross-compile surprises.",
+			"sourceType": "github-release",
+			"repo": "libffi/libffi",
+			"sourceTemplate": "https://github.com/libffi/libffi/releases/download/v{version}/libffi-{version}.tar.gz",
+			"versions": [
+				"3.8.0"
+			]
+		},
+		"libglib": {
+			"$comment": "For ext/enchant (mode: shared, 2026-09-22). Moved here from plannedLibraries once compile/libglib/Dockerfile was written and test-built. Keyed 'libglib' (not 'glib', GNOME's own project name) for the same COPY/Makefile-target consistency reason as libbz2/libbzip2. 2.58.x is the LAST autotools-buildable glib series -- 2.60+ is meson-only, which this pipeline has no cross-compilation support for (every other vendored lib is autotools/CMake/plain-Makefile). Deliberately pinned well below 'latest' upstream glib for this reason; do not bump past 2.58.x without first adding real meson cross-compilation support. ext/enchant only needs an older enchant release requiring glib-2.0 + gmodule-2.0 (see compile/extensions/enchant/PROVENANCE.md) -- comfortably within 2.58's feature set despite being 7+ years old. Release tarball ships only configure.ac (no pre-generated ./configure) -- needs autoreconf (via glib's own autogen.sh, which also stubs out gtk-doc.make since gtk-doc isn't installed). Depends on libz (already vendored) and libffi (also newly vendored here, needed unconditionally for GObject's closure marshaling even though ext/enchant itself never touches gobject-2.0).",
+			"sourceType": "tarball",
+			"sourceTemplate": "https://download.gnome.org/sources/glib/2.58/glib-{version}.tar.xz",
+			"checkUrl": "https://download.gnome.org/sources/glib/2.58/",
+			"versions": [
+				"2.58.3"
+			]
+		},
+		"libenchant2": {
+			"$comment": "For ext/enchant (mode: shared, 2026-09-22). Moved here from plannedLibraries once compile/libenchant2/Dockerfile was written and test-built -- version deliberately DROPPED from the planned 'latest' (2.8.21) to 2.6.9: 2.7.0+ requires gobject-2.0/gio-2.0 (not vendored, see libglib's own note) and 2.8.x's own floor jumped all the way to glib >= 2.76 (meson-only). 2.6.9 is the last release needing only glib-2.0 >= 2.6 + gmodule-2.0, comfortably within vendored glib 2.58.3 -- do not bump without first re-checking configure.ac's own PKG_CHECK_MODULES(GLIB, ...) line for a raised floor. 2.8.21 is deliberately NOT last in `versions` (same convention as libjpeg's 3.2.0): it records upstream's latest as known-but-not-adopted, so update-lib-versions.mjs stays silent instead of proposing it, and MATRIX_VERSION (the last entry) keeps building 2.6.9. No spell-checking provider vendored yet (no hunspell/aspell) -- configure warns (\"No spell-checking provider selected!\") but does not fail, so dictionaries just won't resolve to anything until a real provider is added as a follow-up. Real libenchant-2.la lives in src/ (not lib/, which only builds a Gnulib portability shim, libgnu.la, a real prerequisite built first) -- targeted by explicit name to avoid src/'s own default target, which also builds two real CLI tools (enchant-2.1, enchant-lsmod-2.1) that hit the same --whole-archive duplicate-symbol failure as openldap's apitest/dtest and glib's gobject-query (each links libenchant in twice, once via a relative path and once absolute). This vendored package also bundles libglib-2.0.a/libgmodule-2.0.a/libffi.a/libz.a alongside libenchant-2.a itself (same 'one self-contained vendorLib' pattern as libpq's own libpgport_shlib.a/libpgcommon_shlib.a) -- ext/enchant's config.m4 has only one PKG_CHECK_MODULES call to override, so all four transitive dependencies need to already be in the same vendored archive set cli.mjs's vendorLibFlags() picks up automatically.",
+			"sourceType": "github-release",
+			"repo": "rrthomas/enchant",
+			"sourceTemplate": "https://github.com/rrthomas/enchant/releases/download/v{version}/enchant-{version}.tar.gz",
+			"versions": [
+				"2.8.21",
+				"2.6.9"
+			]
+		},
+		"unixodbc": {
+			"$comment": "For ext/odbc (mode: shared, 2026-09-22). unixODBC driver manager only (libodbc.a, which already embeds libodbcinst) -- no bundled drivers (--enable-drivers stays off). Also used by ext/pdo_odbc. See compile/unixodbc/Dockerfile and compile/extensions/odbc/PROVENANCE.md.",
+			"sourceType": "github-release",
+			"repo": "lurcher/unixODBC",
+			"sourceTemplate": "https://github.com/lurcher/unixODBC/releases/download/v{version}/unixODBC-{version}.tar.gz",
+			"versions": [
+				"2.3.14"
+			]
+		},
+		"freetds": {
+			"$comment": "For ext/pdo_dblib (mode: shared, 2026-09-23). db-lib (libsybdb) only -- no ODBC driver, apps, server or pool; no TLS (so no Azure SQL yet), no Kerberos; charset conversion through musl's iconv. freetds.org's stable/ directory is the real release source (GitHub releases lag behind: 1.5.16 there vs 1.5.19 here). See compile/freetds/Dockerfile and compile/extensions/pdo_dblib/PROVENANCE.md.",
+			"sourceType": "tarball",
+			"sourceTemplate": "https://www.freetds.org/files/stable/freetds-{version}.tar.gz",
+			"checkUrl": "https://www.freetds.org/files/stable/",
+			"versions": [
+				"1.5.19"
+			]
+		},
+		"firebird": {
+			"$comment": "For ext/pdo_firebird (mode: shared, 2026-09-23). Firebird's client library only (libfbclient: yvalve + remote client + common), built from the full server source release with --enable-client-only, plus its bundled static dependencies (libtommath, libtomcrypt, decNumber, re2). ICU headers are needed to compile but ICU itself is never linked (loaded with dlopen() at runtime, only for charset/collation work). Version includes Firebird's build number (the source tarball is Firebird-<version>-0-source.tar.xz, the release tag v<first three components>), which update-lib-versions.mjs's single-{version} templates can't express -- hence autoUpdate: false; check https://github.com/FirebirdSQL/firebird/releases by hand. See compile/firebird/Dockerfile and compile/extensions/pdo_firebird/PROVENANCE.md.",
+			"sourceType": "github-release",
+			"repo": "FirebirdSQL/firebird",
+			"autoUpdate": false,
+			"versions": [
+				"5.0.4.1812"
+			]
+		},
 		"simdjson": {
 			"$comment": "For ext/jsonk (CLAUDE.md's jsonk decision) -- decode engine. Not built via a compile/lib*/Dockerfile+Makefile target like every other entry here: it ships as a single-header amalgamation (simdjson.h + simdjson.cpp) fetched as GitHub release assets straight into ext/jsonk/vendor/simdjson/ by compile/php/Dockerfile itself (no build step of its own), same layout php-jsonk's own vendor/build/stage.sh uses for a native dev build. Listed here anyway so getMatrixVersion() has one place to resolve it from, matching matrix.json's own \"latest = last versions[] entry\" convention.",
 			"sourceType": "github-release",
@@ -258,7 +360,8 @@
 			"switch": "--with-bz2",
 			"libraries": [
 				"libbzip2"
-			]
+			],
+			"note": "Added 2026-09-17 as mode: static, prompted by this very entry's own long-standing 'dependencies: [bz2]' below on phar (ported from php-static-autobuilder, unacted-on until the user pointed it out): phar's util.c/phar_object.c gate .tar.bz2 support behind a plain `#if HAVE_BZ2` compiled-time check that only becomes true when ext/bz2 is built into the SAME configure invocation -- no way to give phar bzip2 support without also compiling ext/bz2's own bzcompress()/bzdecompress() into the static core (both come from the same config.m4 block). First tried as mode: shared (this matrix's own 'libbz2' entry above, genuinely needing a new vendored C library, unlike posix/ftp/dba's decisions 42/48/49) and built/smoke-tested successfully as a real @kirigami/phpext-bz2 package -- along the way, found and fixed a real libtool bug worth keeping on record for any future PHP_CHECK_LIBRARY-style (not pkg-config-based) mode:shared extension: config.m4's own `PHP_CHECK_LIBRARY([bz2], ...)` + `PHP_ADD_LIBRARY_WITH_PATH(...)` generates a `-L... -lbz2` link flag libtool's shared-link mode can't resolve against a static-only archive with no `.la` sidecar (warns 'no real file for library -lbz2', silently falls back to a static-only module, never produces the `.so`) -- fixed by dropping that block and letting this pipeline's generic vendorLib mechanism (--extra-ldflags -> EMCC_STATIC_ARCHIVES -> a patched libtool --whole-archive injection) supply the archive directly, the same underlying mechanism sodium's own config.m4 already (if less visibly) relies on. Abandoned that path once the phar dependency made static the better fit (registering the same extension both ways would be redundant) -- the shared package/compile/extensions/bz2/ vendor tree was removed again."
 		},
 		"phar": {
 			"builtin": true,
@@ -333,7 +436,7 @@
 			"switch": "--with-enchant",
 			"libraries": [
 				"libenchant2",
-				"glib"
+				"libglib"
 			]
 		},
 		"ffi": {
@@ -388,17 +491,17 @@
 			"builtin": true,
 			"mandatory": false,
 			"switch": "--with-gettext",
-			"libraries": [
-				"libintl"
-			]
+			"libraries": [],
+			"note": "Added 2026-09-17 (next batch after bz2). No library to vendor, unlike this entry's inherited php-static-autobuilder 'libintl' note (a real dependency on Windows/glibc-less targets) -- confirmed by a real test compile that Emscripten's own musl libc already ships <libintl.h> plus no-op bindtextdomain/gettext/ngettext/etc. implementations directly in libc (musl has no real i18n message-catalog support, so these are stubs that just hand back the input string unchanged), and a trivial C program calling them links cleanly against kirigami-php-wasm:base with zero extra -l flags. config.m4's own DIR-detection loop (`test -r $i/include/libintl.h`) still needs a real filesystem path though, so compile/php/Dockerfile points `--with-gettext=` straight at `$(em-config CACHE)/sysroot` rather than vendoring a copy."
 		},
 		"gmp": {
 			"builtin": true,
 			"mandatory": false,
 			"switch": "--with-gmp",
 			"libraries": [
-				"mpir"
-			]
+				"libgmp"
+			],
+			"note": "Added 2026-09-17 (next batch after bz2). Corrected from this entry's inherited php-static-autobuilder library name 'mpir' (a GMP-API-compatible fork php-static-autobuilder's own Windows target uses) to 'libgmp' -- the real GNU MP, matching this matrix's own 'libgmp' entry under \"libraries\" and compile/libgmp/Dockerfile."
 		},
 		"imap": {
 			"builtin": true,
@@ -468,7 +571,10 @@
 		"odbc": {
 			"builtin": true,
 			"mandatory": false,
-			"switch": "--enable-odbc"
+			"switch": "--with-unixODBC",
+			"libraries": [
+				"unixodbc"
+			]
 		},
 		"pgsql": {
 			"builtin": true,
@@ -564,7 +670,8 @@
 			"switch": "--with-tidy",
 			"libraries": [
 				"libtidy"
-			]
+			],
+			"note": "Added 2026-09-17 (next batch after bz2). Matches this matrix's own 'libtidy' entry under \"libraries\" (htacg/tidy-html5, CMake-based, see compile/libtidy/Dockerfile) -- ext/tidy's own config.m4 checks for tidybuffio.h specifically to confirm it's linking against tidy-html5 rather than the legacy htmltidy/tidyp forks."
 		},
 		"tokenizer": {
 			"builtin": true,
@@ -628,6 +735,31 @@
 			"switch": "--with-pdo-odbc",
 			"dependencies": [
 				"pdo"
+			],
+			"libraries": [
+				"unixodbc"
+			]
+		},
+		"pdo_dblib": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-pdo-dblib",
+			"dependencies": [
+				"pdo"
+			],
+			"libraries": [
+				"freetds"
+			]
+		},
+		"pdo_firebird": {
+			"builtin": true,
+			"mandatory": false,
+			"switch": "--with-pdo-firebird",
+			"dependencies": [
+				"pdo"
+			],
+			"libraries": [
+				"firebird"
 			]
 		},
 		"pdo_pgsql": {
@@ -1052,7 +1184,8 @@
 				"v0.1.0",
 				"v0.1.1",
 				"v0.1.2",
-				"v0.1.3"
+				"v0.1.3",
+				"v0.1.4"
 			],
 			"libraries": [
 				"libcmark-gfm"
@@ -1167,27 +1300,6 @@
 			],
 			"note": "For ext/event (PECL)."
 		},
-		"libenchant2": {
-			"sourceType": "github-release",
-			"repo": "rrthomas/enchant",
-			"versions": [
-				"2.8.21"
-			],
-			"note": "php-static-autobuilder's AbiWord/enchant has moved to rrthomas/enchant — verified via gh api."
-		},
-		"glib": {
-			"sourceType": "manual",
-			"checkUrl": "https://gitlab.gnome.org/GNOME/glib",
-			"note": "GNOME/glib GitHub mirror has no releases and no plain-numeric tags the automated resolver could find — check gitlab.gnome.org directly. Needed by enchant2."
-		},
-		"libffi": {
-			"sourceType": "github-release",
-			"repo": "libffi/libffi",
-			"versions": [
-				"3.8.0"
-			],
-			"note": "For ext/ffi."
-		},
 		"libxpm": {
 			"sourceType": "manual",
 			"checkUrl": "https://gitlab.freedesktop.org/xorg/lib/libxpm",
@@ -1208,11 +1320,6 @@
 			"checkUrl": "https://github.com/uw-imap/imap",
 			"note": "For ext/imap. The original University of Washington imap toolkit is unmaintained since ~2008 (last real release 2007f) — 'latest' is not a meaningful concept here. Community forks exist (e.g. uw-imap/imap) but aren't vetted."
 		},
-		"openldap": {
-			"sourceType": "manual",
-			"checkUrl": "https://openldap.org/software/download/",
-			"note": "For ext/ldap. GitHub mirror (openldap/openldap) has no releases and non-numeric tags (development branch names) — check openldap.org directly."
-		},
 		"libsasl": {
 			"sourceType": "github-release",
 			"repo": "cyrusimap/cyrus-sasl",
@@ -1221,11 +1328,6 @@
 			],
 			"note": "Dependency of ext/ldap (SASL auth)."
 		},
-		"libpq": {
-			"sourceType": "manual",
-			"checkUrl": "https://www.postgresql.org/ftp/source/",
-			"note": "For ext/pgsql, ext/pdo_pgsql. postgresql/postgres is not a real GitHub org (verified 404) — PostgreSQL's source releases live at postgresql.org, not vendored on GitHub the same way."
-		},
 		"libargon2": {
 			"sourceType": "github-release",
 			"repo": "P-H-C/phc-winner-argon2",
@@ -1233,11 +1335,6 @@
 				"20190702"
 			],
 			"note": "For ext/argon2 (also usable by password_hash())."
-		},
-		"fbclient": {
-			"sourceType": "manual",
-			"checkUrl": "https://github.com/FirebirdSQL/firebird/releases",
-			"note": "For pdo_firebird. php-static-autobuilder itself flags this as 'Missing static lib' — likely not WASM-cross-compile-friendly without real investigation."
 		},
 		"libxslt": {
 			"sourceType": "github-release",
@@ -1278,14 +1375,6 @@
 				"5.9.5"
 			],
 			"note": "For ext/snmp. php-static-autobuilder itself flags snmp as a 'Compiling error' extension — expect trouble."
-		},
-		"libtidy": {
-			"sourceType": "github-release",
-			"repo": "htacg/tidy-html5",
-			"versions": [
-				"5.8.0"
-			],
-			"note": "For ext/tidy."
 		},
 		"libuv": {
 			"sourceType": "github-release",

@@ -1,6 +1,6 @@
 {
 	"name": "@kirigami/phpext-pdo_mysql",
-	"version": "0.1.0",
+	"version": "0.1.2",
 	"description": "Kirigami PHP.wasm shared extension: pdo_mysql (JSPI side module, see @kirigami/php-wasm)",
 	"keywords": [
 		"php-wasm",
@@ -39,10 +39,10 @@
 		"phpVersions": [
 			"8.5"
 		],
-		"minVersion": "8.5.10",
+		"minVersion": "8.5.11",
 		"bundles": [
 			"mysqlnd"
 		],
-		"buildHash": "eacfac4f7b804cc7655990048f7c822595f310bbeee841289dc4080da3ae0ccb"
+		"buildHash": "796c5eda86530b6780625fcb7f3703eaec5ab855c68d04385ffe290a72aa6488"
 	}
 }

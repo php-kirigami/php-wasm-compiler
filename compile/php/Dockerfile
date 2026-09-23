@@ -206,6 +206,7 @@ COPY ./compile/libfreetype/ /root/builds/libfreetype
 COPY ./compile/libgd/ /root/builds/libgd
 COPY ./compile/libyaml/ /root/builds/libyaml
 COPY ./compile/libcmark-gfm/ /root/builds/libcmark-gfm
+COPY ./compile/libbz2/ /root/builds/libbz2
 
 RUN if [ "$WITH_JSPI" = "yes" ]; then \
 	find /root/builds -path '*/jspi/dist/root/lib' -type d -exec cp -r {}/. /root/lib \; ; \
@@ -310,6 +311,7 @@ ARG WITH_APCU
 ARG WITH_NAVICAT
 ARG WITH_IGBINARY
 ARG WITH_NORM
+ARG WITH_BZ2
 
 # The platform to build for: web or node
 ARG EMSCRIPTEN_ENVIRONMENT=web
@@ -546,6 +548,20 @@ RUN if [ "$WITH_NORM" = "yes" ]; \
 		echo -n ' --enable-norm ' >> /root/.php-configure-flags; \
 	else \
 		echo -n ' --disable-norm ' >> /root/.php-configure-flags; \
+	fi;
+
+# Add bz2 if needed (php-src's own ext/bz2 -- gives phar its optional
+# .tar.bz2 archive support, gated by phar's own `#if HAVE_BZ2` checks, in
+# addition to registering bz2's own bzcompress()/bzdecompress() functions).
+# Same "--with-x=DIR + explicit .a on the link line" shape as yaml/mdhtml
+# above -- ext/bz2's config.m4 is PHP_ARG_WITH (DIR-based bzlib.h lookup),
+# not PHP_ARG_ENABLE.
+RUN if [ "$WITH_BZ2" = "yes" ]; \
+	then \
+		echo -n ' --with-bz2=/root/lib ' >> /root/.php-configure-flags; \
+		echo -n ' /root/lib/lib/libbz2.a ' >> /root/.emcc-php-wasm-sources; \
+	else \
+		echo -n ' --without-bz2 ' >> /root/.php-configure-flags; \
 	fi;
 
 # Get and patch PHP
@@ -1075,12 +1091,17 @@ RUN echo '_free' >> /root/.JS_ABI_EXPORTS; \
 	echo '_strlen' >> /root/.JS_ABI_EXPORTS;
 
 # - stderr/stdin: same shape, same reason (openssl/zlib linked into
-#   mysqlnd.so). stdout was never observed missing (no code path in
-#   sodium/ftp/mysqlnd/mysqli actually reaches it), so it's deliberately
-#   not added here -- added only if a real failure ever names it, per this
-#   project's own "fix concretely-observed problems, not guesses" rule.
+#   mysqlnd.so).
+# - stdout: same shape, observed for real 2026-09-17 -- bz2.so's vendored
+#   libbz2.a (bzlib.c's BZ2_bzWriteOpen/BZ2_bzReadOpen file-stream API,
+#   compiled in even though the PHP extension itself never calls those
+#   entry points, ext/bz2 only using the in-memory
+#   BZ2_bzBuffToBuffCompress/Decompress functions) references the global
+#   `stdout` FILE* -- confirmed by check-shared-extension-symbols.mjs's own
+#   "Found 1 missing ABI export(s): - stdout" report, not guessed.
 RUN echo '_stderr' >> /root/.JS_ABI_EXPORTS; \
-	echo '_stdin' >> /root/.JS_ABI_EXPORTS;
+	echo '_stdin' >> /root/.JS_ABI_EXPORTS; \
+	echo '_stdout' >> /root/.JS_ABI_EXPORTS;
 
 # - strcmp/memset: same shape as atoll/free/strlen above -- mysqlnd.so/
 #   mysqli.so call them directly, this main module never does, so DCE drops
@@ -1109,6 +1130,237 @@ RUN echo '_strcasecmp' >> /root/.JS_ABI_EXPORTS;
 #   surface, one at a time.
 RUN echo '_atoi' >> /root/.JS_ABI_EXPORTS; \
 	echo '_memcmp' >> /root/.JS_ABI_EXPORTS;
+
+# - vfprintf/fscanf/fgetc/ungetc: gmp.so calls these (GMP's own I/O
+#   functions -- gmp_fprintf()/gmp_fscanf() and friends -- reach them, same
+#   DCE-drops-the-export shape as strcmp/memset above). realloc/__cxa_atexit:
+#   soap.so calls both directly. memchr/strstr/strncmp/strdup/strchrnul/
+#   strcpy: pgsql.so/pdo_pgsql.so (real fe-connect.c connection-
+#   establishment code, exercised via each extension's own smoke-test.php
+#   connecting to a closed local port rather than a real PostgreSQL server --
+#   same "exercise the real lazy code path" reasoning as dba's own
+#   atoi/memcmp above). All ten found in the same check-shared-extension-
+#   symbols.mjs run, once gmp/soap/pgsql/pdo_pgsql all had packages built.
+RUN echo '_vfprintf' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fscanf' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fgetc' >> /root/.JS_ABI_EXPORTS; \
+	echo '_ungetc' >> /root/.JS_ABI_EXPORTS; \
+	echo '_realloc' >> /root/.JS_ABI_EXPORTS; \
+	echo '___cxa_atexit' >> /root/.JS_ABI_EXPORTS; \
+	echo '_memchr' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strstr' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strncmp' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strdup' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strchrnul' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strcpy' >> /root/.JS_ABI_EXPORTS;
+
+# - getenv/geteuid/getpwuid_r: pgsql.so/pdo_pgsql.so again, one layer
+#   further into the same fe-connect.c connection path than the batch just
+#   above (PGPASSWORD/PGUSER env lookups, then falling back to the calling
+#   OS user's name via getpwuid_r when no user is given) -- only surfaced
+#   once the previous batch's missing symbols stopped aborting the attempt
+#   before reaching this point, same "found one layer at a time" shape as
+#   the SysV IPC discovery process described below.
+RUN echo '_getenv' >> /root/.JS_ABI_EXPORTS; \
+	echo '_geteuid' >> /root/.JS_ABI_EXPORTS; \
+	echo '_getpwuid_r' >> /root/.JS_ABI_EXPORTS;
+
+# - vsnprintf: tidy.so (libtidy's own message-formatting code) calls it
+#   directly -- same DCE-drops-the-export shape as strcmp/memset above.
+#   Found via a real tidy_parse_string()/cleanRepair() smoke-test.php round
+#   trip, not just loading the module.
+RUN echo '_vsnprintf' >> /root/.JS_ABI_EXPORTS;
+
+# - wctomb/wcstombs/mbtowc/mbstowcs/strchr/fopen/getuid/siprintf/snprintf/
+#   gai_strerror: ldap.so (libldap's own connection/charset-conversion code)
+#   calls all ten directly -- same DCE-drops-the-export shape as
+#   strcmp/memset above. Found via a real ldap_bind() smoke-test.php
+#   attempt against a closed local port (ldap_connect() itself is lazy and
+#   never opens a socket on its own), not just loading the module.
+RUN echo '_wctomb' >> /root/.JS_ABI_EXPORTS; \
+	echo '_wcstombs' >> /root/.JS_ABI_EXPORTS; \
+	echo '_mbtowc' >> /root/.JS_ABI_EXPORTS; \
+	echo '_mbstowcs' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strchr' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fopen' >> /root/.JS_ABI_EXPORTS; \
+	echo '_getuid' >> /root/.JS_ABI_EXPORTS; \
+	echo '_siprintf' >> /root/.JS_ABI_EXPORTS; \
+	echo '_snprintf' >> /root/.JS_ABI_EXPORTS; \
+	echo '_gai_strerror' >> /root/.JS_ABI_EXPORTS;
+
+# - strtol/socket/fcntl/setsockopt/inet_ntop/connect/freeaddrinfo/time:
+#   ldap.so again, one layer further into the same connection path than the
+#   batch just above (the real socket()/connect() syscalls, only reached
+#   once the previous batch's missing symbols stopped aborting the attempt
+#   before getting there) -- same "found one layer at a time" shape as
+#   pgsql's own getenv/geteuid/getpwuid_r batch.
+RUN echo '_strtol' >> /root/.JS_ABI_EXPORTS; \
+	echo '_socket' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fcntl' >> /root/.JS_ABI_EXPORTS; \
+	echo '_setsockopt' >> /root/.JS_ABI_EXPORTS; \
+	echo '_inet_ntop' >> /root/.JS_ABI_EXPORTS; \
+	echo '_connect' >> /root/.JS_ABI_EXPORTS; \
+	echo '_freeaddrinfo' >> /root/.JS_ABI_EXPORTS; \
+	echo '_time' >> /root/.JS_ABI_EXPORTS;
+
+# - poll/shutdown/close: ldap.so again, one more layer into the same
+#   connection path (closing/cleaning up the socket after the closed-port
+#   connection attempt fails) -- same "found one layer at a time" shape.
+RUN echo '_poll' >> /root/.JS_ABI_EXPORTS; \
+	echo '_shutdown' >> /root/.JS_ABI_EXPORTS; \
+	echo '_close' >> /root/.JS_ABI_EXPORTS;
+
+# - environ: enchant.so (glib's own g_get_environ()/getenv-adjacent code)
+#   references the `environ` global directly (a data symbol, not a
+#   function -- exported the same way as stdin/stdout/stderr above).
+RUN echo '_environ' >> /root/.JS_ABI_EXPORTS;
+
+# - pthread_key_create/pthread_getspecific/sysconf/fputs/sprintf/fwrite/
+#   abort: enchant.so again -- glib's own static initializers (thread-local
+#   storage setup, standard I/O) call these directly during
+#   __wasm_call_ctors, before any PHP code runs. Same DCE-drops-the-export
+#   shape as strcmp/memset above; found via load-only checking since this
+#   extension has no smoke-test.php yet (no spell-checking provider vendored
+#   to actually exercise -- see compile/extensions/enchant/PROVENANCE.md).
+RUN echo '_pthread_key_create' >> /root/.JS_ABI_EXPORTS; \
+	echo '_pthread_getspecific' >> /root/.JS_ABI_EXPORTS; \
+	echo '_sysconf' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fputs' >> /root/.JS_ABI_EXPORTS; \
+	echo '_sprintf' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fwrite' >> /root/.JS_ABI_EXPORTS; \
+	echo '_abort' >> /root/.JS_ABI_EXPORTS;
+
+# - gettimeofday/pthread_setspecific: enchant.so again, same
+#   __wasm_call_ctors static-init path as the pthread/stdio batch above --
+#   found once those stopped the module from crashing before reaching them
+#   (the "RuntimeError: unreachable" trap this run's predecessor hit turned
+#   out to be a direct consequence of the missing pthread_key_create/
+#   pthread_getspecific/etc, not a separate bug).
+RUN echo '_gettimeofday' >> /root/.JS_ABI_EXPORTS; \
+	echo '_pthread_setspecific' >> /root/.JS_ABI_EXPORTS;
+
+# - bindtextdomain/textdomain/gettext/dgettext/dcgettext/ngettext/dngettext/
+#   dcngettext/bind_textdomain_codeset: gettext.so calls musl's own libintl
+#   functions (no vendored libintl), and enchant.so's glib calls the same
+#   ones for its own message translation. Lazy symbols, only reached by
+#   actually calling them -- invisible to load-only checking, found by real
+#   calls (2026-09-22) once gettext/enchant got a smoke-test.php.
+RUN echo '_bindtextdomain' >> /root/.JS_ABI_EXPORTS; \
+	echo '_textdomain' >> /root/.JS_ABI_EXPORTS; \
+	echo '_gettext' >> /root/.JS_ABI_EXPORTS; \
+	echo '_dgettext' >> /root/.JS_ABI_EXPORTS; \
+	echo '_dcgettext' >> /root/.JS_ABI_EXPORTS; \
+	echo '_ngettext' >> /root/.JS_ABI_EXPORTS; \
+	echo '_dngettext' >> /root/.JS_ABI_EXPORTS; \
+	echo '_dcngettext' >> /root/.JS_ABI_EXPORTS; \
+	echo '_bind_textdomain_codeset' >> /root/.JS_ABI_EXPORTS;
+
+# - bsearch/iconv_open/iconv/iconv_close: soap.so links its own copy of
+#   libxml2 (vendorLib: libxml2 -- this main module exports none of its
+#   own), and that copy's encoding layer calls musl's iconv (not the
+#   vendored GNU libiconv the core's ext/iconv uses, whose symbols are
+#   renamed libiconv_*). Without them SoapServer::handle() fails with
+#   "Dump memory failed". glib (enchant.so) calls the same iconv trio.
+RUN echo '_bsearch' >> /root/.JS_ABI_EXPORTS; \
+	echo '_iconv_open' >> /root/.JS_ABI_EXPORTS; \
+	echo '_iconv' >> /root/.JS_ABI_EXPORTS; \
+	echo '_iconv_close' >> /root/.JS_ABI_EXPORTS;
+
+# - nl_langinfo/strncpy/pthread_cond_broadcast/setlocale/open/fstat/read/
+#   fileno/isatty/strcat/localtime/strftime: enchant.so again -- glib's own
+#   charset/locale detection, file I/O and time formatting, reached by
+#   enchant_broker_init()/enchant_broker_describe(), not by loading alone.
+RUN echo '_nl_langinfo' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strncpy' >> /root/.JS_ABI_EXPORTS; \
+	echo '_pthread_cond_broadcast' >> /root/.JS_ABI_EXPORTS; \
+	echo '_setlocale' >> /root/.JS_ABI_EXPORTS; \
+	echo '_open' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fstat' >> /root/.JS_ABI_EXPORTS; \
+	echo '_read' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fileno' >> /root/.JS_ABI_EXPORTS; \
+	echo '_isatty' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strcat' >> /root/.JS_ABI_EXPORTS; \
+	echo '_localtime' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strftime' >> /root/.JS_ABI_EXPORTS;
+
+# - fclose/stat/fgets: enchant.so again, one layer further -- libenchant's
+#   personal word list (enchant_broker_request_pwl_dict()) reading its file,
+#   only reached once glib's GFunc-cast crash (compile/libglib/Dockerfile)
+#   stopped enchant_broker_init() from trapping first.
+RUN echo '_fclose' >> /root/.JS_ABI_EXPORTS; \
+	echo '_stat' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fgets' >> /root/.JS_ABI_EXPORTS;
+
+# - toupper/getpwuid/strncat: odbc.so (unixODBC's driver manager -- its ini
+#   parser upper-cases section/key names, and odbcinst resolves the user's
+#   ~/.odbc.ini through getpwuid()), reached by odbc_connect()'s DSN lookup
+#   in its smoke-test.php, not by loading alone. enchant.so imports
+#   toupper/getpwuid too.
+RUN echo '_toupper' >> /root/.JS_ABI_EXPORTS; \
+	echo '_getpwuid' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strncat' >> /root/.JS_ABI_EXPORTS;
+
+# - strrchr/access: odbc.so/pdo_odbc.so again, one layer further -- the
+#   driver manager's driver-loading path (splitting and probing a DRIVER=
+#   library path before lt_dlopen), only reached once the batch above
+#   stopped the DSN lookup from failing first.
+RUN echo '_strrchr' >> /root/.JS_ABI_EXPORTS; \
+	echo '_access' >> /root/.JS_ABI_EXPORTS;
+
+# - strlcpy/dlopen/dlerror: odbc.so/pdo_odbc.so again, the last layer --
+#   libltdl's own dlopen loader actually trying to load the driver library
+#   (and reading back why it failed). dlopen/dlerror are the main module's
+#   own dynamic-linking entry points (it already loads every mode:shared
+#   extension); exporting them lets a side module call them directly too,
+#   which is also what a future ODBC driver built as its own side module
+#   would load through.
+RUN echo '_strlcpy' >> /root/.JS_ABI_EXPORTS; \
+	echo '_dlopen' >> /root/.JS_ABI_EXPORTS; \
+	echo '_dlerror' >> /root/.JS_ABI_EXPORTS;
+
+# - socketpair/gethostname/strerror/asprintf: pdo_dblib.so (FreeTDS's
+#   db-lib login + TDS connection code: gethostname() for the login
+#   packet's client host name, socketpair() for each connection's wakeup
+#   channel, strerror()/asprintf() for its error messages). Found via a
+#   real new PDO('dblib:...') against a closed local port in its
+#   smoke-test.php, not just loading the module.
+RUN echo '_socketpair' >> /root/.JS_ABI_EXPORTS; \
+	echo '_gethostname' >> /root/.JS_ABI_EXPORTS; \
+	echo '_strerror' >> /root/.JS_ABI_EXPORTS; \
+	echo '_asprintf' >> /root/.JS_ABI_EXPORTS;
+
+# - pdo_firebird.so (libfbclient, the first C++ side module; its C++
+#   runtime is linked into the .so itself, see compile/firebird/Dockerfile):
+#   newlocale/uselocale (libc++'s locale support), __small_sprintf (musl's
+#   integer-only sprintf variant clang emits for some sprintf calls), and
+#   what libfbclient's own startup and attach path touches: pthread_atfork/
+#   pthread_create/pthread_setcanceltype/pthread_rwlock_init (its init and
+#   timer thread code), sem_init, mmap, fegetenv/fesetenv (FpeControl),
+#   sigemptyset/sigaddset/sigaction (its signal handler setup), setenv.
+#   Found by check-shared-extension-symbols.mjs running its smoke-test.php
+#   (a real new PDO('firebird:...') against a closed local port). A second
+#   layer, only reached once the first batch was exported:
+#   __ctype_get_mb_cur_max/aligned_alloc (libc++), sem_destroy,
+#   pthread_once.
+RUN echo '___ctype_get_mb_cur_max' >> /root/.JS_ABI_EXPORTS; \
+	echo '_aligned_alloc' >> /root/.JS_ABI_EXPORTS; \
+	echo '_sem_destroy' >> /root/.JS_ABI_EXPORTS; \
+	echo '_pthread_once' >> /root/.JS_ABI_EXPORTS; \
+	echo '_newlocale' >> /root/.JS_ABI_EXPORTS; \
+	echo '_uselocale' >> /root/.JS_ABI_EXPORTS; \
+	echo '___small_sprintf' >> /root/.JS_ABI_EXPORTS; \
+	echo '_pthread_atfork' >> /root/.JS_ABI_EXPORTS; \
+	echo '_pthread_create' >> /root/.JS_ABI_EXPORTS; \
+	echo '_pthread_setcanceltype' >> /root/.JS_ABI_EXPORTS; \
+	echo '_pthread_rwlock_init' >> /root/.JS_ABI_EXPORTS; \
+	echo '_sem_init' >> /root/.JS_ABI_EXPORTS; \
+	echo '_mmap' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fegetenv' >> /root/.JS_ABI_EXPORTS; \
+	echo '_fesetenv' >> /root/.JS_ABI_EXPORTS; \
+	echo '_sigemptyset' >> /root/.JS_ABI_EXPORTS; \
+	echo '_sigaddset' >> /root/.JS_ABI_EXPORTS; \
+	echo '_sigaction' >> /root/.JS_ABI_EXPORTS; \
+	echo '_setenv' >> /root/.JS_ABI_EXPORTS;
 
 # - getpid: posix.so's posix_getpid() calls it directly -- found via
 #   check-shared-extension-symbols.mjs's smoke-test.php support (CLAUDE.md
