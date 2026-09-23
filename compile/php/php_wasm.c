@@ -881,16 +881,26 @@ ZEND_END_ARG_INFO()
  * net-snmp was reported readable right after sending its request).
  * Descriptors are still waited on one after another, each with the full
  * timeout.
+ *
+ * The except set is always cleared and never counted: on Linux it only
+ * reports out-of-band data, which a WebSocket-backed socket never has
+ * (a refused non-blocking connect shows up as writable, with SO_ERROR
+ * set, not as an exception). Counting a POLLERR poll there made
+ * select() return 2 for a refused connect watched in both the write and
+ * except sets, while only the write set stayed filled. When only except
+ * descriptors are watched, select() still waits out its timeout.
  */
 EMSCRIPTEN_KEEPALIVE int __wrap_select(int max_fd, fd_set *read_fds, fd_set *write_fds, fd_set *except_fds, struct timeval *timeouttv)
 {
 	emscripten_sleep(0); // always yield to JS event loop
 	int timeoutms = php_tvtoto(timeouttv);
 	int n = 0;
+	int polled = 0;
 	for (int i = 0; i < max_fd; i++)
 	{
 		if (read_fds && FD_ISSET(i, read_fds))
 		{
+			polled = 1;
 			if (wasm_poll_socket(i, POLLIN, timeoutms))
 			{
 				n++;
@@ -902,6 +912,7 @@ EMSCRIPTEN_KEEPALIVE int __wrap_select(int max_fd, fd_set *read_fds, fd_set *wri
 		}
 		if (write_fds && FD_ISSET(i, write_fds))
 		{
+			polled = 1;
 			if (wasm_poll_socket(i, POLLOUT, timeoutms))
 			{
 				n++;
@@ -913,9 +924,12 @@ EMSCRIPTEN_KEEPALIVE int __wrap_select(int max_fd, fd_set *read_fds, fd_set *wri
 		}
 		if (except_fds && FD_ISSET(i, except_fds))
 		{
-			n += wasm_poll_socket(i, POLLERR, timeoutms);
 			FD_CLR(i, except_fds);
 		}
+	}
+	if (!polled && timeoutms > 0)
+	{
+		emscripten_sleep(timeoutms);
 	}
 	return n;
 }

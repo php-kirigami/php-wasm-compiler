@@ -3802,3 +3802,21 @@ unless explicitly revisited:
     timeout. `wasm_recvfrom` lost its own closed-peer check (covered by
     the recvmsg patch). snmp's smoke test sends a real request again, with
     a 10 s bound.
+
+63. **Blocking TCP reads with ext/sockets; select()'s except set
+    (2026-09-23).** Reported from the Kirigami runtime: a blocking
+    `socket_read()`/`socket_recv()` on a TCP socket returned `EAGAIN` at
+    once, with or without `SO_RCVTIMEO`. Both go through `recv()`, so
+    `wasm_recvfrom` (decision 60) now waits for any blocking socket, not
+    only datagram ones: until SOCKFS answers anything but `EAGAIN` (data,
+    EOF once the peer closes, an error) or `SO_RCVTIMEO` runs out. PHP
+    streams are unchanged (xp_socket polls first and reads a socket with a
+    timeout using `MSG_DONTWAIT`). Also, `__wrap_select` counted a
+    `POLLERR` poll for the except set while always clearing it, so a
+    refused non-blocking connect watched in both the write and except sets
+    returned 2 with only the write set filled. On Linux the except set
+    only reports out-of-band data, which a WebSocket-backed socket never
+    has: it's now cleared and never counted, and a select() watching only
+    except descriptors waits out its timeout. The TODO item "Test SNMP
+    against a real agent" is done (the runtime tested it against a Node
+    agent through its UDP relay).

@@ -6,9 +6,6 @@ Concrete next actions. For larger, not-yet-scheduled initiatives, see
 
 ## Next (2026-09-23)
 
-- [ ] Test SNMP against a real agent through the runtime's UDP relay
-      (the hang to an unreachable agent is fixed, decision 62).
-
 - [ ] Wire `config.yaml`'s `libraries:` versions into the actual build
       (`cli.mjs`/`build.js` currently ignore them — the libs are built at
       whatever version their own Dockerfile pins). Decide whether to

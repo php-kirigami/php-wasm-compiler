@@ -1463,16 +1463,19 @@ const LibraryExample = {
 	__syscall_connect__deps: ['wasm_connect'],
 
 	/**
-	 * recvfrom(2) that blocks on a blocking datagram (UDP) socket.
+	 * recvfrom(2) that blocks on a blocking socket.
 	 *
 	 * Emscripten's recvfrom never waits: with nothing queued it returns
-	 * EAGAIN even on a blocking socket, so a blocking UDP read (ext/sockets'
-	 * socket_recvfrom(), net-snmp) fails at once instead of waiting for the
-	 * reply. For a datagram socket that isn't O_NONBLOCK and isn't read
-	 * with MSG_DONTWAIT, this waits for a datagram like wasm_recv() does,
-	 * up to the socket's SO_RCVTIMEO if one is set (then EAGAIN, as on
-	 * Linux). Every other case (stream sockets included) keeps Emscripten's
-	 * non-waiting behavior.
+	 * EAGAIN even on a blocking socket, so a blocking read (ext/sockets'
+	 * socket_recvfrom(), socket_recv() and socket_read(), net-snmp) fails
+	 * at once instead of waiting for data. For a socket (datagram or
+	 * stream) that isn't O_NONBLOCK and isn't read with MSG_DONTWAIT, this
+	 * waits like wasm_recv() does, up to the socket's SO_RCVTIMEO if one is
+	 * set (then EAGAIN, as on Linux). It stops as soon as SOCKFS answers
+	 * anything but EAGAIN: data, EOF once a stream peer closes (0), or an
+	 * error. Non-blocking reads keep Emscripten's non-waiting behavior.
+	 * PHP streams aren't affected: xp_socket waits with poll() first and
+	 * reads a socket with a timeout using MSG_DONTWAIT.
 	 *
 	 * @returns {int|Promise<int>} Bytes received, or a negative errno
 	 */
@@ -1486,7 +1489,6 @@ const LibraryExample = {
 		const sock = stream?.node?.sock;
 		if (
 			!sock ||
-			sock.type !== Number('{{{cDefs.SOCK_DGRAM}}}') ||
 			stream.flags & PHPWASM.O_NONBLOCK ||
 			flags & MSG_DONTWAIT
 		) {
@@ -1515,7 +1517,7 @@ const LibraryExample = {
 	/**
 	 * Override Emscripten's __syscall_recvfrom with wasm_recvfrom(), so
 	 * every recv()/recvfrom() call (PHP core, extensions, and side modules
-	 * through the core's libc) gets blocking datagram reads. Same shape as
+	 * through the core's libc) gets blocking reads. Same shape as
 	 * the __syscall_connect override above.
 	 */
 	__syscall_recvfrom: function (fd, buf, len, flags, addr, addrlen) {
