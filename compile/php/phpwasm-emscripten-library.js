@@ -43,6 +43,58 @@ const LibraryExample = {
 			const sock = FS.getStream(fd)?.node?.sock;
 			return sock ? PHPWASM.socketTimeouts.get(sock) : undefined;
 		},
+		SOCKOPT: {
+			SOL_SOCKET: 1,
+			SO_TYPE: 3,
+			SO_ERROR: 4,
+			SO_KEEPALIVE: 9,
+			SO_RCVTIMEO: 66,
+			SO_SNDTIMEO: 67,
+			IPPROTO_TCP: 6,
+			TCP_NODELAY: 1,
+		},
+		/**
+		 * SO_KEEPALIVE and TCP_NODELAY values set on a socket (0 or 1), as
+		 * Map<"level:name", value>, keyed by the SOCKFS socket object. The
+		 * WebSocket proxy applies them to the real TCP connection, and one
+		 * set before connect() has no WebSocket to go to yet: they're
+		 * (re)sent when the connection opens.
+		 */
+		proxiedSocketOptions: new WeakMap(),
+		isProxiedSocketOption: function (level, optionName) {
+			const { SOL_SOCKET, SO_KEEPALIVE, IPPROTO_TCP, TCP_NODELAY } =
+				PHPWASM.SOCKOPT;
+			return (
+				(level === SOL_SOCKET && optionName === SO_KEEPALIVE) ||
+				(level === IPPROTO_TCP && optionName === TCP_NODELAY)
+			);
+		},
+		/**
+		 * Sends one option to the proxy, through the setSocketOpt() method
+		 * the runtime's outbound WebSocket class provides (a plain
+		 * WebSocket has none: the option then stays local).
+		 */
+		sendSocketOption: function (ws, level, optionName, value) {
+			if (typeof ws.setSocketOpt === 'function') {
+				ws.setSocketOpt(level, optionName, value);
+			}
+		},
+		sendSocketOptionsOnOpen: function (sock) {
+			for (const ws of PHPWASM.getAllWebSockets(sock)) {
+				const sendAll = () => {
+					const options = PHPWASM.proxiedSocketOptions.get(sock);
+					for (const [key, value] of options || []) {
+						const [level, optionName] = key.split(':').map(Number);
+						PHPWASM.sendSocketOption(ws, level, optionName, value);
+					}
+				};
+				if (ws.readyState === ws.OPEN) {
+					sendAll();
+				} else if (ws.readyState === ws.CONNECTING) {
+					ws.once('open', sendAll);
+				}
+			}
+		},
 		// These macros are not defined in Emscripten at the time of writing:
 		// emscripten_O_NDELAY |
 		// emscripten_O_DIRECT |
@@ -366,14 +418,8 @@ const LibraryExample = {
 		},
 
 		/**
-		 * A utility function to get all websocket objects associated
-		 * with an Emscripten file descriptor.
-		 *
-		 * @param {int} socketd Socket descriptor
-		 * @returns WebSocket[]
-		 */
-		/**
-		 * Datagram fixes for SOCKFS's websocket_sock_ops (poll, recvmsg).
+		 * Fixes for SOCKFS's websocket_sock_ops: datagram poll and recvmsg,
+		 * and socket options on connect.
 		 *
 		 * SOCKFS's websocket_sock_ops.poll() treats every connection-less
 		 * socket as "always ready to read", so a datagram (UDP) socket
@@ -418,6 +464,14 @@ const LibraryExample = {
 				}
 				return originalRecvmsg.call(this, sock, length, ...rest);
 			};
+			// Send the SO_KEEPALIVE/TCP_NODELAY values set so far (possibly
+			// before connect()) once the new connection opens.
+			const originalConnect = sockOps.connect;
+			sockOps.connect = function (sock, ...rest) {
+				const result = originalConnect.call(this, sock, ...rest);
+				PHPWASM.sendSocketOptionsOnOpen(sock);
+				return result;
+			};
 		},
 
 		/**
@@ -453,6 +507,11 @@ const LibraryExample = {
 			}
 		},
 
+		/**
+		 * All WebSockets of a SOCKFS socket object (not a descriptor).
+		 *
+		 * @returns WebSocket[]
+		 */
 		getAllWebSockets: function (sock) {
 			const webSockets = /* @__PURE__ */ new Set();
 			if (sock.server) {
@@ -1186,38 +1245,35 @@ const LibraryExample = {
 	},
 
 	/**
-	 * Shims setsockopt(2) functionality for asynchronous websockets:
-	 * https://man7.org/linux/man-pages/man2/setsockopt.2.html
-	 * The supported options are SO_KEEPALIVE, TCP_NODELAY, SO_RCVTIMEO,
-	 * and SO_SNDTIMEO.
+	 * setsockopt(2) for WebSocket-backed sockets, called by php_wasm.c's
+	 * __syscall_setsockopt, so every setsockopt() (libphp, libcurl in
+	 * the core, side modules through the core's libc) ends up here.
 	 *
-	 * SO_KEEPALIVE and TCP_NODELAY are propagated to the WebSockets proxy
-	 * server, which then sets them on the underlying TCP connection.
+	 * - SO_RCVTIMEO and SO_SNDTIMEO are stored per socket: blocking reads
+	 *   use SO_RCVTIMEO, wasm_connect() uses SO_SNDTIMEO.
+	 * - SO_KEEPALIVE and TCP_NODELAY are sent to the WebSocket proxy,
+	 *   which sets them on the real TCP connection. They're also stored,
+	 *   so one set before connect() is sent once the connection opens
+	 *   (see PHPWASM.sendSocketOptionsOnOpen).
+	 * - Anything else fails with ENOPROTOOPT.
 	 *
-		 * SO_RCVTIMEO and SO_SNDTIMEO are stored per socket. wasm_recv()
-		 * uses SO_RCVTIMEO and wasm_connect() uses SO_SNDTIMEO.
-	 *
-	 * @param {int} socketd Socket descriptor
-	 * @param {int} level  Level at which the option is defined
+	 * @param {int} fd Socket descriptor
+	 * @param {int} level Level at which the option is defined
 	 * @param {int} optionName The option name
 	 * @param {int} optionValuePtr Pointer to the option value
 	 * @param {int} optionLen The length of the option value
-	 * @returns {int} 0 on success, -1 on failure
+	 * @returns {int} 0 on success, a negative errno on failure
 	 */
-	wasm_setsockopt: function (
-		socketd,
-		level,
-		optionName,
-		optionValuePtr,
-		optionLen
-	) {
-		const optionValue = HEAPU8[optionValuePtr];
-		const SOL_SOCKET = 1;
-		const SO_KEEPALIVE = 9;
-		const SO_RCVTIMEO = 66;
-		const SO_SNDTIMEO = 67;
-		const IPPROTO_TCP = 6;
-		const TCP_NODELAY = 1;
+	js_setsockopt: function (fd, level, optionName, optionValuePtr, optionLen) {
+		const stream = FS.getStream(fd);
+		if (!stream) {
+			return -ERRNO_CODES.EBADF;
+		}
+		const sock = stream.node?.sock;
+		if (!sock) {
+			return -ERRNO_CODES.ENOTSOCK;
+		}
+		const { SOL_SOCKET, SO_RCVTIMEO, SO_SNDTIMEO } = PHPWASM.SOCKOPT;
 
 		if (
 			level === SOL_SOCKET &&
@@ -1228,12 +1284,7 @@ const LibraryExample = {
 				optionLen
 			);
 			if (timeoutMs === null) {
-				return -1;
-			}
-
-			const sock = FS.getStream(socketd)?.node?.sock;
-			if (!sock) {
-				return -1;
+				return -ERRNO_CODES.EINVAL;
 			}
 			const timeouts = PHPWASM.socketTimeouts.get(sock) || {};
 			if (optionName === SO_RCVTIMEO) {
@@ -1245,25 +1296,93 @@ const LibraryExample = {
 			return 0;
 		}
 
-		// Options that we can forward to the WebSocket proxy
-		const isForwardable =
-			(level === SOL_SOCKET && optionName === SO_KEEPALIVE) ||
-			(level === IPPROTO_TCP && optionName === TCP_NODELAY);
-
-		if (!isForwardable) {
-			console.warn(
-				`Unsupported socket option: ${level}, ${optionName}, ${optionValue}`
-			);
-			return -1;
+		if (!PHPWASM.isProxiedSocketOption(level, optionName)) {
+			return -ERRNO_CODES.ENOPROTOOPT;
 		}
-
-		const ws = PHPWASM.getAllWebSockets(socketd)[0];
-		if (!ws) {
-			return -1;
+		if (!optionValuePtr || optionLen < 1) {
+			return -ERRNO_CODES.EINVAL;
 		}
-		ws.setSocketOpt(level, optionName, optionValuePtr);
+		// An int flag. The proxy protocol carries one byte per value.
+		const value =
+			(optionLen >= 4
+				? HEAP32[optionValuePtr >> 2]
+				: HEAPU8[optionValuePtr]) !== 0
+				? 1
+				: 0;
+		let options = PHPWASM.proxiedSocketOptions.get(sock);
+		if (!options) {
+			options = new Map();
+			PHPWASM.proxiedSocketOptions.set(sock, options);
+		}
+		options.set(`${level}:${optionName}`, value);
+		for (const ws of PHPWASM.getAllWebSockets(sock)) {
+			if (ws.readyState === ws.OPEN) {
+				PHPWASM.sendSocketOption(ws, level, optionName, value);
+			}
+		}
 		return 0;
 	},
+	js_setsockopt__deps: ['$PHPWASM'],
+
+	/**
+	 * getsockopt(2), replacing Emscripten's, which only knows SO_ERROR:
+	 * also SO_TYPE, the options js_setsockopt() stores (SO_RCVTIMEO,
+	 * SO_SNDTIMEO, SO_KEEPALIVE, TCP_NODELAY), and ENOPROTOOPT for the
+	 * rest.
+	 */
+	__syscall_getsockopt: function (fd, level, optionName, optionValuePtr, optionLenPtr, d1) {
+		const stream = FS.getStream(fd);
+		if (!stream) {
+			return -ERRNO_CODES.EBADF;
+		}
+		const sock = stream.node?.sock;
+		if (!sock) {
+			return -ERRNO_CODES.ENOTSOCK;
+		}
+		const { SOL_SOCKET, SO_TYPE, SO_ERROR, SO_RCVTIMEO, SO_SNDTIMEO } =
+			PHPWASM.SOCKOPT;
+		const writeInt = (value) => {
+			if (HEAP32[optionLenPtr >> 2] < 4) {
+				return -ERRNO_CODES.EINVAL;
+			}
+			HEAP32[optionValuePtr >> 2] = value;
+			HEAP32[optionLenPtr >> 2] = 4;
+			return 0;
+		};
+
+		if (level === SOL_SOCKET && optionName === SO_ERROR) {
+			// Reading SO_ERROR clears it.
+			const error = sock.error || 0;
+			sock.error = null;
+			return writeInt(error);
+		}
+		if (level === SOL_SOCKET && optionName === SO_TYPE) {
+			return writeInt(sock.type);
+		}
+		if (
+			level === SOL_SOCKET &&
+			(optionName === SO_RCVTIMEO || optionName === SO_SNDTIMEO)
+		) {
+			// struct timeval with a 64-bit time_t: two int64 fields.
+			if (HEAP32[optionLenPtr >> 2] < 16) {
+				return -ERRNO_CODES.EINVAL;
+			}
+			const timeouts = PHPWASM.socketTimeouts.get(sock) || {};
+			const ms =
+				(optionName === SO_RCVTIMEO ? timeouts.receive : timeouts.send) ||
+				0;
+			HEAP64[optionValuePtr >> 3] = BigInt(Math.floor(ms / 1000));
+			HEAP64[(optionValuePtr + 8) >> 3] = BigInt((ms % 1000) * 1000);
+			HEAP32[optionLenPtr >> 2] = 16;
+			return 0;
+		}
+		if (PHPWASM.isProxiedSocketOption(level, optionName)) {
+			const options = PHPWASM.proxiedSocketOptions.get(sock);
+			return writeInt(options?.get(`${level}:${optionName}`) ?? 0);
+		}
+		return -ERRNO_CODES.ENOPROTOOPT;
+	},
+	__syscall_getsockopt__deps: ['$PHPWASM'],
 
 	/**
 	 * Async-aware connect(2) for WebSocket-based sockets.

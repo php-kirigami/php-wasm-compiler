@@ -49,7 +49,30 @@ EMSCRIPTEN_KEEPALIVE unsigned int __wrap_usleep(unsigned int time_microseconds)
 	return time_microseconds;
 }
 
-extern int *wasm_setsockopt(int sockfd, int level, int optname, intptr_t optval, size_t optlen, int dummy);
+/*
+ * setsockopt(2). Emscripten's libc leaves __syscall_setsockopt as a weak
+ * stub answering ENOSYS; this strong definition replaces it, so every
+ * setsockopt() (libphp, libcurl in the core, side modules through the
+ * core's libc) reaches js_setsockopt() in phpwasm-emscripten-library.js.
+ * That returns 0 or a negative errno, which musl's setsockopt() turns
+ * into -1 and errno.
+ */
+extern int js_setsockopt(int sockfd, int level, int optname, intptr_t optval, size_t optlen);
+int __syscall_setsockopt(int sockfd, int level, int optname, intptr_t optval, size_t optlen, int dummy)
+{
+	return js_setsockopt(sockfd, level, optname, optval, optlen);
+}
+
+/*
+ * libphp is compiled with -Dsetsockopt=wasm_setsockopt (compile/php/
+ * Dockerfile); it now only needs libc's setsockopt(), above.
+ */
+#include <sys/socket.h>
+#undef setsockopt
+int wasm_setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen)
+{
+	return setsockopt(sockfd, level, optname, optval, optlen);
+}
 
 static int redirect_stream_to_file(FILE *stream, char *file_path);
 static void restore_stream_handler(FILE *original_stream, int replacement_stream);

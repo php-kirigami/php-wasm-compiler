@@ -3859,3 +3859,29 @@ unless explicitly revisited:
       "inherited from PHP itself": php-src is under the PHP License 3.01;
       the GPL-2.0-or-later comes from this pipeline's WordPress Playground
       origin.
+
+65. **setsockopt()/getsockopt() rewritten (2026-09-23).** Reported from
+    the Kirigami runtime: `socket_set_option()` with `TCP_NODELAY` or
+    `SO_KEEPALIVE` always failed with "[0]: Success". `wasm_setsockopt`
+    (libphp's `-Dsetsockopt=wasm_setsockopt`) passed the fd to
+    `getAllWebSockets()`, which takes the SOCKFS socket object, so it
+    never found the WebSocket; it returned -1 without setting errno; and it
+    sent the option's pointer, not its value, to the proxy. Meanwhile
+    everything outside libphp (libcurl in the core, side modules through
+    the core's libc) hit Emscripten's weak `__syscall_setsockopt` stub
+    (ENOSYS).
+    - php_wasm.c now defines `__syscall_setsockopt` (a strong definition
+      replaces the weak stub), calling the JS `js_setsockopt`, which
+      returns 0 or a negative errno; musl's `setsockopt()` sets errno.
+      `wasm_setsockopt` is just `setsockopt()` now, and left JSPI_IMPORTS
+      (it never suspended).
+    - `SO_KEEPALIVE`/`TCP_NODELAY` send their int value as 0/1 (the proxy
+      protocol carries one byte), and are stored per socket (WeakMap), so
+      one set before `connect()` is sent when the connection opens
+      (SOCKFS's `connect` is wrapped for that). A WebSocket without the
+      runtime's `setSocketOpt()` keeps them local.
+    - Unsupported options fail with ENOPROTOOPT, without the
+      `console.warn`.
+    - `__syscall_getsockopt` replaces Emscripten's (SO_ERROR only): also
+      SO_TYPE, SO_RCVTIMEO/SO_SNDTIMEO (as a 64-bit timeval), and the
+      stored SO_KEEPALIVE/TCP_NODELAY.
