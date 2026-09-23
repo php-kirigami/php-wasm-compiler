@@ -3743,6 +3743,10 @@ unless explicitly revisited:
       doesn't recopy an existing `dist/` (remove it to force); intl.so is
       39.5 MB with ICU's data; php-norm now defers to intl's Normalizer
       (checked by intl's smoke test).
+    - **Closed:** the 2026-09-22 BUGS.md entries for gettext (missing
+      exports, `ngettext` family undetected: `ac_cv_lib_c_*` in
+      `configArgs`), soap (iconv/bsearch exports) and enchant (19 exports):
+      all three have smoke tests now and pass.
     - **Not done:** `iliaal/php-excel` (wraps LibXL, a closed-source
       commercial library: can't be built for wasm). Prepared, not built:
       `iliaal/fastchart` (C, codec libs from gd, DejaVu Sans embedded with
@@ -3779,3 +3783,22 @@ unless explicitly revisited:
       without threads: the PDF case of the smoke test passes.
     - Core: 18 more libc/libm exports for fastchart
       (`side-module-abi-exports.txt`).
+
+62. **SNMP hang to an unreachable agent fixed (2026-09-23): datagram
+    errors reported once, like Linux.** An `SNMP::get()` to a closed port
+    never returned. The peer WebSocket fails right away (SOCKFS sets
+    `sock.error`), and decision 60's closed-WebSocket readiness made
+    `select()` report the socket readable forever, while every
+    `recvmsg()` (net-snmp reads with recvmsg, not recvfrom) got `EAGAIN`:
+    net-snmp spun and its timeout, driven by `select()` returning 0,
+    never fired. (The earlier trace missed `select()` because JSPI
+    imports, `wasm_poll_socket` among them, are `WebAssembly.Suspending`
+    objects the counting wrapper skipped.) Now PHPWASM patches SOCKFS's
+    `recvmsg` (which recv/recvfrom/recvmsg/read all use): a datagram
+    socket with an empty queue and a pending `sock.error` reports it once
+    and clears it, as reading `SO_ERROR` would. `wasm_poll_socket` treats a
+    datagram socket with a closed WebSocket as ready only while that error
+    is pending or a datagram is queued; otherwise it waits out the
+    timeout. `wasm_recvfrom` lost its own closed-peer check (covered by
+    the recvmsg patch). snmp's smoke test sends a real request again, with
+    a 10 s bound.

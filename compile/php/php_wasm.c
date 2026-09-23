@@ -204,12 +204,21 @@ EM_JS(int, wasm_poll_socket, (php_socket_t socketd, int events, int timeout), {
             }
             // A peer WebSocket that is already closing or closed (e.g. the
             // proxy refused the connection) won't fire another close/error
-            // event, so waiting for one below would never resolve (and
-            // select() without a timeout, as net-snmp calls it, would hang
-            // for good). The socket is ready: the read/write that follows
-            // reports EOF or the error.
+            // event, so waiting for one below would never resolve. A stream
+            // socket is then ready (the read that follows gets EOF). A
+            // datagram socket is only ready while it still has something
+            // to hand over: a queued datagram, or the pending error the
+            // next read reports once (sock.error, see PHPWASM's recvmsg
+            // patch). After that, nothing can arrive: wait out the timeout
+            // so select()/poll() return 0, as on Linux (net-snmp relies on
+            // that for its request timeout; reporting it ready forever made
+            // it spin on recvmsg()).
             if (webSockets.some((ws) => ws.readyState === ws.CLOSING || ws.readyState === ws.CLOSED)) {
-                wakeUp(1);
+                if (sock.type !== 2 /* SOCK_DGRAM */ || sock.error || (sock.recv_queue || []).length > 0) {
+                    wakeUp(1);
+                } else if (timeout !== -1) {
+                    setTimeout(() => wakeUp(0), timeout);
+                }
                 return;
             }
             for (const ws of webSockets) {

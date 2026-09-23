@@ -6,11 +6,8 @@ Concrete next actions. For larger, not-yet-scheduled initiatives, see
 
 ## Next (2026-09-23)
 
-- [ ] Fix the snmp hang (docs/BUGS.md), then restore a real request in
-      its smoke test; test SNMP against a real agent through the runtime's
-      UDP relay.
-- [ ] Remove the stale gettext/... entries from docs/BUGS.md (fixed: all
-      shared extensions pass their smoke tests now).
+- [ ] Test SNMP against a real agent through the runtime's UDP relay
+      (the hang to an unreachable agent is fixed, decision 62).
 
 - [ ] Wire `config.yaml`'s `libraries:` versions into the actual build
       (`cli.mjs`/`build.js` currently ignore them — the libs are built at

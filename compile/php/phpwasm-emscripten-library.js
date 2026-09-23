@@ -362,6 +362,8 @@ const LibraryExample = {
 		 * @returns WebSocket[]
 		 */
 		/**
+		 * Datagram fixes for SOCKFS's websocket_sock_ops (poll, recvmsg).
+		 *
 		 * SOCKFS's websocket_sock_ops.poll() treats every connection-less
 		 * socket as "always ready to read", so a datagram (UDP) socket
 		 * looks readable before any data has arrived: poll() and select()
@@ -384,6 +386,26 @@ const LibraryExample = {
 					return mask;
 				}
 				return originalPoll.call(this, sock);
+			};
+			// A datagram socket whose peer WebSocket failed (the proxy
+			// refused it: SOCKFS then sets sock.error) would otherwise keep
+			// answering EAGAIN, so a reader waiting for a reply loops or
+			// hangs (net-snmp spun on recvmsg()). Like Linux after an ICMP
+			// port unreachable, report the pending error once to the next
+			// read (recv/recvfrom/recvmsg/read all go through recvmsg), then
+			// clear it, as reading SO_ERROR does.
+			const originalRecvmsg = sockOps.recvmsg;
+			sockOps.recvmsg = function (sock, length, ...rest) {
+				if (
+					sock.type === Number('{{{cDefs.SOCK_DGRAM}}}') &&
+					!sock.recv_queue.length &&
+					sock.error
+				) {
+					const errno = sock.error;
+					sock.error = null;
+					throw new FS.ErrnoError(errno);
+				}
+				return originalRecvmsg.call(this, sock, length, ...rest);
 			};
 		},
 
@@ -1477,25 +1499,6 @@ const LibraryExample = {
 				const n = PHPWASM.recvfromNow(fd, buf, len, flags, addr, addrlen);
 				if (n !== -ERRNO_CODES.EAGAIN) {
 					wakeUp(n);
-					return;
-				}
-				// SOCKFS keeps answering EAGAIN for an empty datagram queue
-				// even once its peer WebSocket is gone (the proxy refused or
-				// dropped it, and SOCKFS may have removed the peer), so no
-				// datagram can arrive any more: fail like Linux does after an
-				// ICMP port unreachable instead of waiting forever. SOCKFS
-				// records such a failure in sock.error (ECONNREFUSED,
-				// EHOSTUNREACH).
-				const webSockets = PHPWASM.getAllWebSockets(sock);
-				const allClosed =
-					webSockets.length > 0 &&
-					webSockets.every(
-						(ws) =>
-							ws.readyState === ws.CLOSING ||
-							ws.readyState === ws.CLOSED
-					);
-				if (sock.error || allClosed) {
-					wakeUp(-(sock.error || ERRNO_CODES.ECONNREFUSED));
 					return;
 				}
 				if (receiveTimeout > 0 && Date.now() - startedAt >= receiveTimeout) {
