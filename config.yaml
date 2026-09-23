@@ -697,6 +697,22 @@ extensions:
       - lib: libz
     configArgs: 'PKG_CONFIG_PATH=/build/wasm-pkgconfig'
     license: 'BSD-3-Clause AND MIT'
+    # Same as rar/scanmeqr: compile-extension's __x86_64__ turns on
+    # fastchart_rasterize.c's SSE path and <cpuid.h> CPU detection.
+    extraCflags: -U__x86_64__
+
+  # anydoc (hosmelq/ext-anydoc on Packagist, tag v0.2.4): Word,
+  # PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDF to Markdown.
+  # The first Rust extension (ext-php-rs): the crate is built as a
+  # wasm32-unknown-emscripten staticlib on a pinned nightly by
+  # compile/anydoc/Dockerfile (the vendorLib), and compile/extensions/anydoc
+  # is only a phpize wrapper around it (get_module comes from the Rust
+  # archive). See compile/extensions/anydoc/PROVENANCE.md.
+  anydoc:
+    mode: shared
+    source: compile/extensions/anydoc
+    vendorLib: anydoc
+    license: MIT
 
 # Version of each third-party library to use (see matrix.json for known
 # versions + their source). "latest" = the newest entry known to

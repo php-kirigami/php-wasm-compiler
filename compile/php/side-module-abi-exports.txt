@@ -14,7 +14,7 @@
 # modules get the wrapped versions through the wasmImports aliases in the
 # Dockerfile's php.js patches instead.
 #
-# Modules covered: ffi, fileinfo, xsl, snmp, rar, intl, scanmeqr.
+# Modules covered: ffi, fileinfo, xsl, snmp, rar, intl, scanmeqr, fastchart.
 __addtf3
 __ashlti3
 __ctype_tolower_loc
@@ -45,6 +45,7 @@ asctime_r
 asin
 atan
 atan2
+atan2f
 atexit
 atof
 atol
@@ -55,6 +56,7 @@ chmod
 clearerr
 closelog
 cos
+cosf
 ctime_r
 daylight
 div
@@ -74,13 +76,18 @@ ferror
 fgetc_unlocked
 fiprintf
 flockfile
+fmax
+fmin
 fmod
+fmodf
 fork
 fputc
 fputwc
 fread
 freelocale
+frexp
 fseeko
+fstatat
 fsync
 ftello
 ftruncate
@@ -99,6 +106,8 @@ getsockopt
 getwc
 gmtime
 gmtime_r
+hypot
+hypotf
 inet_addr
 inet_ntoa
 inet_pton
@@ -120,11 +129,15 @@ isxdigit
 isxdigit_l
 lchown
 link
+linkat
 listen
 localeconv
 localtime_r
 log
 log10
+logf
+lround
+lroundf
 lseek
 lstat
 madvise
@@ -147,6 +160,7 @@ optind
 pathconf
 pipe
 pow
+powf
 pthread_detach
 pthread_join
 pthread_self
@@ -162,8 +176,10 @@ regcomp
 regexec
 regfree
 remove
+renameat
 rewind
 round
+roundf
 sendmmsg
 sendmsg
 sendto
@@ -173,6 +189,7 @@ setsid
 setvbuf
 signal
 sin
+sinf
 srandom
 statvfs
 strcoll_l
@@ -198,6 +215,7 @@ swprintf
 symlink
 syslog
 tan
+tanf
 tanhf
 tcgetattr
 tcsetattr

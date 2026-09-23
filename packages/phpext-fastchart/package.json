@@ -1,0 +1,45 @@
+{
+	"name": "@kirigami/phpext-fastchart",
+	"version": "0.1.0",
+	"description": "Kirigami PHP.wasm shared extension: fastchart (JSPI side module, see @kirigami/php-wasm)",
+	"keywords": [
+		"php-wasm",
+		"php",
+		"wasm",
+		"webassembly",
+		"kirigami",
+		"fastchart"
+	],
+	"homepage": "https://php-kirigami.github.io",
+	"bugs": {
+		"url": "https://github.com/php-kirigami/php-wasm-compiler/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/php-kirigami/php-wasm-compiler.git"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"license": "BSD-3-Clause AND MIT",
+	"author": "Maxime Larrivée-Roy",
+	"type": "module",
+	"main": "index.js",
+	"types": "index.d.ts",
+	"files": [
+		"manifest.json",
+		"manifest-*.json",
+		"*.so",
+		"index.js",
+		"index.d.ts",
+		"README.md"
+	],
+	"kirigami": {
+		"type": "extension",
+		"phpVersions": [
+			"8.5"
+		],
+		"minVersion": "8.5.11",
+		"buildHash": "ed805646dcb36e2dda13b859ee55db1d3654fc2c5a2b10f4c643fbb888abd349"
+	}
+}

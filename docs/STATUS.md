@@ -276,3 +276,8 @@ module), rar and scanmeqr, the last two vendored from outside php-src.
 with no missing ABI export. Known gaps: snmp's smoke test stops at the
 session setup (a request to an unreachable agent hangs, docs/BUGS.md);
 fastchart prepared but not built yet; anydoc (Rust) not started.
+
+**✅ fastchart and anydoc added (2026-09-23), see DECISIONS.md decision
+61.** anydoc is the first Rust extension (ext-php-rs, built as a wasm32
+staticlib on a pinned nightly). 27 shared extensions pass
+`check-shared-extension-symbols.mjs`.

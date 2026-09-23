@@ -3,5 +3,5 @@
 Name: libpng
 Description: libpng as staged for the fastchart side-module build
 Version: 1.6.58
-Cflags: -I/build/vendor/libpng16/include
+Cflags: -I/build/vendor/libpng16/include/libpng16
 Libs: /build/vendor/libpng16/lib/libpng16.a

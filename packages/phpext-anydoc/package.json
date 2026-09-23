@@ -1,0 +1,49 @@
+{
+	"name": "@kirigami/phpext-anydoc",
+	"version": "0.1.1",
+	"description": "Kirigami PHP.wasm shared extension: anydoc (JSPI side module, see @kirigami/php-wasm)",
+	"keywords": [
+		"php-wasm",
+		"php",
+		"wasm",
+		"webassembly",
+		"kirigami",
+		"anydoc"
+	],
+	"homepage": "https://php-kirigami.github.io",
+	"bugs": {
+		"url": "https://github.com/php-kirigami/php-wasm-compiler/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/php-kirigami/php-wasm-compiler.git"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"license": "MIT",
+	"author": "Maxime Larrivée-Roy",
+	"type": "module",
+	"main": "index.js",
+	"types": "index.d.ts",
+	"files": [
+		"manifest.json",
+		"manifest-*.json",
+		"*.so",
+		"index.js",
+		"index.d.ts",
+		"README.md"
+	],
+	"kirigami": {
+		"type": "extension",
+		"phpVersions": [
+			"8.5"
+		],
+		"minVersion": "8.5.11",
+		"vendorLib": {
+			"name": "anydoc",
+			"version": "v0.2.4"
+		},
+		"buildHash": "64e4dca513d9f4afe0de68279e9695c3b2bd8f815e4db5b313cefa13dd5bc03d"
+	}
+}

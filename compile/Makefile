@@ -383,6 +383,17 @@ libcxx/jspi/dist/root/lib/lib/libc++.a: base-image
 	CID=$$(docker create kirigami-php-wasm:libcxx) && docker cp $$CID:/root/install/lib ./libcxx/jspi/dist/root/lib && docker rm $$CID
 	CID=$$(docker create kirigami-php-wasm:libcxx) && docker cp $$CID:/root/install/include ./libcxx/jspi/dist/root/lib && docker rm $$CID
 
+ANYDOC_VERSION := $(call MATRIX_VERSION,anydoc)
+
+# Needs the compile-extension image (kirigami-compile-extension:compile-
+# extension-php8-5-jspi), prepared by any `node cli.mjs compile-extension` run.
+anydoc_jspi: anydoc/jspi/dist/root/lib/lib/libanydoc.a
+anydoc/jspi/dist/root/lib/lib/libanydoc.a:
+	mkdir -p ./anydoc/jspi/dist/root/lib
+	docker build -f ./anydoc/Dockerfile -t kirigami-php-wasm:anydoc . --build-arg ANYDOC_VERSION=$(ANYDOC_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:anydoc) && docker cp $$CID:/root/install/lib ./anydoc/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:anydoc) && docker cp $$CID:/root/install/include ./anydoc/jspi/dist/root/lib && docker rm $$CID
+
 LIBFFI_VERSION := $(call MATRIX_VERSION,libffi)
 
 libffi_jspi: libffi/jspi/dist/root/lib/lib/libffi.a

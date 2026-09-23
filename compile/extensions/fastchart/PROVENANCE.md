@@ -66,8 +66,10 @@ re-vendoring).
 ## `smoke-test.php`
 
 A QR code rendered to SVG, PNG, JPEG and WebP (one output per library),
-a Code128 barcode to PNG, then a line chart with a title (SVG and PNG),
-which only renders through the embedded default font.
+a Code128 barcode to PNG, then a line chart rendered with and without a
+title (SVG and PNG): fastchart draws text as glyph outlines, not `<text>`,
+so the check is that the title changes the output, which only happens
+through the embedded default font.
 
 Regenerating: re-download the tag's source archive, copy the files listed
 above, re-apply the `config.m4` source-list line, and keep

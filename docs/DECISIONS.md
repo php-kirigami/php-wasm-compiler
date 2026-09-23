@@ -3748,3 +3748,34 @@ unless explicitly revisited:
       `iliaal/fastchart` (C, codec libs from gd, DejaVu Sans embedded with
       `#embed` and installed at load time). Planned: `hosmelq/ext-anydoc`
       (Rust, a new build path).
+
+61. **fastchart and anydoc (the first Rust extension) as mode:shared
+    (2026-09-23).** 27 shared extensions pass their smoke tests.
+    - **fastchart** (`iliaal/fastchart` 1.7.4): its `config.m4` runs
+      `pkg-config` itself, so `wasm-pkgconfig/*.pc` shims point it at the
+      staged gd codec libs (the vendored `.pc` files carry their build
+      containers' prefixes; libpng's include-dir symlinks also break when
+      staged on Windows, hence `include/libpng16`). A new `archives` filter
+      on `vendorLibs` keeps one copy of libjpeg/libpng under
+      `--whole-archive`. DejaVu Sans is embedded with C23 `#embed` and
+      written by a load-time constructor to the path fastchart probes, the
+      one change to upstream being `config.m4`'s source list. fastchart
+      draws text as glyph outlines, not `<text>`.
+    - **anydoc** (`hosmelq/ext-anydoc` v0.2.4, Rust via ext-php-rs 0.15):
+      the crate is built as a `wasm32-unknown-emscripten` staticlib by
+      `compile/anydoc/Dockerfile` (FROM the compile-extension image, pinned
+      nightly, `-Zbuild-std=std,panic_abort`, `panic=abort`,
+      `relocation-model=pic`), and `compile/extensions/anydoc` is a thin
+      phpize wrapper (get_module comes from the archive). Four fixes:
+      libclang for bindgen (emsdk has none; Ubuntu's, headers only); a fake
+      `php -i` answering for PHP 8.5, since ext-php-rs reads the Zend API
+      from the only host PHP (8.3); ext-php-rs's `PropertyDescriptor` size
+      guard (sized for 64-bit) doubled for wasm32; and
+      `-sSUPPORT_LONGJMP=wasm` for the C that cc-rs builds (ext-php-rs's
+      wrapper.c uses zend_try, and emcc's default JS SjLj needs
+      `invoke_*`/`emscripten_longjmp`, which the core doesn't have). Current
+      nightlies build the emscripten target with Wasm EH already
+      (`-Zemscripten-wasm-eh` is gone). rayon (pdf-inspector) degrades
+      without threads: the PDF case of the smoke test passes.
+    - Core: 18 more libc/libm exports for fastchart
+      (`side-module-abi-exports.txt`).

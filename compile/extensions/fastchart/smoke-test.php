@@ -50,16 +50,27 @@ if (!str_starts_with($png, "\x89PNG\r\n\x1a\n")) {
 if (!is_file('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')) {
 	fail('the embedded default font was not installed');
 }
-$chart = (new FastChart\LineChart())
+// fastchart draws text as glyph outlines (paths), not <text>, so the title
+// can't be searched for: the same chart is rendered with and without it,
+// and the title has to change both the SVG and the PNG.
+$make = fn() => (new FastChart\LineChart())
 	->setSize(400, 250)
-	->setTitle('Kirigami')
 	->setSeries([3, 1, 4, 1, 5, 9, 2, 6]);
-$svg = $chart->renderSvg();
-if (!str_contains($svg, '<svg') || !str_contains($svg, 'Kirigami')) {
-	fail('LineChart::renderSvg() output has no title text');
+$plain = $make();
+$titled = $make()->setTitle('Kirigami');
+$svg = $titled->renderSvg();
+if (!str_contains($svg, '<svg')) {
+	fail('LineChart::renderSvg() did not return SVG');
 }
-if (!str_starts_with($chart->renderPng(), "\x89PNG\r\n\x1a\n")) {
+if ($svg === $plain->renderSvg()) {
+	fail('LineChart::renderSvg(): the title changed nothing (no text drawn)');
+}
+$png = $titled->renderPng();
+if (!str_starts_with($png, "\x89PNG\r\n\x1a\n")) {
 	fail('LineChart::renderPng() output is not a PNG');
+}
+if ($png === $plain->renderPng()) {
+	fail('LineChart::renderPng(): the title changed nothing (no text drawn)');
 }
 
 echo "fastchart smoke test OK\n";

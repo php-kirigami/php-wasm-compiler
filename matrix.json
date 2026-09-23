@@ -341,6 +341,15 @@
 				"4.0.19"
 			]
 		},
+		"anydoc": {
+			"$comment": "hosmelq/ext-anydoc (Packagist, extension name anydoc): PHP bindings for Firecrawl anydoc (documents to Markdown), in Rust via ext-php-rs. Built as a wasm32-unknown-emscripten staticlib on a pinned Rust nightly (-Zbuild-std, panic=abort, PIC) inside the compile-extension image, then linked into a thin phpize wrapper (compile/extensions/anydoc). Its version is the ext-anydoc tag, which matches the embedded anydoc crate version. See compile/anydoc/Dockerfile.",
+			"sourceType": "github-tag",
+			"repo": "hosmelq/ext-anydoc",
+			"sourceTemplate": "https://github.com/hosmelq/ext-anydoc/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v0.2.4"
+			]
+		},
 		"simdjson": {
 			"$comment": "For ext/jsonk (CLAUDE.md's jsonk decision) -- decode engine. Not built via a compile/lib*/Dockerfile+Makefile target like every other entry here: it ships as a single-header amalgamation (simdjson.h + simdjson.cpp) fetched as GitHub release assets straight into ext/jsonk/vendor/simdjson/ by compile/php/Dockerfile itself (no build step of its own), same layout php-jsonk's own vendor/build/stage.sh uses for a native dev build. Listed here anyway so getMatrixVersion() has one place to resolve it from, matching matrix.json's own \"latest = last versions[] entry\" convention.",
 			"sourceType": "github-release",
@@ -1326,6 +1335,19 @@
 				"libjpeg",
 				"libwebp",
 				"libz"
+			]
+		},
+		"anydoc": {
+			"$comment": "hosmelq/ext-anydoc, mode: shared (2026-09-23): the first Rust extension. The Rust crate itself is built as the anydoc library (matrix libraries.anydoc, compile/anydoc/Dockerfile); compile/extensions/anydoc is only the phpize wrapper.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-anydoc",
+			"repo": "hosmelq/ext-anydoc",
+			"versions": [
+				"v0.2.4"
+			],
+			"libraries": [
+				"anydoc"
 			]
 		}
 	},
