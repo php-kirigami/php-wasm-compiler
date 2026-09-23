@@ -3885,3 +3885,35 @@ unless explicitly revisited:
     - `__syscall_getsockopt` replaces Emscripten's (SO_ERROR only): also
       SO_TYPE, SO_RCVTIMEO/SO_SNDTIMEO (as a 64-bit timeval), and the
       stored SO_KEEPALIVE/TCP_NODELAY.
+
+66. **SOCK_NONBLOCK, a poll() that yields, curl's TCP_NODELAY
+    (2026-09-23).** Reported from the Kirigami runtime.
+    - **Closing a curl HTTPS connection blocked until the server dropped
+      it** (~6 s against a Node keep-alive server; a regression since
+      decision 63). curl opens its sockets with `socket(...,
+      SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, ...)` and never calls
+      fcntl() after that, but Emscripten's `SOCKFS.createSocket` masks
+      SOCK_NONBLOCK off without setting O_NONBLOCK: the socket stayed
+      blocking, and once blocking reads really waited, reading the peer's
+      TLS close_notify waited for the server to close. `__syscall_socket`
+      and `__syscall_accept4` now honor SOCK_NONBLOCK (accept4 otherwise
+      keeps Emscripten's inheritance of the listening socket's flags).
+    - **poll() now yields to the event loop.** With a really non-blocking
+      socket, curl waits in poll(), and Emscripten's poll() never waits:
+      curl spun without ever letting the WebSocket open. The core is
+      linked with `-Wl,--wrap=poll`; `__wrap_poll` (php_wasm.c, a JSPI
+      export) checks the descriptors, then sleeps in 5 ms steps until one
+      is ready or the timeout runs out. Side modules get it through a
+      `wasmImports["poll"]` alias; `_poll` left the JS ABI export list (a
+      wrapped symbol has no plain export, as with getpid).
+      `php_pollfd_for`, which already waits in `wasm_poll_socket`, reads
+      the result with `__real_poll(..., 0)` so the timeout isn't waited
+      twice. Measured: an HTTPS request with FORBID_REUSE takes ~50 ms
+      after the first (~200 ms), release is immediate.
+    - **curl never sent TCP_NODELAY**: curl_setup.h leaves
+      `CURL_TCP_NODELAY_SUPPORTED` undefined under `__EMSCRIPTEN__`, which
+      compiles CURLOPT_TCP_NODELAY out. compile/libcurl/Dockerfile defines
+      it through EMCC_FLAGS (its configure-time CPPFLAGS only prefix
+      `source` and never reached configure).
+    - `TCP_NODELAY` on a datagram socket now fails with ENOPROTOOPT, as
+      on Linux (set and get).

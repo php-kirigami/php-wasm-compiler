@@ -1218,8 +1218,10 @@ RUN echo '_strtol' >> /root/.JS_ABI_EXPORTS; \
 # - poll/shutdown/close: ldap.so again, one more layer into the same
 #   connection path (closing/cleaning up the socket after the closed-port
 #   connection attempt fails) -- same "found one layer at a time" shape.
-RUN echo '_poll' >> /root/.JS_ABI_EXPORTS; \
-	echo '_shutdown' >> /root/.JS_ABI_EXPORTS; \
+#   poll itself is no longer listed: the core is linked with
+#   -Wl,--wrap=poll, so like getpid (below) there is no plain "_poll"
+#   export; side modules get __wrap_poll through a wasmImports alias.
+RUN echo '_shutdown' >> /root/.JS_ABI_EXPORTS; \
 	echo '_close' >> /root/.JS_ABI_EXPORTS;
 
 # - environ: enchant.so (glib's own g_get_environ()/getenv-adjacent code)
@@ -1571,7 +1573,7 @@ RUN set -euxo pipefail; \
 	# used to fall back to (ASYNCIFY=1, unreachable since WITH_JSPI is
 	# always "yes" in this pipeline) was removed along with the dead
 	# ASYNCIFY_IMPORTS/ASYNCIFY_ONLY block that fed it.
-	export ASYNCIFY_FLAGS=" -s ASYNCIFY=2 -sSUPPORT_LONGJMP=wasm -fwasm-exceptions -sJSPI_IMPORTS=js_open_process,js_fd_read,js_waitpid,js_process_status,js_create_input_device,wasm_shutdown,wasm_close,wasm_recv,wasm_recvfrom,__syscall_recvfrom,wasm_connect,__syscall_connect,__syscall_fcntl64,js_flock,js_release_file_locks,js_waitpid -sJSPI_EXPORTS=php_wasm_init,wasm_sleep,wasm_read,emscripten_sleep,wasm_sapi_handle_request,wasm_sapi_request_shutdown,wasm_poll_socket,wrap_select,__wrap_select,select,php_pollfd_for,fflush,wasm_popen,wasm_pclose,__wrap_popen,__wrap_pclose,wasm_read,wasm_php_exec,run_cli,wasm_recv,wasm_connect,__wasm_call_ctors,__errno_location,__funcs_on_exit -s EXPORTED_RUNTIME_METHODS=HEAPU32,HEAPU8,ccall,PROXYFS,wasmExports "; \
+	export ASYNCIFY_FLAGS=" -s ASYNCIFY=2 -sSUPPORT_LONGJMP=wasm -fwasm-exceptions -sJSPI_IMPORTS=js_open_process,js_fd_read,js_waitpid,js_process_status,js_create_input_device,wasm_shutdown,wasm_close,wasm_recv,wasm_recvfrom,__syscall_recvfrom,wasm_connect,__syscall_connect,__syscall_fcntl64,js_flock,js_release_file_locks,js_waitpid -sJSPI_EXPORTS=php_wasm_init,wasm_sleep,wasm_read,emscripten_sleep,wasm_sapi_handle_request,wasm_sapi_request_shutdown,wasm_poll_socket,wrap_select,__wrap_select,select,__wrap_poll,php_pollfd_for,fflush,wasm_popen,wasm_pclose,__wrap_popen,__wrap_pclose,wasm_read,wasm_php_exec,run_cli,wasm_recv,wasm_connect,__wasm_call_ctors,__errno_location,__funcs_on_exit -s EXPORTED_RUNTIME_METHODS=HEAPU32,HEAPU8,ccall,PROXYFS,wasmExports "; \
 	echo '#define PLAYGROUND_JSPI 1' > /root/php_wasm_asyncify.h; \
 	ZEND_SIDE_MODULE_EXPORT_SOURCE="/root/zend-side-module-exports.c"; \
 	export OPTIMIZATION_FLAGS="-O3"; \
@@ -1624,6 +1626,7 @@ RUN set -euxo pipefail; \
 	-Wl,@/root/.wasm-exports \
 	-Wl,--wrap=usleep \
 	-Wl,--wrap=select \
+	-Wl,--wrap=poll \
 	-Wl,--wrap=popen \
 	-Wl,--wrap=pclose \
 		/root/lib/libphp.a \
@@ -1721,9 +1724,12 @@ RUN set -euxo pipefail; \
 		# export (it can suspend); the dynamic linker already looks through the
 		# JSPI wrapper (`.orig`) when resolving a side module's import.
 		/root/replace.sh 's/(___wrap_select = Module\["___wrap_select"\] = wasmExports\["__wrap_select"\];)/$1\n  if (typeof ___wrap_select === "function") { wasmImports["select"] = ___wrap_select; }/' /root/output/php.js; \
-	# Same for usleep, popen and pclose (-Wl,--wrap too): pgsql's libpq
-		# imports all three, and must get the JSPI-aware sleep and the
+	# Same for poll, usleep, popen and pclose (-Wl,--wrap too): side modules
+		# waiting on sockets with poll() (libpq, mysqlnd, ...) must get the
+		# version that yields to the event loop, and pgsql's libpq imports
+		# the other three, which must be the JSPI-aware sleep and the
 		# process-spawning popen, not musl's.
+		/root/replace.sh 's/(___wrap_poll = Module\["___wrap_poll"\] = wasmExports\["__wrap_poll"\];)/$1\n  if (typeof ___wrap_poll === "function") { wasmImports["poll"] = ___wrap_poll; }/' /root/output/php.js; \
 		/root/replace.sh 's/(___wrap_usleep = Module\["___wrap_usleep"\] = wasmExports\["__wrap_usleep"\];)/$1\n  if (typeof ___wrap_usleep === "function") { wasmImports["usleep"] = ___wrap_usleep; }/' /root/output/php.js; \
 		/root/replace.sh 's/(___wrap_popen = Module\["___wrap_popen"\] = wasmExports\["__wrap_popen"\];)/$1\n  if (typeof ___wrap_popen === "function") { wasmImports["popen"] = ___wrap_popen; }/' /root/output/php.js; \
 		/root/replace.sh 's/(___wrap_pclose = Module\["___wrap_pclose"\] = wasmExports\["__wrap_pclose"\];)/$1\n  if (typeof ___wrap_pclose === "function") { wasmImports["pclose"] = ___wrap_pclose; }/' /root/output/php.js; \

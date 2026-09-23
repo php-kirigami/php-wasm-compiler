@@ -61,12 +61,19 @@ const LibraryExample = {
 		 * (re)sent when the connection opens.
 		 */
 		proxiedSocketOptions: new WeakMap(),
-		isProxiedSocketOption: function (level, optionName) {
+		/**
+		 * Whether an option is one the proxy applies. TCP_NODELAY only
+		 * exists on a stream socket: Linux answers ENOPROTOOPT for a
+		 * datagram one.
+		 */
+		isProxiedSocketOption: function (sock, level, optionName) {
 			const { SOL_SOCKET, SO_KEEPALIVE, IPPROTO_TCP, TCP_NODELAY } =
 				PHPWASM.SOCKOPT;
 			return (
 				(level === SOL_SOCKET && optionName === SO_KEEPALIVE) ||
-				(level === IPPROTO_TCP && optionName === TCP_NODELAY)
+				(level === IPPROTO_TCP &&
+					optionName === TCP_NODELAY &&
+					sock.type === Number('{{{cDefs.SOCK_STREAM}}}'))
 			);
 		},
 		/**
@@ -1296,7 +1303,7 @@ const LibraryExample = {
 			return 0;
 		}
 
-		if (!PHPWASM.isProxiedSocketOption(level, optionName)) {
+		if (!PHPWASM.isProxiedSocketOption(sock, level, optionName)) {
 			return -ERRNO_CODES.ENOPROTOOPT;
 		}
 		if (!optionValuePtr || optionLen < 1) {
@@ -1376,7 +1383,7 @@ const LibraryExample = {
 			HEAP32[optionLenPtr >> 2] = 16;
 			return 0;
 		}
-		if (PHPWASM.isProxiedSocketOption(level, optionName)) {
+		if (PHPWASM.isProxiedSocketOption(sock, level, optionName)) {
 			const options = PHPWASM.proxiedSocketOptions.get(sock);
 			return writeInt(options?.get(`${level}:${optionName}`) ?? 0);
 		}
@@ -1656,6 +1663,62 @@ const LibraryExample = {
 		return _wasm_recvfrom(fd, buf, len, flags, addr, addrlen);
 	},
 	__syscall_recvfrom__deps: ['wasm_recvfrom'],
+
+	/**
+	 * socket(2) and accept4(2) that honor SOCK_NONBLOCK. Emscripten's
+	 * drop it (SOCKFS.createSocket masks it off; accept4 ignores its
+	 * flags), leaving the descriptor blocking. libcurl opens its sockets
+	 * with SOCK_NONBLOCK and never calls fcntl() after that, so once
+	 * blocking reads really waited (decision 63), closing an HTTPS
+	 * connection blocked on the peer's close_notify until the server
+	 * dropped the connection. accept4 keeps Emscripten's inheritance of
+	 * the listening socket's flags otherwise.
+	 */
+	__syscall_socket__deps: ['$SOCKFS', '$PHPWASM'],
+	__syscall_socket: function (domain, type, protocol) {
+		try {
+			const sock = SOCKFS.createSocket(domain, type, protocol);
+			if (type & Number('{{{cDefs.SOCK_NONBLOCK}}}')) {
+				sock.stream.flags |= PHPWASM.O_NONBLOCK;
+			}
+			return sock.stream.fd;
+		} catch (e) {
+			if (typeof FS == 'undefined' || e.name !== 'ErrnoError') {
+				throw e;
+			}
+			return -e.errno;
+		}
+	},
+	__syscall_accept4__deps: [
+		'$getSocketFromFD',
+		'$writeSockaddr',
+		'$DNS',
+		'$PHPWASM',
+	],
+	__syscall_accept4: function (fd, addr, addrlen, flags, d1, d2) {
+		try {
+			const sock = getSocketFromFD(fd);
+			const newsock = sock.sock_ops.accept(sock);
+			if (addr) {
+				writeSockaddr(
+					addr,
+					newsock.family,
+					DNS.lookup_name(newsock.daddr),
+					newsock.dport,
+					addrlen
+				);
+			}
+			if (flags & Number('{{{cDefs.SOCK_NONBLOCK}}}')) {
+				newsock.stream.flags |= PHPWASM.O_NONBLOCK;
+			}
+			return newsock.stream.fd;
+		} catch (e) {
+			if (typeof FS == 'undefined' || e.name !== 'ErrnoError') {
+				throw e;
+			}
+			return -e.errno;
+		}
+	},
 
 	/**
 	 * Returns the assigned process ID of the current process or 42 if not available.

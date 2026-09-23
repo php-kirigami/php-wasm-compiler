@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <poll.h>
 
 #include "zend_globals_macros.h"
 #include "zend_exceptions.h"
@@ -73,6 +74,9 @@ int wasm_setsockopt(int sockfd, int level, int optname, const void *optval, sock
 {
 	return setsockopt(sockfd, level, optname, optval, optlen);
 }
+
+/* libc's poll(), under -Wl,--wrap=poll (see __wrap_poll below). */
+extern int __real_poll(struct pollfd *fds, nfds_t nfds, int timeout);
 
 static int redirect_stream_to_file(FILE *stream, char *file_path);
 static void restore_stream_handler(FILE *original_stream, int replacement_stream);
@@ -881,7 +885,9 @@ EMSCRIPTEN_KEEPALIVE inline int php_pollfd_for(php_socket_t fd, int events, stru
 	// must yield back to JS event loop to get the network response:
 	wasm_poll_socket(fd, events, php_tvtoto(timeouttv));
 
-	n = php_poll2(&p, 1, php_tvtoto(timeouttv));
+	// wasm_poll_socket() already waited: only read the result, without
+	// __wrap_poll() waiting out the timeout a second time.
+	n = __real_poll(&p, 1, 0);
 
 	if (n > 0)
 	{
@@ -957,6 +963,36 @@ EMSCRIPTEN_KEEPALIVE int __wrap_select(int max_fd, fd_set *read_fds, fd_set *wri
 		emscripten_sleep(timeoutms);
 	}
 	return n;
+}
+
+/**
+ * poll(2) that lets JavaScript run while it waits (-Wl,--wrap=poll).
+ *
+ * Emscripten's poll() never waits: it checks the descriptors once and
+ * returns. A caller waiting on a non-blocking socket (libcurl, which
+ * polls its sockets) then spins without ever yielding to the event loop,
+ * so the WebSocket behind the socket can't open or deliver data. This
+ * checks the descriptors, then sleeps in short steps until one is ready
+ * or the timeout runs out (a negative timeout waits indefinitely).
+ */
+EMSCRIPTEN_KEEPALIVE int __wrap_poll(struct pollfd *fds, nfds_t nfds, int timeout)
+{
+	const double step_ms = 5;
+	double deadline = emscripten_get_now() + timeout;
+	while (1)
+	{
+		int n = __real_poll(fds, nfds, 0);
+		if (n != 0 || timeout == 0)
+		{
+			return n;
+		}
+		double remaining = timeout < 0 ? step_ms : deadline - emscripten_get_now();
+		if (remaining <= 0)
+		{
+			return 0;
+		}
+		emscripten_sleep(remaining < step_ms ? (unsigned int)remaining + 1 : (unsigned int)step_ms);
+	}
 }
 
 #if !defined(TSRMLS_DC)

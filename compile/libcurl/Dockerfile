@@ -66,6 +66,12 @@ RUN CPPFLAGS="-I/root/lib/include " \
         --with-zlib=/root/lib
 
 # JSPI-only build (see CLAUDE.md decision 6/24 — no Asyncify variant here).
+# CURL_TCP_NODELAY_SUPPORTED: curl_setup.h leaves it undefined under
+# __EMSCRIPTEN__ ("runtime support is missing"), which compiles
+# CURLOPT_TCP_NODELAY out. Here setsockopt(TCP_NODELAY) reaches the
+# WebSocket proxy, which applies it (docs/DECISIONS.md decision 66). Set
+# through EMCC_FLAGS: the CPPFLAGS above only prefix `source`, so
+# configure never sees them.
 RUN source /root/emsdk/emsdk_env.sh && \
     EMCC_SKIP="-lc -lz -lcurl -lssl -lssh2 -lnghttp2 " \
-    EMCC_FLAGS=" -D__x86_64__ -sSIDE_MODULE -Wl,--wrap=select -sSUPPORT_LONGJMP=wasm -fwasm-exceptions " emmake make || true
+    EMCC_FLAGS=" -D__x86_64__ -DCURL_TCP_NODELAY_SUPPORTED -sSIDE_MODULE -Wl,--wrap=select -sSUPPORT_LONGJMP=wasm -fwasm-exceptions " emmake make || true

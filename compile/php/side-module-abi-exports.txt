@@ -10,7 +10,7 @@
 # exporting functions a module may never call. Every name was checked to
 # be defined in Emscripten's PIC system libraries (libc, compiler-rt,
 # libsockets), since an export the link can't find fails the whole build.
-# Not listed: getpid, select, usleep, popen and pclose, which the core
+# Not listed: getpid, select, poll, usleep, popen and pclose, which the core
 # wraps (-Wl,--wrap); side modules get the wrapped versions through the
 # wasmImports aliases in the Dockerfile's php.js patches instead.
 #
