@@ -62,3 +62,14 @@ Operational notes Claude should read before working in this repo — environment
     via Actions); likely final consumer of the php-wasm package produced
     here.
 
+- **phpize `config.h` pitfall for `mode: shared` extensions** (found
+  2026-09-23 via mysqlnd's "Bad handshake"): under phpize, a config.m4's
+  `AC_DEFINE`s land only in the extension's own generated `config.h`, not
+  in the core's `main/php_config.h`. Any `.c` file that includes just
+  `php.h` (no `config.h`, directly or through a local header) silently
+  compiles as if those macros were undefined — in-tree php-src builds never
+  show this since everything goes into `php_config.h`. Fix per extension by
+  repeating the defines in `config.yaml`'s `extraCflags` (see mysqlnd).
+  When vendoring a new extension, check each `.c` that tests a config.m4
+  define actually reaches `config.h` first; a 2026-09-23 sweep of every
+  `compile/extensions/*` found only mysqlnd affected.

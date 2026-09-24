@@ -12,7 +12,8 @@ const manifestNames = ["manifest-mysqlnd.json","manifest.json"];
  * (major.minor, e.g. "8.5"), in the order they must be loaded. Each entry's
  * `soPath` is an absolute path to the compiled `.so` on disk — the caller
  * (@kirigami/php-wasm) reads its bytes, copies it into its own VM FS, and
- * writes the matching `php.ini` `extension=` directive itself.
+ * writes the matching `php.ini` `extension=` directive itself, followed by
+ * one `key=value` line per `iniEntries` entry when there are any.
  */
 export default function register(phpVersion) {
 	return manifestNames.map((manifestName) => {
@@ -21,6 +22,8 @@ export default function register(phpVersion) {
 		if (!artifact) {
 			throw new Error(`${manifest.name}: no artifact for PHP ${phpVersion} in ${manifestName}.`);
 		}
-		return { name: manifest.name, soPath: path.join(packageDir, artifact.sourcePath) };
+		const entry = { name: manifest.name, soPath: path.join(packageDir, artifact.sourcePath) };
+		if (manifest.iniEntries) entry.iniEntries = manifest.iniEntries;
+		return entry;
 	});
 }

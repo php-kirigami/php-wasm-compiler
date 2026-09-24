@@ -6,6 +6,8 @@ export interface RegisteredPHPExtension {
 	name: string;
 	/** Absolute path to the compiled .so on disk. */
 	soPath: string;
+	/** Extra php.ini `key=value` lines to write after the `extension=` line, if any. */
+	iniEntries?: Record<string, string>;
 }
 
 /**

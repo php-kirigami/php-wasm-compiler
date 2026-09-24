@@ -239,10 +239,21 @@ extensions:
   # the same way sodium's pkgConfigVar already does for LIBSODIUM (both
   # macros are pkg-config-based, confirmed by reading php-src's real
   # build/php.m4).
+  #
+  # extraCflags repeats config.m4's three AC_DEFINEs on the command line:
+  # only php_mysqlnd.c includes the phpize-generated config.h, every other
+  # mysqlnd_*.c includes just php.h (-> the core's main/php_config.h, which
+  # doesn't have them). Without this, mysqlnd_commands.c compiled the
+  # no-SSL branch of enable_ssl and sent a bogus 32-byte auth packet before
+  # the real one -> "Bad handshake" (1043) on every connection, while
+  # phpinfo() (php_mysqlnd.c) still claimed SSL support. Keep in sync with
+  # vendorLibs/configArgs: compression needs libz, both SSL defines need
+  # libopenssl + --with-mysqlnd-ssl.
   mysqlnd:
     mode: shared
     source: compile/extensions/mysqlnd
     configArgs: '--with-mysqlnd-ssl'
+    extraCflags: -DMYSQLND_SSL_SUPPORTED=1 -DMYSQLND_HAVE_SSL=1 -DMYSQLND_COMPRESSION_ENABLED=1
     vendorLibs:
       - lib: libz
         pkgConfigVar: ZLIB
