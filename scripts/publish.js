@@ -99,7 +99,9 @@ function packAndPublish(pkg) {
 
 	mkdirSync(PACKS, { recursive: true });
 	const packed = capture(`npm pack --json --pack-destination ${q(PACKS)}`, dir);
-	const tarball = path.join(PACKS, JSON.parse(packed)[0].filename);
+	// npm <= 11 prints an array; npm 12 an object keyed by package name.
+	const [pack] = Object.values(JSON.parse(packed));
+	const tarball = path.join(PACKS, pack.filename);
 	console.log(`  ${dim('·')} ${name}: packed ${dim(path.relative(ROOT, tarball))}`);
 
 	let cmd = `npm publish ${q(tarball)} --access public`;
