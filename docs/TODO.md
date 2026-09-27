@@ -6,6 +6,14 @@ Concrete next actions. For larger, not-yet-scheduled initiatives, see
 
 ## Next (2026-09-23)
 
+- [ ] Split library compilation from core compilation: a `build-libs` command
+      (the `*_jspi` targets from `computeRequiredLibTargets`) and a `build`
+      that only builds the core and fails clearly when a required `.a` is
+      missing, instead of running `make` itself. Lets a core failure retry
+      without re-checking every lib, and lets CI cache the libs separately.
+- [ ] Keep a smoke test for the static `aura`/`translit` (decision 67): the
+      check was a throwaway script, and `compile/extensions/<name>/smoke-test.php`
+      only covers `mode: shared` packages today.
 - [ ] Wire `config.yaml`'s `libraries:` versions into the actual build
       (`cli.mjs`/`build.js` currently ignore them — the libs are built at
       whatever version their own Dockerfile pins). Decide whether to

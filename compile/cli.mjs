@@ -240,6 +240,8 @@ const IMPLEMENTED_EXTENSIONS = {
 	navicat: 'WITH_NAVICAT',
 	igbinary: 'WITH_IGBINARY',
 	norm: 'WITH_NORM',
+	aura: 'WITH_AURA',
+	translit: 'WITH_TRANSLIT',
 	bz2: 'WITH_BZ2',
 };
 
@@ -285,6 +287,7 @@ const LIB_TARGETS_BY_EXTENSION = {
 	imagick: ['libImageMagick_jspi'],
 	yaml: ['libyaml_jspi'],
 	mdhtml: ['libcmark-gfm_jspi'],
+	aura: ['libaura_jspi'],
 	// Was missing here until 2026-09-17 -- a real gap: `node cli.mjs --quiet`
 	// never ran `make libbz2_jspi` on its own, only worked because decision
 	// 53's session had already built it manually first.
@@ -1235,6 +1238,11 @@ function buildArgsForVersion(config, phpVersion) {
 	// flat source files (same shape as jsonk's simdjson/yyjson).
 	args.push(`--NORM_EXT_VERSION=${getMatrixExtensionVersion('norm')}`);
 	args.push(`--UTF8PROC_VERSION=${getMatrixVersion('utf8proc')}`);
+	// libaura/ext-aura (GitLab) — wraps the libaura static library built by
+	// compile/libaura, linked as an explicit .a like mdhtml's cmark-gfm.
+	args.push(`--AURA_EXT_VERSION=${getMatrixExtensionVersion('aura')}`);
+	// derickr/translit — tables compiled in, no external lib.
+	args.push(`--TRANSLIT_EXT_VERSION=${getMatrixExtensionVersion('translit')}`);
 	// Imagick/imagick — pinned to a real tag instead of the "master" branch
 	// (matrix.json's own "imagick" note: needed to fix phpinfo() showing
 	// the raw "@PACKAGE_VERSION@" placeholder, PECL-packaging-only

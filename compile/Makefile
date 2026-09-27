@@ -434,6 +434,16 @@ libcmark-gfm/jspi/dist/root/lib/lib/libcmark-gfm.a: base-image
 	CID=$$(docker create kirigami-php-wasm:libcmark-gfm) && docker cp $$CID:/root/install/include ./libcmark-gfm/jspi/dist/root/lib && docker rm $$CID
 	$(call STRIP_SO,./libcmark-gfm/jspi/dist/root/lib)
 
+LIBAURA_VERSION := $(call MATRIX_VERSION,libaura)
+
+libaura_jspi: libaura/jspi/dist/root/lib/lib/libaura.a
+libaura/jspi/dist/root/lib/lib/libaura.a: base-image
+	mkdir -p ./libaura/jspi/dist/root/lib
+	docker build -f ./libaura/Dockerfile -t kirigami-php-wasm:libaura . --build-arg JSPI=1 --build-arg LIBAURA_VERSION=$(LIBAURA_VERSION) --progress=plain
+	CID=$$(docker create kirigami-php-wasm:libaura) && docker cp $$CID:/root/install/lib ./libaura/jspi/dist/root/lib && docker rm $$CID
+	CID=$$(docker create kirigami-php-wasm:libaura) && docker cp $$CID:/root/install/include ./libaura/jspi/dist/root/lib && docker rm $$CID
+	$(call STRIP_SO,./libaura/jspi/dist/root/lib)
+
 # Version comes from matrix.json (decision 27), not hand-synced here — see
 # matrix.json's "libcurl" note for what's been verified to actually
 # cross-compile before bumping matrix.json's last "versions" entry.
@@ -459,7 +469,7 @@ libImageMagick/jspi/dist/root/lib/lib/libMagickCore-7.Q16HDRI.a: base-image libz
 	$(call STRIP_SO,./libImageMagick/jspi/dist/root/lib)
 
 all: all_jspi
-all_jspi: libz_jspi libzip_jspi libpng16_jspi libjpeg_jspi libwebp_jspi libaom_jspi libavif_jspi libfreetype_jspi libgd_jspi libxml2_jspi libopenssl_jspi libsqlite3_jspi libiconv_jspi oniguruma_jspi libssh2_jspi nghttp2_jspi libcurl_jspi libImageMagick_jspi libsodium_jspi libyaml_jspi libcmark-gfm_jspi libbz2_jspi libgmp_jspi libtidy_jspi libpq_jspi libopenldap_jspi libffi_jspi libglib_jspi libenchant2_jspi unixodbc_jspi freetds_jspi firebird_jspi
+all_jspi: libz_jspi libzip_jspi libpng16_jspi libjpeg_jspi libwebp_jspi libaom_jspi libavif_jspi libfreetype_jspi libgd_jspi libxml2_jspi libopenssl_jspi libsqlite3_jspi libiconv_jspi oniguruma_jspi libssh2_jspi nghttp2_jspi libcurl_jspi libImageMagick_jspi libsodium_jspi libyaml_jspi libcmark-gfm_jspi libaura_jspi libbz2_jspi libgmp_jspi libtidy_jspi libpq_jspi libopenldap_jspi libffi_jspi libglib_jspi libenchant2_jspi unixodbc_jspi freetds_jspi firebird_jspi
 
 clean:
 	rm -rf ./libz/jspi/dist
@@ -483,6 +493,7 @@ clean:
 	rm -rf ./libsodium/jspi/dist
 	rm -rf ./libyaml/jspi/dist
 	rm -rf ./libcmark-gfm/jspi/dist
+	rm -rf ./libaura/jspi/dist
 	rm -rf ./libbz2/jspi/dist
 	rm -rf ./libgmp/jspi/dist
 	rm -rf ./libtidy/jspi/dist
@@ -533,6 +544,8 @@ clean-libyaml:
 	rm -rf ./libyaml/jspi/dist
 clean-libcmark-gfm:
 	rm -rf ./libcmark-gfm/jspi/dist
+clean-libaura:
+	rm -rf ./libaura/jspi/dist
 clean-libgmp:
 	rm -rf ./libgmp/jspi/dist
 clean-libtidy:

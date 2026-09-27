@@ -60,17 +60,35 @@ function getGithubToken() {
 	return githubToken;
 }
 
+/**
+ * Base request headers. Node's fetch (undici) defaults to `Accept-Language: *`
+ * with `Sec-Fetch-Mode: cors`, which googlesource.com answers with an instant
+ * 503 for non-browser user agents — an explicit Accept-Language avoids that.
+ */
+const BASE_HEADERS = { 'User-Agent': 'php-wasm-compiler', 'Accept-Language': 'en' };
+
 async function fetchText(url) {
-	const headers = { 'User-Agent': 'php-wasm-compiler' };
+	const headers = { ...BASE_HEADERS };
 	if (new URL(url).hostname === 'api.github.com') {
 		const token = getGithubToken();
 		if (token) headers.Authorization = `Bearer ${token}`;
 	}
-	const response = await fetch(url, { headers });
-	if (!response.ok) {
-		throw new Error(`HTTP ${response.status} for ${url}`);
+	// googlesource.com in particular throws sporadic 502/503s and sometimes
+	// just hangs — retry 5xx and timeouts a few times with a short backoff.
+	for (let attempt = 1; ; attempt++) {
+		let response;
+		try {
+			response = await fetch(url, { headers, signal: AbortSignal.timeout(20_000) });
+			if (response.ok) return await response.text();
+		} catch (error) {
+			if (error.name !== 'TimeoutError' || attempt >= 4) throw error;
+		}
+		if (response && (response.status < 500 || attempt >= 4)) {
+			throw new Error(`HTTP ${response.status} for ${url}`);
+		}
+		await response?.body?.cancel();
+		await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
 	}
-	return response.text();
 }
 
 async function fetchJSON(url) {
@@ -86,7 +104,7 @@ async function fetchGitilesJSON(url) {
 /** true if `url` resolves (HEAD, falling back to a ranged GET for hosts that reject HEAD). */
 async function urlResolves(url) {
 	try {
-		const head = await fetch(url, { method: 'HEAD', headers: { 'User-Agent': 'php-wasm-compiler' } });
+		const head = await fetch(url, { method: 'HEAD', headers: BASE_HEADERS });
 		if (head.ok) return true;
 		if (head.status !== 405 && head.status !== 501) return false;
 	} catch {
@@ -94,7 +112,7 @@ async function urlResolves(url) {
 	}
 	try {
 		const get = await fetch(url, {
-			headers: { 'User-Agent': 'php-wasm-compiler', Range: 'bytes=0-0' },
+			headers: { ...BASE_HEADERS, Range: 'bytes=0-0' },
 		});
 		return get.ok || get.status === 206;
 	} catch {
@@ -202,17 +220,14 @@ async function resolveGitTag(entry) {
 }
 
 /**
- * Gitiles-hosted repos (*.googlesource.com) — `+refs?format=JSON` lists
- * every branch and tag in one call, no scraping needed. Filters out
+ * Gitiles-hosted repos (*.googlesource.com) — `+refs/tags?format=JSON` lists
+ * every tag in one call, no scraping needed. Filters out
  * pre-release/errata/rc suffixes before comparing.
  */
 async function resolveGooglesource(entry) {
 	if (!entry.repo) return null;
-	const refs = await fetchGitilesJSON(`https://${entry.repo}/+refs?format=JSON`);
-	const tagNames = Object.keys(refs)
-		.filter((ref) => ref.startsWith('refs/tags/'))
-		.map((ref) => ref.replace('refs/tags/', ''));
-	const versions = tagNames
+	const tags = await fetchGitilesJSON(`https://${entry.repo}/+refs/tags?format=JSON`);
+	const versions = Object.keys(tags)
 		.map((name) => name.replace(/^v/, ''))
 		.filter((name) => /^\d+(\.\d+){1,3}$/.test(name));
 	return highestVersion(versions);

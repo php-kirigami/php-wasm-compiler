@@ -107,6 +107,16 @@ extensions:
   # mode/state. Cheap, no dependency to justify mode: shared (decision 41's
   # own reasoning) — this is the "always-useful fallback" case it describes.
   norm: { mode: static }
+  # libaura/ext-aura (GitLab, Packagist libaura/ext-aura) -- prominent color
+  # palette extraction (the Aura namespace), inspired by Google's Palette library.
+  # Wraps libaura (self-contained C++20 static library, see compile/libaura),
+  # linked as an explicit .a like mdhtml's cmark-gfm. Not yet build-tested.
+  aura: { mode: static }
+  # derickr/translit (Packagist derickr/translit, pecl-translit) --
+  # transliteration of non-latin scripts to latin. Its tables are compiled
+  # in (data/*.c), no external lib; only needs ext/iconv, already static.
+  # Not yet build-tested against PHP 8.5.
+  translit: { mode: static }
 
   # --- OFF to match the reference build's Configure Command, which shows
   # --disable-opcache / --disable-fileinfo / --disable-mbregex, and no
@@ -730,21 +740,22 @@ extensions:
 # matrix.json for that lib (NOT an automatic scrape of upstream yet — see
 # CLAUDE.md decision 11, not implemented lib by lib like it is for PHP).
 # An explicit version number pins that version instead.
-libraries:
-  libcurl: { version: latest } # 8.22.0, test-built 2026-09-12 (needed --without-libpsl, see NOTICE.md/CLAUDE.md decision 26)
-  libssh2: { version: latest } # curl SFTP/SCP support, see CLAUDE.md decision 24
-  nghttp2: { version: latest } # curl HTTP/2 support, see CLAUDE.md decision 25
-  libgd: { version: latest }
-  libImageMagick: { version: latest }
-  libiconv: { version: latest }
-  libjpeg: { version: latest }
-  libavif: { version: latest }
-  libaom: { version: latest }
-  libpng16: { version: latest }
-  libxml2: { version: latest }
-  libwebp: { version: latest }
-  libsqlite3: { version: latest }
-  libz: { version: latest }
+# libraries:
+#   libcurl: { version: latest } # 8.22.0, test-built 2026-09-12 (needed --without-libpsl, see NOTICE.md/CLAUDE.md decision 26)
+#   libssh2: { version: latest } # curl SFTP/SCP support, see CLAUDE.md decision 24
+#   nghttp2: { version: latest } # curl HTTP/2 support, see CLAUDE.md decision 25
+#   libgd: { version: latest }
+#   libImageMagick: { version: latest }
+#   libiconv: { version: latest }
+#   libjpeg: { version: latest }
+#   libavif: { version: latest }
+#   libaom: { version: latest }
+#   libpng16: { version: latest }
+#   libxml2: { version: latest }
+#   libwebp: { version: latest }
+#   libsqlite3: { version: latest }
+#   libz: { version: latest }
+#   libaura: { version: latest } # ext-aura's palette library (GitLab), see matrix.json
   # libzip currently builds two versions in parallel (see matrix.json) —
   # not configurable here yet. libopenssl builds a single version — see
   # build.openssl_version below.

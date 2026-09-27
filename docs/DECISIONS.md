@@ -3917,3 +3917,37 @@ unless explicitly revisited:
       `source` and never reached configure).
     - `TCP_NODELAY` on a datagram socket now fails with ENOPROTOOPT, as
       on Linux (set and get).
+
+67. **`aura` and `translit` added to the static core (2026-09-26).**
+    Requested from Packagist (`libaura/ext-aura`, `derickr/translit`).
+    Neither is on GitHub under the Packagist name: ext-aura is on GitLab
+    (`libaura/ext-aura`, tag `v1.0.5`), translit is
+    `derickr/pecl-translit` (tag `0.7.3`, no leading `v`).
+    - **aura** wraps `libaura` (`libaura/aura` on GitLab, C++20, no
+      third-party dependency). New `libraries.libaura` entry in
+      matrix.json (`v1.0.3`, `sourceType: tarball` — update-versions has
+      no GitLab resolver, so check tags by hand; the `aura` extension
+      entry has `autoUpdate: false` for the same reason, since any entry
+      with a `repo` is otherwise assumed GitHub). New
+      `compile/libaura/Dockerfile` + `libaura_jspi` Makefile target
+      (cmake static build with the C++ flags too, `CMAKE_INSTALL_LIBDIR=lib`,
+      installs `libaura.pc`). php/Dockerfile follows the mdhtml shape:
+      `--with-aura=/root/lib` plus `libaura.a` on `.emcc-php-wasm-sources`.
+    - **translit** carries its tables as `data/*.c`, so no library; only
+      `PHP_ADD_EXTENSION_DEP(translit, iconv)`, and iconv is static.
+    - Both are `mode: static` in config.yaml (comments and CRLF line
+      endings preserved: pure insertion after `norm`).
+    - **Built and verified (2026-09-26).** translit 0.7.3 compiles against
+      PHP 8.5 unpatched and the static link of libaura (libc++) needed
+      nothing extra. Only bug found: compile/php/Dockerfile had no
+      `COPY ./compile/libaura/ /root/builds/libaura`, so `/root/lib` never
+      received the archive (configure: "Cannot find
+      /root/lib/include/aura/aura.h"). Runtime check in the core:
+      `transliterate()` turns "Привет, мир! Ελληνικά café" into "Privet,
+      mir! Ellenikha cafe" (input must be UCS-2LE, see its phpt tests), and
+      `AuraPalette::generate()` returns swatches from RGBA pixels.
+      `AuraVERSION` reports "Aura v1.0.1" even for the v1.0.3 tag:
+      upstream's CMake `project(VERSION 1.0.1)` wasn't bumped.
+    - `node compile/check-shared-extension-symbols.mjs` run against the new
+      core: no missing ABI exports for any of the 27 shared packages
+      (intl's Transliterator did not clash with translit).

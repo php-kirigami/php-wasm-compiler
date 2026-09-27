@@ -56,6 +56,8 @@ ARG APCU_EXT_VERSION
 ARG NAVICAT_EXT_VERSION
 ARG IGBINARY_EXT_VERSION
 ARG NORM_EXT_VERSION
+ARG AURA_EXT_VERSION
+ARG TRANSLIT_EXT_VERSION
 ARG SIMDJSON_VERSION
 ARG YYJSON_VERSION
 ARG UTF8PROC_VERSION
@@ -162,6 +164,13 @@ RUN mkdir -p /root/php-src/ext/navicat && \
 	tar -xzf /root/navicat-ext.tar.gz -C /root/php-src/ext/navicat --strip-components=1 && \
 	rm /root/navicat-ext.tar.gz
 
+# libaura/ext-aura (GitLab has no /archive/refs/tags/ path: the URL shape is
+# /-/archive/<tag>/<name>-<tag>.tar.gz). Must land in ext/ before buildconf.
+RUN mkdir -p /root/php-src/ext/aura && 	wget -O /root/aura-ext.tar.gz https://gitlab.com/libaura/ext-aura/-/archive/${AURA_EXT_VERSION}/ext-aura-${AURA_EXT_VERSION}.tar.gz && 	tar -xzf /root/aura-ext.tar.gz -C /root/php-src/ext/aura --strip-components=1 && 	rm /root/aura-ext.tar.gz
+
+# derickr/translit (pecl-translit on GitHub; tags have no leading "v").
+RUN mkdir -p /root/php-src/ext/translit && 	wget -O /root/translit-ext.tar.gz https://github.com/derickr/pecl-translit/archive/refs/tags/${TRANSLIT_EXT_VERSION}.tar.gz && 	tar -xzf /root/translit-ext.tar.gz -C /root/php-src/ext/translit --strip-components=1 && 	rm /root/translit-ext.tar.gz
+
 # php-kirigami/php-norm (the user's own project) -- native Normalizer class +
 # normalizer_normalize()/normalizer_is_normalized() functions, wrapping
 # vendored utf8proc as flat source files compiled directly into ext/norm's
@@ -206,6 +215,7 @@ COPY ./compile/libfreetype/ /root/builds/libfreetype
 COPY ./compile/libgd/ /root/builds/libgd
 COPY ./compile/libyaml/ /root/builds/libyaml
 COPY ./compile/libcmark-gfm/ /root/builds/libcmark-gfm
+COPY ./compile/libaura/ /root/builds/libaura
 COPY ./compile/libbz2/ /root/builds/libbz2
 
 RUN if [ "$WITH_JSPI" = "yes" ]; then \
@@ -311,6 +321,8 @@ ARG WITH_APCU
 ARG WITH_NAVICAT
 ARG WITH_IGBINARY
 ARG WITH_NORM
+ARG WITH_AURA
+ARG WITH_TRANSLIT
 ARG WITH_BZ2
 
 # The platform to build for: web or node
@@ -549,6 +561,21 @@ RUN if [ "$WITH_NORM" = "yes" ]; \
 	else \
 		echo -n ' --disable-norm ' >> /root/.php-configure-flags; \
 	fi;
+
+# Add aura if needed (libaura/ext-aura, GitLab). Same "--with-x=DIR +
+# explicit .a on the link line" shape as mdhtml above: ext-aura's config.m4
+# is PHP_ARG_WITH and wants DIR/include/aura/aura.h + DIR/lib/libaura.a
+# (built by compile/libaura). libaura is C++20; the extension's own
+# "-lstdc++" only lands in AURA_SHARED_LIBADD, which a static build never
+# uses, so the final link relies on the C++ runtime the core already links
+# for jsonk.
+RUN if [ "$WITH_AURA" = "yes" ]; 	then 		echo -n ' --with-aura=/root/lib ' >> /root/.php-configure-flags; 		echo -n ' /root/lib/lib/libaura.a ' >> /root/.emcc-php-wasm-sources; 	else 		echo -n ' --without-aura ' >> /root/.php-configure-flags; 	fi;
+
+# Add translit if needed (derickr/translit). No separate
+# .emcc-php-wasm-sources entry: its transliteration tables (data/*.c) are
+# compiled straight into ext/translit's own object files. Needs ext/iconv,
+# which is static in this build.
+RUN if [ "$WITH_TRANSLIT" = "yes" ]; 	then 		echo -n ' --enable-translit ' >> /root/.php-configure-flags; 	else 		echo -n ' --disable-translit ' >> /root/.php-configure-flags; 	fi;
 
 # Add bz2 if needed (php-src's own ext/bz2 -- gives phar its optional
 # .tar.bz2 archive support, gated by phar's own `#if HAVE_BZ2` checks, in

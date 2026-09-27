@@ -1,6 +1,6 @@
 {
 	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. GitHub-hosted libraries (sourceType github-release/github-tag) are auto-refreshed via `node compile/cli.mjs update-versions` (compile/update-lib-versions.mjs); everything else (tarball/sourceforge/googlesource sources) still has to be checked manually via its own checkUrl.",
-	"lastChecked": "2026-09-24T01:43:37.938Z",
+	"lastChecked": "2026-09-27T01:51:58.300Z",
 	"libraries": {
 		"libcurl": {
 			"sourceType": "github-release",
@@ -205,6 +205,15 @@
 				"0.29.0.gfm.13"
 			]
 		},
+		"libaura": {
+			"$comment": "libaura/aura (GitLab, not GitHub), the C++20 color-palette-extraction library behind ext-aura (mode: static, see config.yaml's aura entry). Self-contained (no third-party dependency), builds one static archive libaura.a plus its headers (aura/aura.h, generated aura/export.h and aura/version.h) and libaura.pc, see compile/libaura/Dockerfile. GitLab-hosted, so update-versions can't refresh it automatically -- check https://gitlab.com/libaura/aura/-/tags by hand. The ext-aura tag (v1.0.5) and the libaura tag (v1.0.3) are versioned independently.",
+			"sourceType": "tarball",
+			"sourceTemplate": "https://gitlab.com/libaura/aura/-/archive/{version}/aura-{version}.tar.gz",
+			"checkUrl": "https://gitlab.com/libaura/aura/-/tags",
+			"versions": [
+				"v1.0.3"
+			]
+		},
 		"libbz2": {
 			"$comment": "For ext/bz2 (mode: static, added 2026-09-17 so phar gets .tar.bz2 archive support -- see config.yaml's own bz2 note). First tried as a mode:shared vendored-C-library pilot in the same spirit as libsodium/decision 32, but the user's call was to keep bz2 static-only once phar's own dependency on it surfaced (registering the same extension both statically and as a separate shared package would be redundant). Upstream bzip2/libbzip2 has had no release since 1.0.8 (2019); its original maintainer's sourceware.org host is still the canonical distribution point (confirmed via a real directory listing, not assumed) -- no GitHub release/tag exists to source from instead. Keyed 'libbz2' (not 'libbzip2', the upstream project's own name) so compile/Makefile's MATRIX_VERSION lookup and compile/php/Dockerfile's COPY .../libbz2 stay consistent with the compile/libbz2/ directory name.",
 			"sourceType": "tarball",
@@ -374,7 +383,8 @@
 			"repo": "JuliaStrings/utf8proc",
 			"sourceTemplate": "https://raw.githubusercontent.com/JuliaStrings/utf8proc/v{version}/utf8proc.h",
 			"versions": [
-				"2.11.3"
+				"2.11.3",
+				"2.12.0"
 			]
 		}
 	},
@@ -919,9 +929,15 @@
 			"switch": "--enable-lzf"
 		},
 		"translit": {
+			"$comment": "derickr/translit (Packagist derickr/translit, GitHub derickr/pecl-translit): transliterates non-latin scripts to latin. mode: static (config.yaml). Its tables are C files compiled straight into the extension (data/*.c), so no external library; the only dependency is ext/iconv, already static in this build. Tags carry no leading 'v'. Not yet build-tested against PHP 8.5.",
 			"builtin": false,
 			"mandatory": false,
 			"switch": "--enable-translit",
+			"repo": "derickr/pecl-translit",
+			"sourceTemplate": "https://github.com/derickr/pecl-translit/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"0.7.3"
+			],
 			"dependencies": [
 				"iconv"
 			]
@@ -1304,6 +1320,21 @@
 			],
 			"libraries": [
 				"utf8proc"
+			]
+		},
+		"aura": {
+			"$comment": "libaura/ext-aura (GitLab, Packagist libaura/ext-aura): prominent color swatch extraction (the Aura namespace, inspired by Google's Palette library). mode: static (config.yaml). config.m4 uses PHP_ARG_WITH (--with-aura=DIR, expects DIR/include/aura/aura.h and DIR/lib/libaura.a), same shape as mdhtml's --with-mdhtml; the .a is also appended to .emcc-php-wasm-sources. GitLab-hosted, so update-versions can't refresh it -- check https://gitlab.com/libaura/ext-aura/-/tags by hand. Not yet build-tested.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-aura",
+			"repo": "libaura/ext-aura",
+			"autoUpdate": false,
+			"sourceTemplate": "https://gitlab.com/libaura/ext-aura/-/archive/{version}/ext-aura-{version}.tar.gz",
+			"versions": [
+				"v1.0.5"
+			],
+			"libraries": [
+				"libaura"
 			]
 		},
 		"scanmeqr": {
