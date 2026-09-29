@@ -1,6 +1,6 @@
 {
 	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. GitHub-hosted libraries (sourceType github-release/github-tag) are auto-refreshed via `node compile/cli.mjs update-versions` (compile/update-lib-versions.mjs); everything else (tarball/sourceforge/googlesource sources) still has to be checked manually via its own checkUrl.",
-	"lastChecked": "2026-09-27T01:51:58.300Z",
+	"lastChecked": "2026-09-29T03:15:27.698Z",
 	"libraries": {
 		"libcurl": {
 			"sourceType": "github-release",
@@ -48,7 +48,8 @@
 			"note": "Default policy (2026-09-12): always try the latest version first, only fall back to an older pin if it actually fails a real test build. TESTED and ADOPTED 2026-09-12: 7.1.2-31 rebuilds cleanly against the fresh libpng16/libjpeg/libwebp below.",
 			"versions": [
 				"7.1.1-39",
-				"7.1.2-31"
+				"7.1.2-31",
+				"7.1.2-32"
 			]
 		},
 		"libiconv": {
@@ -210,6 +211,7 @@
 			"sourceType": "tarball",
 			"sourceTemplate": "https://gitlab.com/libaura/aura/-/archive/{version}/aura-{version}.tar.gz",
 			"checkUrl": "https://gitlab.com/libaura/aura/-/tags",
+			"autoUpdate": false,
 			"versions": [
 				"v1.0.3"
 			]
@@ -365,7 +367,8 @@
 			"repo": "simdjson/simdjson",
 			"sourceTemplate": "https://github.com/simdjson/simdjson/releases/download/v{version}/simdjson.h",
 			"versions": [
-				"4.6.11"
+				"4.6.11",
+				"5.0.1"
 			]
 		},
 		"yyjson": {
@@ -935,6 +938,8 @@
 			"switch": "--enable-translit",
 			"repo": "derickr/pecl-translit",
 			"sourceTemplate": "https://github.com/derickr/pecl-translit/archive/refs/tags/{version}.tar.gz",
+			"autoUpdate": false,
+			"note": "update-lib-versions.mjs treats any extensions entry with a `repo` as sourceType 'github-release' (GET /releases/latest), but this repo's last published GitHub Release is 2015's RELEASE_0_6_2 -- the maintainer kept tagging plain releases past it (0.7.0..0.7.3) without ever publishing them as Releases, so /releases/latest keeps returning that stale one instead of falling through to the tag list. normalizeVersion() also mangles that underscored legacy tag name into a bogus '0.6.2' that doesn't match any real download URL, which is the 'download URL doesn't work' warning this produces. Verified 2026-09-27 via the tags API (https://api.github.com/repos/derickr/pecl-translit/tags): 0.7.3, already pinned below, is genuinely the highest real tag. autoUpdate:false until the script supports an explicit github-tag override for extensions entries -- check https://github.com/derickr/pecl-translit/tags by hand instead.",
 			"versions": [
 				"0.7.3"
 			],
