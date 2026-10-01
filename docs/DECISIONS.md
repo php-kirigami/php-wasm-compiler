@@ -3951,3 +3951,26 @@ unless explicitly revisited:
     - `node compile/check-shared-extension-symbols.mjs` run against the new
       core: no missing ABI exports for any of the 27 shared packages
       (intl's Transliterator did not clash with translit).
+
+68. **`jsonpath` added to the static core; libs and core builds split
+    (2026-10-01).**
+    - **jsonpath** is supermetrics-public/pecl-jsonpath v3.1.0 (Packagist
+      `supermetrics/jsonpath`, a PIE `php-ext` package). Pure C, plain
+      `PHP_ARG_ENABLE`, no external lib and no extension dependency, so
+      `mode: static` like `norm`. Packagist declares php `>=8.0,<8.6`, which
+      covers 8.5. Wired like translit (`WITH_JSONPATH`,
+      `JSONPATH_EXT_VERSION`, tag with a leading "v"); matrix.json already
+      had a bare stub entry, now filled in. **Verified at runtime
+      (2026-10-01):** `extension_loaded('jsonpath')` is true and
+      `JsonPath\JsonPath::find()` returns the expected results for
+      `$.store.book[?(@.price<13)].title` and `$..price` on the core build.
+    - **Split.** `cli.mjs` gained `libs` (only the `*_jspi` make targets) and
+      `php` (core only), and `build` takes `--skip-libs`. `php` /
+      `--skip-libs` never run make: they check that every required lib's
+      `compile/<lib>/jspi/dist` exists and non-empty, and otherwise fail
+      naming the missing ones. The default `build` still does both, so CI is
+      unchanged.
+    - **Why `--quiet` matters here.** The interactive path calls `saveConfig`,
+      which re-serializes config.yaml with `stringifyYaml` and drops every
+      comment; that is what flattened config.yaml from 774 to 270 lines
+      before this session. Always run the CLI with `--quiet` in this repo.

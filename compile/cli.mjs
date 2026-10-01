@@ -311,6 +311,18 @@ function computeRequiredLibTargets(config) {
 }
 
 /**
+ * Required lib targets whose output directory (`compile/<lib>/jspi/dist`,
+ * the layout every `*_jspi` Makefile target writes to) is missing or empty.
+ * Used by `php` / `--skip-libs`, which never run make themselves.
+ */
+function findMissingLibTargets(targets) {
+	return targets.filter((target) => {
+		const dist = path.join(repoRoot, 'compile', target.replace(/(-[\d.]+)?_jspi$/, ''), 'jspi', 'dist');
+		return !existsSync(dist) || readdirSync(dist).length === 0;
+	});
+}
+
+/**
  * Runs `make <targets...>` in compile/ so only the libs the enabled
  * extensions need get (re)built. Safe to call every run: compile/Makefile's
  * targets are keyed on the built .a file already existing, so an
@@ -371,8 +383,29 @@ async function main() {
 						describe:
 							'Print the commands that would run, without building anything',
 					},
+					'skip-libs': {
+						type: 'boolean',
+						default: false,
+						describe:
+							'Do not build the third-party libraries; fail if a required one ' +
+							'has not been built yet (same as the "php" command)',
+					},
 				}),
-			runBuildCommand
+			(argv) => runBuildCommand(argv, { libs: !argv['skip-libs'], php: true })
+		)
+		.command(
+			'libs',
+			'Build only the third-party libraries the enabled static extensions ' +
+				'need (the make *_jspi targets), without building PHP',
+			(y) => y.options(sharedBuildOptions()),
+			(argv) => runBuildCommand(argv, { libs: true, php: false })
+		)
+		.command(
+			'php',
+			'Build only the PHP core, assuming the libraries are already built ' +
+				'(see "libs"); fails clearly if a required library is missing',
+			(y) => y.options(sharedBuildOptions()),
+			(argv) => runBuildCommand(argv, { libs: false, php: true })
 		)
 		.command(
 			'update-versions',
@@ -426,9 +459,37 @@ async function main() {
 		.parseAsync();
 }
 
-async function runBuildCommand(argv) {
+/** Options shared by the "libs" and "php" commands (a subset of "build"'s). */
+function sharedBuildOptions() {
+	return {
+		config: {
+			type: 'string',
+			default: path.join(repoRoot, 'config.yaml'),
+			describe: 'Path to the YAML configuration file',
+		},
+		quiet: {
+			type: 'boolean',
+			default: false,
+			describe: 'Skip interactive prompts, use config.yaml as-is (CI usage)',
+		},
+		save: {
+			type: 'boolean',
+			default: true,
+			describe: 'In interactive mode, offer to save changes back to config.yaml',
+		},
+		'dry-run': {
+			type: 'boolean',
+			default: false,
+			describe: 'Print the commands that would run, without building anything',
+		},
+	};
+}
+
+async function runBuildCommand(argv, { libs, php }) {
 	checkDocker();
-	checkMake();
+	if (libs) {
+		checkMake();
+	}
 	checkPosixTools();
 	checkWindowsWslStack();
 	checkBaseImage();
@@ -446,12 +507,26 @@ async function runBuildCommand(argv) {
 	validateExtensions(config);
 
 	const requiredLibTargets = computeRequiredLibTargets(config);
-	if (argv['dry-run']) {
-		console.log(
-			`\n[dry-run] make ${requiredLibTargets.join(' ') || '(no lib targets needed)'}`
-		);
-	} else {
-		await runLibBuild(requiredLibTargets);
+	if (libs) {
+		if (argv['dry-run']) {
+			console.log(
+				`\n[dry-run] make ${requiredLibTargets.join(' ') || '(no lib targets needed)'}`
+			);
+		} else {
+			await runLibBuild(requiredLibTargets);
+		}
+	} else if (!argv['dry-run']) {
+		const missing = findMissingLibTargets(requiredLibTargets);
+		if (missing.length > 0) {
+			throw new Error(
+				`Required libraries not built yet: ${missing.join(', ')}. ` +
+					'Run "node compile/cli.mjs libs" first (or build without --skip-libs).'
+			);
+		}
+	}
+
+	if (!php) {
+		return;
 	}
 
 	const versions = config.php?.versions ?? [];

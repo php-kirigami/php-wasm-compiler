@@ -6,22 +6,12 @@ Concrete next actions. For larger, not-yet-scheduled initiatives, see
 
 ## Next (2026-09-23)
 
-- [ ] Split library compilation from core compilation: a `build-libs` command
-      (the `*_jspi` targets from `computeRequiredLibTargets`) and a `build`
-      that only builds the core and fails clearly when a required `.a` is
-      missing, instead of running `make` itself. Lets a core failure retry
-      without re-checking every lib, and lets CI cache the libs separately.
-      Planned shape (2026-10-01): `cli.mjs libs` and `cli.mjs php` as
-      sub-commands, the default `build` chaining both (CI unchanged), plus a
-      `--skip-libs` flag on `build` to iterate on extensions. Add a DECISIONS.md
-      entry when done. Note: `saveConfig` (interactive mode) re-serializes
-      config.yaml with `stringifyYaml` and strips every comment — only ever run
-      the CLI with `--quiet` here, and consider fixing or removing that save path.
-- [ ] Verify the static `jsonpath` (supermetrics-public/pecl-jsonpath v3.1.0,
-      added 2026-10-01): the build passes and configure reports it enabled,
-      but nothing has run it yet. Check `extension_loaded('jsonpath')` and a
-      real query on `node-builds/8-5/`. Also check whether the
-      `Failed opening '.../extensions/*/*.so'` line in the build log is benign.
+- [ ] Fix or remove `saveConfig` in `cli.mjs` (interactive mode): it
+      re-serializes config.yaml with `stringifyYaml` and strips every comment
+      (decision 68). Until then, only run the CLI with `--quiet`. The libs/core
+      split itself is done (`libs`, `php`, `build --skip-libs`, decision 68).
+- [ ] Check whether the `Failed opening '.../extensions/*/*.so'` line in the
+      core build log (seen 2026-10-01, build still succeeds) is benign.
 - [ ] Keep a smoke test for the static `aura`/`translit` (decision 67): the
       check was a throwaway script, and `compile/extensions/<name>/smoke-test.php`
       only covers `mode: shared` packages today.
