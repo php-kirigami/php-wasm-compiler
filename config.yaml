@@ -117,6 +117,10 @@ extensions:
   # in (data/*.c), no external lib; only needs ext/iconv, already static.
   # Not yet build-tested against PHP 8.5.
   translit: { mode: static }
+  # supermetrics-public/pecl-jsonpath (Packagist supermetrics/jsonpath) --
+  # JSONPath query language over decoded JSON. Pure C, no external lib, no
+  # extension dependency. Declares php >=8.0,<8.6, so fine for 8.5.
+  jsonpath: { mode: static }
 
   # --- OFF to match the reference build's Configure Command, which shows
   # --disable-opcache / --disable-fileinfo / --disable-mbregex, and no

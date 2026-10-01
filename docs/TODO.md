@@ -11,6 +11,17 @@ Concrete next actions. For larger, not-yet-scheduled initiatives, see
       that only builds the core and fails clearly when a required `.a` is
       missing, instead of running `make` itself. Lets a core failure retry
       without re-checking every lib, and lets CI cache the libs separately.
+      Planned shape (2026-10-01): `cli.mjs libs` and `cli.mjs php` as
+      sub-commands, the default `build` chaining both (CI unchanged), plus a
+      `--skip-libs` flag on `build` to iterate on extensions. Add a DECISIONS.md
+      entry when done. Note: `saveConfig` (interactive mode) re-serializes
+      config.yaml with `stringifyYaml` and strips every comment — only ever run
+      the CLI with `--quiet` here, and consider fixing or removing that save path.
+- [ ] Verify the static `jsonpath` (supermetrics-public/pecl-jsonpath v3.1.0,
+      added 2026-10-01): the build passes and configure reports it enabled,
+      but nothing has run it yet. Check `extension_loaded('jsonpath')` and a
+      real query on `node-builds/8-5/`. Also check whether the
+      `Failed opening '.../extensions/*/*.so'` line in the build log is benign.
 - [ ] Keep a smoke test for the static `aura`/`translit` (decision 67): the
       check was a throwaway script, and `compile/extensions/<name>/smoke-test.php`
       only covers `mode: shared` packages today.

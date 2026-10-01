@@ -58,6 +58,7 @@ ARG IGBINARY_EXT_VERSION
 ARG NORM_EXT_VERSION
 ARG AURA_EXT_VERSION
 ARG TRANSLIT_EXT_VERSION
+ARG JSONPATH_EXT_VERSION
 ARG SIMDJSON_VERSION
 ARG YYJSON_VERSION
 ARG UTF8PROC_VERSION
@@ -170,6 +171,12 @@ RUN mkdir -p /root/php-src/ext/aura && 	wget -O /root/aura-ext.tar.gz https://gi
 
 # derickr/translit (pecl-translit on GitHub; tags have no leading "v").
 RUN mkdir -p /root/php-src/ext/translit && 	wget -O /root/translit-ext.tar.gz https://github.com/derickr/pecl-translit/archive/refs/tags/${TRANSLIT_EXT_VERSION}.tar.gz && 	tar -xzf /root/translit-ext.tar.gz -C /root/php-src/ext/translit --strip-components=1 && 	rm /root/translit-ext.tar.gz
+
+# supermetrics-public/pecl-jsonpath (tags carry a leading "v").
+RUN mkdir -p /root/php-src/ext/jsonpath && \
+	wget -O /root/jsonpath-ext.tar.gz https://github.com/supermetrics-public/pecl-jsonpath/archive/refs/tags/${JSONPATH_EXT_VERSION}.tar.gz && \
+	tar -xzf /root/jsonpath-ext.tar.gz -C /root/php-src/ext/jsonpath --strip-components=1 && \
+	rm /root/jsonpath-ext.tar.gz
 
 # php-kirigami/php-norm (the user's own project) -- native Normalizer class +
 # normalizer_normalize()/normalizer_is_normalized() functions, wrapping
@@ -323,6 +330,7 @@ ARG WITH_IGBINARY
 ARG WITH_NORM
 ARG WITH_AURA
 ARG WITH_TRANSLIT
+ARG WITH_JSONPATH
 ARG WITH_BZ2
 
 # The platform to build for: web or node
@@ -576,6 +584,15 @@ RUN if [ "$WITH_AURA" = "yes" ]; 	then 		echo -n ' --with-aura=/root/lib ' >> /r
 # compiled straight into ext/translit's own object files. Needs ext/iconv,
 # which is static in this build.
 RUN if [ "$WITH_TRANSLIT" = "yes" ]; 	then 		echo -n ' --enable-translit ' >> /root/.php-configure-flags; 	else 		echo -n ' --disable-translit ' >> /root/.php-configure-flags; 	fi;
+
+# Add jsonpath if needed (supermetrics-public/pecl-jsonpath). Pure C, plain
+# PHP_ARG_ENABLE, no external lib and no dependency on another extension.
+RUN if [ "$WITH_JSONPATH" = "yes" ]; \
+	then \
+		echo -n ' --enable-jsonpath ' >> /root/.php-configure-flags; \
+	else \
+		echo -n ' --disable-jsonpath ' >> /root/.php-configure-flags; \
+	fi;
 
 # Add bz2 if needed (php-src's own ext/bz2 -- gives phar its optional
 # .tar.bz2 archive support, gated by phar's own `#if HAVE_BZ2` checks, in

@@ -1,6 +1,6 @@
 {
 	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. GitHub-hosted libraries (sourceType github-release/github-tag) are auto-refreshed via `node compile/cli.mjs update-versions` (compile/update-lib-versions.mjs); everything else (tarball/sourceforge/googlesource sources) still has to be checked manually via its own checkUrl.",
-	"lastChecked": "2026-09-29T03:15:27.698Z",
+	"lastChecked": "2026-10-01T07:06:59.888Z",
 	"libraries": {
 		"libcurl": {
 			"sourceType": "github-release",
@@ -102,7 +102,8 @@
 			"note": "Default policy (2026-09-12): always try the latest STABLE version first (github.com/pnggroup/libpng's newest tags are 1.7.0 betas — not stable; 1.6.58 is the latest stable 1.6.x). TESTED and ADOPTED 2026-09-12: 1.6.58 rebuilds cleanly.",
 			"versions": [
 				"1.6.39",
-				"1.6.58"
+				"1.6.58",
+				"1.6.59"
 			]
 		},
 		"libxml2": {
@@ -1001,9 +1002,15 @@
 			"switch": "--enable-teds"
 		},
 		"jsonpath": {
+			"$comment": "supermetrics-public/pecl-jsonpath (Packagist supermetrics/jsonpath, PIE extension name jsonpath): JSONPath queries over decoded JSON. mode: static (config.yaml). Pure C (src/jsonpath/*.c), plain PHP_ARG_ENABLE, no external library and no dependency on another extension. Packagist declares php >=8.0,<8.6. Tags carry a leading 'v'. Not yet build-tested.",
 			"builtin": false,
 			"mandatory": false,
-			"switch": "--enable-jsonpath"
+			"switch": "--enable-jsonpath",
+			"repo": "supermetrics-public/pecl-jsonpath",
+			"sourceTemplate": "https://github.com/supermetrics-public/pecl-jsonpath/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v3.1.0"
+			]
 		},
 		"msgpack": {
 			"builtin": false,

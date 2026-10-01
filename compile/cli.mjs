@@ -242,6 +242,7 @@ const IMPLEMENTED_EXTENSIONS = {
 	norm: 'WITH_NORM',
 	aura: 'WITH_AURA',
 	translit: 'WITH_TRANSLIT',
+	jsonpath: 'WITH_JSONPATH',
 	bz2: 'WITH_BZ2',
 };
 
@@ -1243,6 +1244,8 @@ function buildArgsForVersion(config, phpVersion) {
 	args.push(`--AURA_EXT_VERSION=${getMatrixExtensionVersion('aura')}`);
 	// derickr/translit — tables compiled in, no external lib.
 	args.push(`--TRANSLIT_EXT_VERSION=${getMatrixExtensionVersion('translit')}`);
+	// supermetrics-public/pecl-jsonpath — pure C, no external lib.
+	args.push(`--JSONPATH_EXT_VERSION=${getMatrixExtensionVersion('jsonpath')}`);
 	// Imagick/imagick — pinned to a real tag instead of the "master" branch
 	// (matrix.json's own "imagick" note: needed to fix phpinfo() showing
 	// the raw "@PACKAGE_VERSION@" placeholder, PECL-packaging-only

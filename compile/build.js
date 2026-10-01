@@ -390,6 +390,8 @@ await asyncSpawn(
 		'--build-arg',
 		getArg('WITH_TRANSLIT'),
 		'--build-arg',
+		getArg('WITH_JSONPATH'),
+		'--build-arg',
 		getArg('WITH_BZ2'),
 		'--build-arg',
 		// Sourced from their own GitHub repos, not pecl.php.net (CLAUDE.md
@@ -417,6 +419,8 @@ await asyncSpawn(
 		`AURA_EXT_VERSION=${args.AURA_EXT_VERSION || 'v1.0.5'}`,
 		'--build-arg',
 		`TRANSLIT_EXT_VERSION=${args.TRANSLIT_EXT_VERSION || '0.7.3'}`,
+		'--build-arg',
+		`JSONPATH_EXT_VERSION=${args.JSONPATH_EXT_VERSION || 'v3.1.0'}`,
 		'--build-arg',
 		`UTF8PROC_VERSION=${args.UTF8PROC_VERSION || '2.11.3'}`,
 		'--build-arg',
