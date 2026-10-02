@@ -1,6 +1,6 @@
 {
 	"$comment": "Version/source matrix for third-party libraries under compile/lib*. Extracted from the Dockerfiles on 2026-09-11 (see CLAUDE.md, decision 11). 'latest' in config.yaml resolves to the last entry of 'versions'. GitHub-hosted libraries (sourceType github-release/github-tag) are auto-refreshed via `node compile/cli.mjs update-versions` (compile/update-lib-versions.mjs); everything else (tarball/sourceforge/googlesource sources) still has to be checked manually via its own checkUrl.",
-	"lastChecked": "2026-10-01T07:06:59.888Z",
+	"lastChecked": "2026-10-02T12:32:41.631Z",
 	"libraries": {
 		"libcurl": {
 			"sourceType": "github-release",
@@ -215,6 +215,15 @@
 			"autoUpdate": false,
 			"versions": [
 				"v1.0.3"
+			]
+		},
+		"libdlib": {
+			"$comment": "davisking/dlib, the C++ machine-learning toolkit behind php_dlib (mode: shared, 2026-10-02). One static archive libdlib.a plus its headers (dlib/..., with the generated dlib/config.h) built without GUI, no BLAS/LAPACK/CUDA, and JPEG/PNG from dlib's own bundled libjpeg/libpng/zlib, see compile/libdlib/Dockerfile. php_dlib needs dlib >= 19.00 per its config.m4 pkg-config probe.",
+			"sourceType": "github-tag",
+			"repo": "davisking/dlib",
+			"sourceTemplate": "https://github.com/davisking/dlib/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v20.0.1"
 			]
 		},
 		"libbz2": {
@@ -1012,6 +1021,28 @@
 				"v3.1.0"
 			]
 		},
+		"fastcsv": {
+			"$comment": "csvtoolkit/FastCSV-ext (Packagist csvtoolkit/fastcsv, PIE extension name fastcsv): RFC 4180 CSV reader and writer. mode: static (config.yaml, 2026-10-02). Pure C (fastcsv.c plus lib/*.c: arena allocator, parser, reader, writer), plain PHP_ARG_ENABLE, no external library and no dependency on another extension. Declares php >=8.2. The tag has a leading v. The C code in lib/ is a git submodule (csvtoolkit/FastCSV-C) that the tag archive leaves empty: compile/php/Dockerfile downloads it at the commit v0.0.2 points at (ARG FASTCSV_LIB_COMMIT, 91e1515), which has to be bumped together with the tag.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-fastcsv",
+			"repo": "csvtoolkit/FastCSV-ext",
+			"sourceTemplate": "https://github.com/csvtoolkit/FastCSV-ext/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v0.0.2"
+			]
+		},
+		"aspect": {
+			"$comment": "SolidWorx/Aspect (Packagist solidworx/aspect, PIE extension name aspect): attribute-based memoization of function and method calls. mode: static (config.yaml, 2026-10-02). Pure C, plain PHP_ARG_ENABLE (default no), no external library and no dependency on another extension. Declares php ^8.0 and the last tag (0.1.1) is from January 2025, so PHP 8.5 compatibility is untested. The tag has no leading v.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--enable-aspect",
+			"repo": "SolidWorx/Aspect",
+			"sourceTemplate": "https://github.com/SolidWorx/Aspect/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"0.1.1"
+			]
+		},
 		"msgpack": {
 			"builtin": false,
 			"mandatory": false,
@@ -1267,7 +1298,8 @@
 				"v0.1.2",
 				"v0.1.3",
 				"v0.1.4",
-				"v0.1.5"
+				"v0.1.5",
+				"v0.1.6"
 			],
 			"libraries": [
 				"libcmark-gfm"
@@ -1362,6 +1394,33 @@
 			"libraries": [
 				"libcxx"
 			]
+		},
+		"php_dlib": {
+			"$comment": "mailmug/php_dlib (Packagist, PIE extension name php_dlib): face detection, landmarks, recognition and clustering over dlib. mode: shared (2026-10-02). Links libdlib (compile/libdlib) and libcxx (the C++ runtime). Vendored under compile/extensions/php_dlib from the GitHub tag, see its PROVENANCE.md.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-php-dlib",
+			"repo": "mailmug/php-dlib",
+			"sourceTemplate": "https://github.com/mailmug/php-dlib/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v2.0.1"
+			],
+			"libraries": [
+				"libdlib",
+				"libcxx"
+			]
+		},
+		"fann": {
+			"$comment": "coral-media/ext-fann (Packagist, PIE extension name fann): bindings for FANN, the Fast Artificial Neural Network library. mode: shared (2026-10-02). libfann's sources are vendored in the package (lib/libfann, LGPL-2.1-or-later; the extension itself is MIT), so there is no library entry. Vendored under compile/extensions/fann from the GitHub tag, see its PROVENANCE.md.",
+			"builtin": false,
+			"mandatory": false,
+			"switch": "--with-fann",
+			"repo": "coral-media/ext-fann",
+			"sourceTemplate": "https://github.com/coral-media/ext-fann/archive/refs/tags/{version}.tar.gz",
+			"versions": [
+				"v1.0.0"
+			],
+			"libraries": []
 		},
 		"fastchart": {
 			"$comment": "iliaal/fastchart (Packagist, PIE extension name fastchart): chart rendering to SVG/PNG/JPEG/WebP. mode: shared (2026-09-23). Bundles plutovg/plutosvg/qrcodegen; links freetype, libpng16, libjpeg, libwebp, libz (the gd codec libs). Vendored under compile/extensions/fastchart from the GitHub tag, see its PROVENANCE.md.",
