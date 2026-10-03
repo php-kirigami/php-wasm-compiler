@@ -1,0 +1,8 @@
+# Local shim (not upstream): see ../PROVENANCE.md. Points pkg-config at the
+# vendorLib staging path; the archive itself is linked by vendorLib, so Libs
+# is left empty rather than repeating it.
+Name: dlib
+Description: dlib as staged for the php_dlib side-module build
+Version: 20.0.1
+Cflags: -I/build/vendor/libdlib/include
+Libs:

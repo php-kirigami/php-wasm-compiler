@@ -281,3 +281,13 @@ fastchart prepared but not built yet; anydoc (Rust) not started.
 61.** anydoc is the first Rust extension (ext-php-rs, built as a wasm32
 staticlib on a pinned nightly). 27 shared extensions pass
 `check-shared-extension-symbols.mjs`.
+
+**✅ php_dlib added (2026-10-02), see DECISIONS.md decision 69.** mode:shared over a new vendored dlib 20.0.1. `check-shared-extension-symbols.mjs` passes for all 28 shared extensions with no missing ABI export, so the core was not rebuilt. The model-based classes (landmarks, recognition, CNN detector) are untested: no model files are shipped.
+
+**✅ fann (shared), fastcsv and aspect (static) added (2026-10-02), see
+DECISIONS.md decision 71.** 29 shared extensions pass
+`check-shared-extension-symbols.mjs`. The core was rebuilt with `srand`
+exported and with fastcsv and aspect, both checked at runtime (CSV round trip,
+`#[Memoize]`). fann's smoke test trains and saves/loads an XOR network.
+
+**✅ php_dlib and fann published (2026-10-03).** `@kirigami/phpext-php_dlib` 0.1.0 and `@kirigami/phpext-fann` 0.1.0, released with `node scripts/publish.js --skip-build --only <name>` (the full script would have rebuilt every shared extension in Docker). The core with fastcsv and aspect shipped earlier as `@kirigami/php-wasm` 8.5.11-3; php-mdhtml v0.1.6 is in `matrix.json` and went out in 8.5.11-4.

@@ -1,0 +1,48 @@
+{
+	"name": "@kirigami/phpext-fann",
+	"version": "0.1.0",
+	"description": "Kirigami PHP.wasm shared extension: fann (JSPI side module, see @kirigami/php-wasm)",
+	"keywords": [
+		"php-wasm",
+		"php",
+		"wasm",
+		"webassembly",
+		"kirigami",
+		"fann"
+	],
+	"homepage": "https://php-kirigami.github.io",
+	"bugs": {
+		"url": "https://github.com/php-kirigami/php-wasm-compiler/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/php-kirigami/php-wasm-compiler.git"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"license": "MIT AND LGPL-2.1-or-later",
+	"author": "Maxime Larrivée-Roy",
+	"type": "module",
+	"main": "index.js",
+	"types": "index.d.ts",
+	"files": [
+		"manifest.json",
+		"manifest-*.json",
+		"*.so",
+		"index.js",
+		"index.d.ts",
+		"README.md"
+	],
+	"engines": {
+		"node": ">=24.0.0"
+	},
+	"kirigami": {
+		"type": "extension",
+		"phpVersions": [
+			"8.5"
+		],
+		"minVersion": "8.5.11",
+		"buildHash": "ec03933727622d64306753f895776e04e38e0409c82a388471dbfd07d1a23c14"
+	}
+}

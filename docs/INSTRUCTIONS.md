@@ -73,3 +73,22 @@ Operational notes Claude should read before working in this repo — environment
   When vendoring a new extension, check each `.c` that tests a config.m4
   define actually reaches `config.h` first; a 2026-09-23 sweep of every
   `compile/extensions/*` found only mysqlnd affected.
+
+- **`PHP_ADD_LIBRARY(<system lib>)` pitfall for `mode: shared` extensions**
+  (found 2026-10-02 with php_dlib's `stdc++` and fann's `m`): a config.m4
+  that adds `-lstdc++` or `-lm` makes libtool warn "linker path does not
+  have real file for library -lX" and fall back to a static module, so the
+  build ends with compile-extension's "Could not find a built .so under
+  /build/modules" and no other hint. Emscripten has no such files (libm is
+  in its libc, the C++ runtime comes from the `libcxx` vendorLib). Delete
+  the `PHP_ADD_LIBRARY` line and note it in the extension's PROVENANCE.md.
+
+- **`git apply` inside `/root/php-src` skips patches silently** (found
+  2026-10-02 with `patches/aspect/`): php-src is itself a git repository, so a
+  patch whose paths are relative to the extension (`a/aspect.c`) is read from
+  the repository root, printed as "Skipped patch" and still exits 0. Apply
+  with `git apply --no-index --directory=ext/<name>` from `/root/php-src`
+  and `grep` for the change afterwards, so a skipped patch fails the build.
+  The older `cd <dir> && git apply` patterns for `patches/simdjson/` and the
+  others were not re-checked for this: confirm "Applied patch" in the build
+  log before copying one.

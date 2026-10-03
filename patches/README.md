@@ -21,7 +21,9 @@ part of — or vendored into — the main PHP source tree: `patches/sockets/`
 (CLAUDE.md decision 42 — `ext/sockets` assumes Linux kernel raw-socket/BPF
 headers are present whenever `AF_PACKET`/`SO_ATTACH_REUSEPORT_CBPF` are
 defined, which isn't true under Emscripten's partial POSIX emulation) and
-`patches/apcu/` (jsonk/apcu decision — `apc_shm.c` unconditionally compiles
+`patches/aspect/` (SolidWorx/Aspect — `aspect.c` includes
+`zend_smart_str.h` only under `#ifdef HAVE_CONFIG_H`, which phpize defines
+but an in-tree build does not) and `patches/apcu/` (jsonk/apcu decision — `apc_shm.c` unconditionally compiles
 real SysV shm syscalls Emscripten declares but never implements, an
 undefined-symbol link failure) and `patches/simdjson/` (same decision —
 `simdjson.cpp`'s runtime CPU-feature detection is gated by a raw, un-

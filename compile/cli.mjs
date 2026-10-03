@@ -243,6 +243,8 @@ const IMPLEMENTED_EXTENSIONS = {
 	aura: 'WITH_AURA',
 	translit: 'WITH_TRANSLIT',
 	jsonpath: 'WITH_JSONPATH',
+	fastcsv: 'WITH_FASTCSV',
+	aspect: 'WITH_ASPECT',
 	bz2: 'WITH_BZ2',
 };
 
@@ -780,6 +782,14 @@ function buildKirigamiExtensionMetadata(ext, phpVersionList, buildHash) {
 		} else {
 			kirigami.vendorLib = entry;
 		}
+	} else if (ext.vendorLibs?.some(({ lib }) => lib === 'libcxx')) {
+		// A C++ extension that wraps a library of its own (php_dlib -> libdlib)
+		// lists it next to libcxx in `vendorLibs`: the runtime still goes under
+		// `cxxRuntime`, and the single other library is the one it wraps.
+		const toEntry = (lib) => ({ name: lib, version: getMatrixVersion(lib).replace(/^v(?=\d)/, '') });
+		kirigami.cxxRuntime = toEntry('libcxx');
+		const wrapped = ext.vendorLibs.filter(({ lib }) => lib !== 'libcxx');
+		if (wrapped.length === 1) kirigami.vendorLib = toEntry(wrapped[0].lib);
 	}
 	if (ext.bundleExtensions?.length) {
 		// Load order: each bundled extension's manifest-<name>.json must be
@@ -1321,6 +1331,10 @@ function buildArgsForVersion(config, phpVersion) {
 	args.push(`--TRANSLIT_EXT_VERSION=${getMatrixExtensionVersion('translit')}`);
 	// supermetrics-public/pecl-jsonpath — pure C, no external lib.
 	args.push(`--JSONPATH_EXT_VERSION=${getMatrixExtensionVersion('jsonpath')}`);
+	// csvtoolkit/FastCSV-ext — pure C, no external lib.
+	args.push(`--FASTCSV_EXT_VERSION=${getMatrixExtensionVersion('fastcsv')}`);
+	// SolidWorx/Aspect — pure C, no external lib.
+	args.push(`--ASPECT_EXT_VERSION=${getMatrixExtensionVersion('aspect')}`);
 	// Imagick/imagick — pinned to a real tag instead of the "master" branch
 	// (matrix.json's own "imagick" note: needed to fix phpinfo() showing
 	// the raw "@PACKAGE_VERSION@" placeholder, PECL-packaging-only

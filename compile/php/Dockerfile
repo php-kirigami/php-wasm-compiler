@@ -59,6 +59,11 @@ ARG NORM_EXT_VERSION
 ARG AURA_EXT_VERSION
 ARG TRANSLIT_EXT_VERSION
 ARG JSONPATH_EXT_VERSION
+ARG FASTCSV_EXT_VERSION
+# The commit of csvtoolkit/FastCSV-C that FastCSV-ext's `lib` git submodule points at,
+# for FASTCSV_EXT_VERSION (GitHub tag archives leave submodules out).
+ARG FASTCSV_LIB_COMMIT=91e1515929a1c7e3f556768b00b31081adaffe87
+ARG ASPECT_EXT_VERSION
 ARG SIMDJSON_VERSION
 ARG YYJSON_VERSION
 ARG UTF8PROC_VERSION
@@ -177,6 +182,34 @@ RUN mkdir -p /root/php-src/ext/jsonpath && \
 	wget -O /root/jsonpath-ext.tar.gz https://github.com/supermetrics-public/pecl-jsonpath/archive/refs/tags/${JSONPATH_EXT_VERSION}.tar.gz && \
 	tar -xzf /root/jsonpath-ext.tar.gz -C /root/php-src/ext/jsonpath --strip-components=1 && \
 	rm /root/jsonpath-ext.tar.gz
+
+# csvtoolkit/FastCSV-ext (tags carry a leading "v"). Its arena allocator and
+# CSV code sit in lib/, a git submodule (csvtoolkit/FastCSV-C) that the tag
+# archive leaves empty, so it is fetched separately at the pinned commit.
+RUN mkdir -p /root/php-src/ext/fastcsv && \
+	wget -O /root/fastcsv-ext.tar.gz https://github.com/csvtoolkit/FastCSV-ext/archive/refs/tags/${FASTCSV_EXT_VERSION}.tar.gz && \
+	tar -xzf /root/fastcsv-ext.tar.gz -C /root/php-src/ext/fastcsv --strip-components=1 && \
+	rm /root/fastcsv-ext.tar.gz && \
+	wget -O /root/fastcsv-lib.tar.gz https://github.com/csvtoolkit/FastCSV-C/archive/${FASTCSV_LIB_COMMIT}.tar.gz && \
+	tar -xzf /root/fastcsv-lib.tar.gz -C /root/php-src/ext/fastcsv/lib --strip-components=1 && \
+	rm /root/fastcsv-lib.tar.gz && \
+	test -f /root/php-src/ext/fastcsv/lib/csv_config.h
+
+# SolidWorx/Aspect (tags have no leading "v"): attribute-based memoization.
+# patches/aspect/ makes aspect.c include zend_smart_str.h even without
+# HAVE_CONFIG_H (phpize defines it, an in-tree build does not).
+COPY ./patches/aspect/*.patch /root/patches-aspect/
+RUN mkdir -p /root/php-src/ext/aspect && \
+	wget -O /root/aspect-ext.tar.gz https://github.com/SolidWorx/Aspect/archive/refs/tags/${ASPECT_EXT_VERSION}.tar.gz && \
+	tar -xzf /root/aspect-ext.tar.gz -C /root/php-src/ext/aspect --strip-components=1 && \
+	rm /root/aspect-ext.tar.gz && \
+	# /root/php-src is itself a git repository: without --directory, git apply
+	# reads the patch paths from its root and silently skips aspect.c
+	# ("Skipped patch"), so the grep below makes a skipped patch fail the build.
+	cd /root/php-src && \
+	git apply --no-index -v --directory=ext/aspect /root/patches-aspect/*.patch && \
+	grep -q '^#include "zend_smart_str.h"' /root/php-src/ext/aspect/aspect.c && \
+	cd /root
 
 # php-kirigami/php-norm (the user's own project) -- native Normalizer class +
 # normalizer_normalize()/normalizer_is_normalized() functions, wrapping
@@ -331,6 +364,8 @@ ARG WITH_NORM
 ARG WITH_AURA
 ARG WITH_TRANSLIT
 ARG WITH_JSONPATH
+ARG WITH_FASTCSV
+ARG WITH_ASPECT
 ARG WITH_BZ2
 
 # The platform to build for: web or node
@@ -592,6 +627,24 @@ RUN if [ "$WITH_JSONPATH" = "yes" ]; \
 		echo -n ' --enable-jsonpath ' >> /root/.php-configure-flags; \
 	else \
 		echo -n ' --disable-jsonpath ' >> /root/.php-configure-flags; \
+	fi;
+
+# Add fastcsv if needed (csvtoolkit/FastCSV-ext). Pure C, plain
+# PHP_ARG_ENABLE, no external lib and no dependency on another extension.
+RUN if [ "$WITH_FASTCSV" = "yes" ]; \
+	then \
+		echo -n ' --enable-fastcsv ' >> /root/.php-configure-flags; \
+	else \
+		echo -n ' --disable-fastcsv ' >> /root/.php-configure-flags; \
+	fi;
+
+# Add aspect if needed (SolidWorx/Aspect). Pure C, plain PHP_ARG_ENABLE
+# (default no), no external lib and no dependency on another extension.
+RUN if [ "$WITH_ASPECT" = "yes" ]; \
+	then \
+		echo -n ' --enable-aspect ' >> /root/.php-configure-flags; \
+	else \
+		echo -n ' --disable-aspect ' >> /root/.php-configure-flags; \
 	fi;
 
 # Add bz2 if needed (php-src's own ext/bz2 -- gives phar its optional

@@ -1,0 +1,19 @@
+SolidWorx/Aspect 0.1.1, aspect.c: include zend_smart_str.h unconditionally.
+
+The file only includes it inside #ifdef HAVE_CONFIG_H, which phpize defines
+but an in-tree php-src build does not, so smart_str_* were implicit
+declarations (an error with clang's C99 default). Applied to ext/aspect
+by compile/php/Dockerfile right after the tag is downloaded.
+
+diff --git a/aspect.c b/aspect.c
+index 9e8e3e7..41d650b 100644
+--- a/aspect.c
++++ b/aspect.c
+@@ -8,6 +8,7 @@
+ #endif
+ 
+ #include "php.h"
++#include "zend_smart_str.h"
+ #include "ext/standard/info.h"
+ #include "ext/standard/php_standard.h"
+ #include "php_aspect.h"

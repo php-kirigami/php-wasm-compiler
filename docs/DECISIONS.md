@@ -3974,3 +3974,104 @@ unless explicitly revisited:
       which re-serializes config.yaml with `stringifyYaml` and drops every
       comment; that is what flattened config.yaml from 774 to 270 lines
       before this session. Always run the CLI with `--quiet` in this repo.
+
+69. **`php_dlib` as mode:shared, with dlib as a new vendored lib
+    (2026-10-02).** `mailmug/php_dlib` v2.0.1 (Packagist, PIE extension
+    name `php_dlib`): face detection, landmarks, recognition and clustering
+    over dlib.
+    - **libdlib** (`compile/libdlib/Dockerfile`, `libdlib_jspi`): dlib
+      v20.0.1, static, no GUI/BLAS/LAPACK/CUDA. Not `DLIB_ISO_CPP_ONLY`,
+      which looks like the right switch for a threadless VM but also turns
+      off every image loader (the bundled libjpeg/libpng sources sit in its
+      else branch): the first build had a 289 KB `libdlib.a` with no
+      png/jpeg objects while `config.h` still defined `DLIB_PNG_SUPPORT`.
+      Without it the archive is 4.9 MB and carries both decoders.
+    - **Extension**: `PHP_ARG_WITH`, so `--with-php-dlib` in `configArgs`.
+      `config.m4` runs `pkg-config dlib-1` itself, so a local
+      `wasm-pkgconfig/dlib-1.pc` shim (empty `Libs`) points it at the
+      staging path, as for fastchart. `vendorLibs: [libdlib, libcxx]`.
+    - **One config.m4 change**: `PHP_ADD_LIBRARY(stdc++, ...)` removed.
+      `-lstdc++` doesn't exist under Emscripten, so libtool fell back to a
+      static module and compile-extension ended with "Could not find a
+      built .so".
+    - **cli.mjs**: package metadata only knew the singular `vendorLib`
+      (libcxx -> `cxxRuntime`). A `vendorLibs` list containing libcxx now
+      records `cxxRuntime` plus the single other lib as `vendorLib`;
+      mysqlnd/fastchart (no libcxx) are unchanged.
+    - **Verified**: `check-shared-extension-symbols.mjs` passes for all 28
+      packages, php_dlib's smoke test included (clustering, vector length,
+      `dlib_face_detection()` on a PNG and a JPEG written with gd). The
+      core was not rebuilt: no missing ABI export. Not tested: the model
+      based classes (`FaceLandmarkDetection`, `FaceRecognition`,
+      `CnnFaceDetection`), the model files not being shipped.
+
+70. **xberg (`xberg-io/xberg` v1.3.2) as mode:shared: attempted, then
+    abandoned (2026-10-02).** A Rust PHP extension (ext-php-rs, 41k generated lines in
+    `crates/xberg-php`), like anydoc but with a far larger dependency graph.
+    Abandoned by the user after 15 build attempts; nothing is wired into
+    config.yaml or matrix.json, and the experiment's Docker containers and
+    cache volumes were deleted. What is kept as a record:
+    `compile/xberg/Cargo.xberg-php.toml` (a reduced `xberg-php` manifest: a
+    staticlib, pure-Rust extractors only, no OCR engines/ONNX/pdfium/server)
+    and `compile/xberg/experiment-build.sh` (the build recipe, run in a
+    container from the anydoc image with `--entrypoint bash`).
+    - **Why it is hard:** the generated binding references `crawlberg` (a web
+      crawler: reqwest/hyper/tokio net) and the types of features it expects
+      on (`candle-ocr`, `classification`, `diff`, `api`, `tree-sitter`...),
+      and the whole graph gates on `target_arch = "wasm32"` for the
+      *browser* case. Emscripten is wasm32 *and* unix, so crates take their
+      browser path and fail, or half of a pair of crates does.
+    - **Worked around (in `experiment-build.sh`):** tokio, xberg's own
+      crates and the xet crates get their `target_arch = "wasm32"` /
+      `target_family = "wasm"` cfgs renamed so emscripten takes the native
+      path (tokio and xet through `[patch.crates-io]` copies); mio treated
+      as emscripten-capable with its `poll(2)` selector (`--cfg
+      mio_unsupported_force_poll_poll`, plus two cfg lists); ring's
+      `SystemRandom` enabled for emscripten (getrandom); the runtime built
+      `current_thread`; tree-sitter-language-pack limited with
+      `TSLP_LANGUAGES`. About 370 crates compile, xberg itself included.
+    - **Where it stops (attempt 15):** `xet-client` (from `hf-hub`, pulled
+      by `candle-ocr`/`liter-llm`) fails with `Send`-ness mismatches against
+      `reqwest-middleware`, which still takes its wasm32 (`?Send`) path:
+      every crate in a pair has to flip together, and each fix has revealed
+      the next one. The remaining unknowns after that are linking against
+      the core's ABI exports and a tokio runtime without threads
+      (`spawn_blocking`).
+    - **Ways forward:** stub the `candle_ocr`/`liter_llm` type modules in
+      xberg so `hf-hub` is never pulled; or ask upstream to make
+      `crawlberg` and these types optional in the PHP binding.
+      anydoc already covers document to Markdown.
+
+71. **`php_dlib` and `fann` (shared), `fastcsv` and `aspect` (static)
+    (2026-10-02).**
+    - **php_dlib** (`mailmug/php_dlib` v2.0.1): see decision 69.
+    - **fann** (`coral-media/ext-fann` v1.0.0, `mode: shared`): plain C with
+      libfann's sources vendored in the package (`lib/libfann`, LGPL-2.1+;
+      the extension is MIT, so `license: 'MIT AND LGPL-2.1-or-later'`). No
+      vendorLib. One change to `config.m4`: `PHP_ADD_LIBRARY(m, ...)`
+      removed, same libtool static-module fallback as php_dlib's `stdc++`
+      (INSTRUCTIONS.md). The core needed one more export, `srand`
+      (`side-module-abi-exports.txt`), and was rebuilt with `node
+      compile/cli.mjs php --quiet` (libs untouched). All 29 shared packages
+      pass `check-shared-extension-symbols.mjs`.
+    - **fastcsv** (`csvtoolkit/FastCSV-ext` v0.0.2, `mode: static`) and
+      **aspect** (`SolidWorx/Aspect` 0.1.1, `mode: static`): both plain C
+      with a `PHP_ARG_ENABLE`, wired like jsonpath (decision 68:
+      `WITH_FASTCSV`/`WITH_ASPECT`, `FASTCSV_EXT_VERSION`/
+      `ASPECT_EXT_VERSION`, downloaded into `ext/` by compile/php/Dockerfile).
+      Two things the tags needed:
+      - fastcsv's `lib/` is a git submodule (`csvtoolkit/FastCSV-C`) that
+        the tag archive leaves empty ("lib/csv_config.h file not found"):
+        the Dockerfile fetches it at the commit the tag points at
+        (`FASTCSV_LIB_COMMIT`, to bump with the tag).
+      - aspect's `aspect.c` includes `zend_smart_str.h` only under `#ifdef
+        HAVE_CONFIG_H`, which phpize defines but an in-tree build does not:
+        `patches/aspect/` adds the include. The first attempt did nothing:
+        `git apply` run inside `/root/php-src` (itself a git repository)
+        printed "Skipped patch" and exited 0, so the Dockerfile now uses
+        `--directory=ext/aspect` and greps for the result.
+    - **Verified at runtime on the rebuilt core:** both extensions load
+      (they report 0.0.1 and 0.1.0, upstream's own version constants).
+      fastcsv writes a CSV with a quoted field and reads it back;
+      `#[Memoize]` on a function runs it once per argument (3 calls, 2
+      executions).

@@ -121,6 +121,19 @@ extensions:
   # JSONPath query language over decoded JSON. Pure C, no external lib, no
   # extension dependency. Declares php >=8.0,<8.6, so fine for 8.5.
   jsonpath: { mode: static }
+  # csvtoolkit/FastCSV-ext (Packagist csvtoolkit/fastcsv, tag v0.0.2) -- RFC
+  # 4180 CSV reader/writer. Pure C (its arena allocator and CSV code are in
+  # lib/), plain PHP_ARG_ENABLE, no external lib, no extension dependency.
+  # Declares php >=8.2. lib/ is a git submodule (csvtoolkit/FastCSV-C) that
+  # the tag archive leaves empty: the Dockerfile fetches it at the pinned
+  # commit (FASTCSV_LIB_COMMIT), to bump with the tag. Not yet build-tested
+  # against PHP 8.5.
+  fastcsv: { mode: static }
+  # SolidWorx/Aspect (Packagist solidworx/aspect, tag 0.1.1) -- attribute
+  # based memoization. Pure C, plain PHP_ARG_ENABLE (default no), no
+  # external lib. Declares php ^8.0 and dates from January 2025, so 8.5
+  # compatibility is untested.
+  aspect: { mode: static }
 
   # --- OFF to match the reference build's Configure Command, which shows
   # --disable-opcache / --disable-fileinfo / --disable-mbregex, and no
@@ -725,6 +738,45 @@ extensions:
     # Same as rar/scanmeqr: compile-extension's __x86_64__ turns on
     # fastchart_rasterize.c's SSE path and <cpuid.h> CPU detection.
     extraCflags: -U__x86_64__
+
+  # php_dlib (mailmug/php_dlib on Packagist, tag v2.0.1): face detection,
+  # landmarks, recognition and clustering over dlib (the extension name is
+  # php_dlib, so that is the key). dlib 20.0.1 is vendored as libdlib
+  # (compile/libdlib/Dockerfile: static, no GUI/BLAS, JPEG and PNG
+  # from dlib's own bundled copies) and libcxx carries the C++ runtime, as
+  # for rar. config.m4 runs `pkg-config dlib-1` itself (--exists,
+  # --atleast-version, --cflags, --libs), not PKG_CHECK_MODULES, so
+  # pkgConfigVar can't answer it: a local wasm-pkgconfig/dlib-1.pc shim
+  # (not upstream) points it at the staging path, through PKG_CONFIG_PATH,
+  # as for fastchart. It is a PHP_ARG_WITH, hence --with-php-dlib (the
+  # compile-extension default --enable-php_dlib is silently ignored).
+  # -U__x86_64__ as for rar. The models (shape predictor, face recognition
+  # ResNet, CNN detector) are not shipped: they are loaded from paths the
+  # caller provides. MIT. See compile/extensions/php_dlib/PROVENANCE.md.
+  php_dlib:
+    mode: shared
+    source: compile/extensions/php_dlib
+    vendorLibs:
+      - lib: libdlib
+      - lib: libcxx
+    configArgs: 'PKG_CONFIG_PATH=/build/wasm-pkgconfig --with-php-dlib'
+    license: MIT
+    extraCflags: -U__x86_64__
+
+  # fann (coral-media/ext-fann on Packagist, tag v1.0.0): bindings for FANN
+  # (Fast Artificial Neural Network). Plain C, and libfann's sources are
+  # vendored inside the package (lib/libfann), so there is no vendorLib and
+  # no pkg-config probe. config.m4 is a PHP_ARG_WITH whose default is yes
+  # (so compile-extension's --enable-fann is ignored but harmless); --with-fann
+  # is passed anyway so the build doesn't depend on that default. The
+  # extension is MIT, libfann LGPL-2.1-or-later (hence the license
+  # expression; the source is in this repo). See
+  # compile/extensions/fann/PROVENANCE.md.
+  fann:
+    mode: shared
+    source: compile/extensions/fann
+    configArgs: '--with-fann'
+    license: 'MIT AND LGPL-2.1-or-later'
 
   # anydoc (hosmelq/ext-anydoc on Packagist, tag v0.2.4): Word,
   # PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV and PDF to Markdown.
