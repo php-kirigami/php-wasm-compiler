@@ -4010,11 +4010,12 @@ unless explicitly revisited:
     `crates/xberg-php`), like anydoc but with a far larger dependency graph.
     Abandoned by the user after 15 build attempts; nothing is wired into
     config.yaml or matrix.json, and the experiment's Docker containers and
-    cache volumes were deleted. What is kept as a record:
-    `compile/xberg/Cargo.xberg-php.toml` (a reduced `xberg-php` manifest: a
-    staticlib, pure-Rust extractors only, no OCR engines/ONNX/pdfium/server)
-    and `compile/xberg/experiment-build.sh` (the build recipe, run in a
-    container from the anydoc image with `--entrypoint bash`).
+    cache volumes were deleted. **The project is closed (2026-10-03): `compile/xberg/` was
+    removed from the tree** (the user: "projet avorté"). It stays in git history
+    (commit 7434e54: `compile/xberg/Cargo.xberg-php.toml`, a reduced `xberg-php`
+    manifest, and `compile/xberg/experiment-build.sh`, the build recipe run in a
+    container from the anydoc image with `--entrypoint bash`); the analysis below
+    is kept as the record of why it is hard.
     - **Why it is hard:** the generated binding references `crawlberg` (a web
       crawler: reqwest/hyper/tokio net) and the types of features it expects
       on (`candle-ocr`, `classification`, `diff`, `api`, `tree-sitter`...),
